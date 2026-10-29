@@ -22,6 +22,22 @@ it("keeps a draft Edit put back from an agent-only message agent-only until the 
   expect(store.isAgentOnly(key)).toBe(false);
 });
 
+it("keeps the draft agent-only in this page when storage refuses the mark", () => {
+  const data = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => { if (key.startsWith("ovis:composer-agent-only:")) throw new DOMException("full", "QuotaExceededError"); data.set(key, value); },
+    removeItem: (key: string) => { data.delete(key); },
+  };
+  const store = new ComposerDraftStore(() => storage);
+  const key = "ovis:composer-draft:p1";
+  store.restorePending(key, "> quote\ncomment", true);
+  expect(store.read(key).text).toBe("> quote\ncomment");
+  expect(store.isAgentOnly(key)).toBe(true);
+  store.set(key, "");
+  expect(store.isAgentOnly(key)).toBe(false);
+});
+
 it("moves the agent-only mark with its draft when herdr gives the pane a new ID", () => {
   const { store } = fixture();
   store.restorePending("ovis:composer-draft:old", "> quote\ncomment", true);

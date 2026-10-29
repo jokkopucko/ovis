@@ -19,6 +19,8 @@ export class ComposerDraftStore {
   private drafts = new Map<string, Draft>();
   private saved = new Map<string, string | null>();
   private unsaved = new Set<string>();
+  /** drafts this page put back as agent-only messages (#511): kept here even when storage refuses the mark */
+  private agentOnly = new Set<string>();
   /** the text each pending send carries, and whether the draft stopped extending it meanwhile */
   private pending = new Map<string, { sent: string; edited: boolean }>();
   private listeners = new Set<() => void>();
@@ -94,6 +96,7 @@ export class ComposerDraftStore {
     const pending = this.pending.get(key);
     if (pending && !text.startsWith(pending.sent)) pending.edited = true;
     this.drafts.set(key, { ...draft, text });
+    if (!text) this.agentOnly.delete(key);
     try {
       if (text) this.storage().setItem(key, text);
       else { this.storage().removeItem(key); this.storage().removeItem(agentOnlyKey(key)); }
@@ -105,13 +108,19 @@ export class ComposerDraftStore {
   /** A withdrawn queue row joins the latest draft without replacing attachment mentions or
    * concurrent typing. Never truncate recovered input: an oversized draft can be edited down. */
   restorePending(key: string, text: string, agentOnly = false): void {
+    // its `> quote` lines must never reach a shell: the box stays agent-only until it is emptied, in this
+    // page whatever storage does, and marked before the text is there to send
+    if (agentOnly) this.markAgentOnly(key);
     this.refresh(key);
     this.set(key, (draft) => draft ? `${draft}\n\n${text}` : text);
-    // its `> quote` lines must never reach a shell: the box stays agent-only until it is emptied
-    if (agentOnly) try { this.storage().setItem(agentOnlyKey(key), "1"); } catch { /* private mode: the flag is lost with the page's storage */ }
   }
-  /** The draft holds a message for an agent alone, put back by Edit. */
+  private markAgentOnly(key: string): void {
+    this.agentOnly.add(key);
+    try { this.storage().setItem(agentOnlyKey(key), "1"); } catch { /* storage refused: this page's mark still holds */ }
+  }
+  /** The draft holds a message for an agent alone, put back by Edit (here or in another tab). */
   isAgentOnly(key: string): boolean {
+    if (this.agentOnly.has(key)) return true;
     try { return this.storage().getItem(agentOnlyKey(key)) !== null; } catch { return false; }
   }
   /** `sent`: the draft text this send carries, settled once it is acknowledged */
@@ -150,9 +159,8 @@ export class ComposerDraftStore {
   move(from: string, to: string): void {
     const text = this.read(from).text;
     if (text === "" || this.own.has(from) || this.inFlight(from) !== null || this.read(to).text !== "") return;
-    const agentOnly = this.isAgentOnly(from);
+    if (this.isAgentOnly(from)) this.markAgentOnly(to);
     this.set(to, text);
-    if (agentOnly) try { this.storage().setItem(agentOnlyKey(to), "1"); } catch { /* private mode */ }
     this.set(from, "");
   }
   /** Another herdr took the PC's pane IDs: its drafts are read again from where they now are. */
@@ -173,6 +181,7 @@ export class ComposerDraftStore {
       this.drafts.delete(key);
       this.saved.delete(key);
       this.unsaved.delete(key);
+      this.agentOnly.delete(key);
     }
     this.notify();
   }

@@ -9,11 +9,13 @@ import { paneStorageId } from "../../shared/machines.ts";
 import { composerDrafts, type ComposerDraftStore } from "./composerDraft.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { PANE_VIEW_KEY_PREFIX } from "./settings.ts";
+import { REPLY_COMMENTS_PREFIX, replyComments } from "./replyComments.ts";
 import { readTerminalDraft, terminalDraftSending, writeTerminalDraft } from "./terminalDraft.ts";
 
 type KeyStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
-const CARRIED = ["ovis:terminal-draft:", PANE_VIEW_KEY_PREFIX];
+// the comments waiting on its replies (#511) go with it, as the draft they will be sent with does
+const CARRIED = ["ovis:terminal-draft:", PANE_VIEW_KEY_PREFIX, REPLY_COMMENTS_PREFIX];
 
 export function carryPaneState(machineId: string, from: string, to: string, drafts: ComposerDraftStore = composerDrafts, storage: () => KeyStorage = () => paneLifetimes.paneStorage): void {
   const before = paneStorageId(machineId, from);
@@ -36,4 +38,5 @@ export function carryPaneState(machineId: string, from: string, to: string, draf
       storage().removeItem(prefix + before);
     } catch { /* private mode: nothing was kept to carry */ }
   }
+  replyComments.refresh();
 }

@@ -14,6 +14,7 @@ it("carries the chat draft, the held terminal input and the picked lens to the p
   drafts.set("ovis:composer-draft:w1:p1", "unsent question");
   data.set("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "echo held", at: 1 }));
   data.set("ovis:view:w1:p1", "terminal");
+  data.set("ovis:reply-comments:w1:p1", JSON.stringify([{ id: "c1", quote: "q", comment: "c" }]));
   // another pane's state, and the same pane ID on another PC, stay where they are
   data.set("ovis:view:w1:p2", "chat");
   drafts.set("ovis:composer-draft:remote:pc:w1%3Ap1", "other PC");
@@ -22,6 +23,8 @@ it("carries the chat draft, the held terminal input and the picked lens to the p
   expect(drafts.read("ovis:composer-draft:w1:p1").text).toBe("");
   expect(data.get("ovis:terminal-draft:w2:p4")).toBe(JSON.stringify({ text: "echo held", at: 1 }));
   expect(data.get("ovis:view:w2:p4")).toBe("terminal");
+  // the comments waiting on its replies go with it (#511)
+  expect(data.get("ovis:reply-comments:w2:p4")).toBe(JSON.stringify([{ id: "c1", quote: "q", comment: "c" }]));
   expect([...data.keys()].filter((key) => key.endsWith(":w1:p1"))).toEqual([]);
   expect(data.get("ovis:view:w1:p2")).toBe("chat");
   expect(drafts.read("ovis:composer-draft:remote:pc:w1%3Ap1").text).toBe("other PC");

@@ -76,10 +76,11 @@ export function ReplyCommentAction({ scroller, storageKey }: { scroller: RefObje
     setOffer({ quote, left, top: Math.min(Math.max(top - box.top, EDGE), Math.max(box.height - OFFER_H - EDGE, EDGE)) });
   }, [scroller]);
 
+  // on the document, the scroller looked up as each event comes: the chat's timeline can arrive after this mounts
   useEffect(() => {
-    const root = scroller.current;
-    if (root === null) return;
+    const inChat = (target: EventTarget | null): boolean => target instanceof Node && scroller.current?.contains(target) === true;
     const down = (event: PointerEvent) => {
+      if (!inChat(event.target)) return;
       dragging.current = event.pointerType === "mouse" && event.button === 0;
       pointer.current = null;
     };
@@ -90,15 +91,17 @@ export function ReplyCommentAction({ scroller, storageKey }: { scroller: RefObje
       // the selection a click leaves is settled only after the up: read it then
       requestAnimationFrame(place);
     };
-    root.addEventListener("pointerdown", down);
+    // scroll does not bubble: caught on its way down, only the chat's own
+    const scrolled = (event: Event) => { if (event.target === scroller.current) place(); };
+    document.addEventListener("pointerdown", down, true);
     document.addEventListener("pointerup", up);
     document.addEventListener("selectionchange", place);
-    root.addEventListener("scroll", place, { passive: true });
+    document.addEventListener("scroll", scrolled, { capture: true, passive: true });
     return () => {
-      root.removeEventListener("pointerdown", down);
+      document.removeEventListener("pointerdown", down, true);
       document.removeEventListener("pointerup", up);
       document.removeEventListener("selectionchange", place);
-      root.removeEventListener("scroll", place);
+      document.removeEventListener("scroll", scrolled, { capture: true });
     };
   }, [scroller, place]);
 
