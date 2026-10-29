@@ -189,7 +189,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
             // before pending-result arrives. A concurrent delivery never restores text.
             if (action === "edit" && !edited && frame.removed?.some((item) => item.id === id && item.outcome === "discarded")) {
               edited = true;
-              composerDrafts.restorePending(`ovis:composer-draft:${owner}`, message.text);
+              composerDrafts.restorePending(`ovis:composer-draft:${owner}`, message.text, message.agent_only === true);
             }
           });
           try {

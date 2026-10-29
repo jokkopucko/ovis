@@ -847,7 +847,8 @@ export function Composer({
     dictation.forget();
     try {
       // a message with comments goes only to an agent: a shell would read `> quote` as a redirect
-      const result = sentComments.length > 0 ? onSend(message, clearDraft, sendAnyway, true) : onSend(message, clearDraft, sendAnyway);
+      const agentOnly = sentComments.length > 0 || composerDrafts.isAgentOnly(draftKey);
+      const result = agentOnly ? onSend(message, clearDraft, sendAnyway, true) : onSend(message, clearDraft, sendAnyway);
       if (!(result instanceof Promise)) { settle(result); composerDrafts.end(draftKey, sendId); return true; }
       void result.then(settle).catch(() => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); }).finally(() => composerDrafts.end(draftKey, sendId));
     } catch {
@@ -1150,7 +1151,7 @@ export function Composer({
             ? offersRetry(note.failure) && <button type="button" className="composer-note-action" disabled={!connected} onClick={() => retryUpload(note.attachment)}>{t("Try again")}</button>
             : <div className="composer-note-actions">
               {"draft" in note && <button type="button" className="composer-note-action" disabled={!connected || sending} onClick={() => sendDraft(note.draft)}>{t("Send it")}</button>}
-              <button type="button" className="composer-note-action" disabled={!connected || uploading || roomless !== undefined || sending || text.trim().length === 0}
+              <button type="button" className="composer-note-action" disabled={!connected || uploading || roomless !== undefined || sending || (text.trim().length === 0 && carried.length === 0)}
                 onClick={() => "draft" in note ? send(note.draft) : send(undefined, true)}>{"draft" in note ? t("Clear it and send") : t("Send anyway")}</button>
             </div>)}
         </div>

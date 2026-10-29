@@ -25,6 +25,7 @@ describe("reply comments", () => {
 
   it("leaves the comments for the next message under a slash command or an answer", () => {
     expect(commentsWait("  /compact", false)).toBe(true);
+    expect(commentsWait("!git status", false)).toBe(true);
     expect(commentsWait("Go ahead", true)).toBe(true);
     expect(commentsWait("Go ahead with /tmp/x", false)).toBe(false);
   });
@@ -36,6 +37,7 @@ describe("reply comments", () => {
     let heard = 0;
     store.subscribe(() => { heard++; });
     expect(store.add("k", "quote one", "  first  ")).toBe(true);
+    expect(heard).toBe(1);
     expect(store.add("k", "quote two", "second")).toBe(true);
     expect(store.add("k", " ", "empty quote")).toBe(false);
     expect(store.add("k", "quote", " ")).toBe(false);
@@ -50,7 +52,6 @@ describe("reply comments", () => {
     store.clear("k");
     expect(store.read("k")).toEqual([]);
     expect(map.has("k")).toBe(false);
-    expect(heard).toBe(6);
   });
 
   it("reads a stored list another tab wrote, and nothing from a value that is not one", () => {

@@ -467,3 +467,19 @@ describe("an owner counted per pane", () => {
     expect(store.next("p")).toBeNull();
   });
 });
+
+// #511: a saved copy's resend of a message accepted for an agent alone keeps that rule, whatever the copy says
+describe("agent-only pending messages", () => {
+  it("says which held message was accepted for an agent alone, on its own pane only", () => {
+    let id = 0;
+    const store = new PendingInputs<string, string>(() => {}, () => 0, 100, () => `pending-${++id}`);
+    const identity = { agent: "claude", terminalId: "t1", session: null };
+    const only = store.enqueue("a", "p", 1, "> quote\ncomment", "lease", identity, true, true);
+    const plain = store.enqueue("a", "p", 2, "plain", "lease", identity, true);
+    expect(only.message.agent_only).toBe(true);
+    expect(store.agentOnly("p", only.message.id)).toBe(true);
+    expect(store.agentOnly("other", only.message.id)).toBe(false);
+    expect(store.agentOnly("p", plain.message.id)).toBe(false);
+    expect(plain.message.agent_only).toBeUndefined();
+  });
+});

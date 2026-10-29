@@ -56,8 +56,9 @@ type PiTypedReceipt = { owner: Client; resumeKey?: string; message: PendingMessa
 const FIRST_MESSAGE_RETRY_CODES = new Set(["input_not_ready", "pending_lease_lost", "disconnected", "read_only"]);
 /** a first message whose page left before it went, or that named none: held for an explicit Send now or Discard */
 const FIRST_MESSAGE_UNATTENDED = { code: "first_message_unattended", message: "The page that sent this first message is gone; send it now or discard it" };
-/** a first message whose pane runs something other than the agent launched for it, found at a pane's event */
+/** a message for an agent alone (submit `agent_only`, #511) refused where no agent is in front */
 const AGENT_NOT_READY = { code: "agent_not_ready", message: "No agent is in front of this pane now; nothing was typed" };
+/** a first message whose pane runs something other than the agent launched for it, found at a pane's event */
 const TARGET_CHANGED = { code: "pending_target_changed", message: "The pane's terminal or agent session changed; review the message before sending it again" };
 /** a first message whose launched agent came up and left before it went: held for an explicit Send now or Discard */
 const LAUNCH_GONE = { code: "first_message_launch_ended", message: "The agent started for this message has ended; review the message before sending it" };
@@ -887,11 +888,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         return;
       }
       // #511: a chat message for an agent alone (comments on a reply, whose `> quote` lines a shell would run as redirects)
-      const agentOnly = message.agent_only !== undefined;
-      if (agentOnly && (message.agent_only !== true || message.typed === true)) {
+      if (message.agent_only !== undefined && (message.agent_only !== true || message.typed === true)) {
         result(false, "invalid_delivery", "Only a chat message can be for an agent alone, with agent_only true");
         return;
       }
+      // a saved copy's resend keeps the rule its accepted message had, even from a page that lost the flag
+      const agentOnly = message.agent_only === true
+        || (typeof message.resend_id === "string" && pending.agentOnly(message.pane_id, message.resend_id));
       if (connectionOf(client).mode === "observe") {
         result(false, "read_only", "this connection is in observe mode");
         return;
@@ -958,7 +961,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const receiptText = identity === null ? undefined : piReceiptText(identity, framed.text);
             const piAnchor = identity === null ? null : await preparePiReceipt(message.pane_id, identity).catch(() => null);
             await submitText(message.pane_id, framed.text, framed.payload, arrivedAt, message.typed === true, () => authorizeSocket(client), message.clear_draft,
-              draftConfirmations.get(client)?.get(message.pane_id), message.send_anyway === true);
+              draftConfirmations.get(client)?.get(message.pane_id), message.send_anyway === true, agentOnly);
             if (identity !== null && receiptText !== undefined) {
               try { recordPiTyped(client, message.pane_id, message.id, receiptText, identity, piAnchor, reservation); } catch { /* The send succeeded; receipt tracking cannot make it retryable. */ }
             }

@@ -10,5 +10,7 @@ export function submitNotTyped(code: string): boolean {
     // the connection dropped before the request's frame left the browser (HerdrSocket)
     "not_transmitted",
     // the wait for the bridge's snapshot ended before it said what the bridge takes: nothing left (HerdrSocket)
-    "capabilities_unknown"].includes(code);
+    "capabilities_unknown",
+    // a message for an agent alone was not sent to a bridge that cannot keep that rule (HerdrSocket)
+    "agent_only_unsupported"].includes(code);
 }

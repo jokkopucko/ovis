@@ -112,9 +112,10 @@ export function messageWithComments(comments: readonly ReplyComment[], text: str
 }
 
 /**
- * Whether a send leaves the waiting comments for the next message: a slash command (the agent runs
- * it, and a quote before it would turn it into prose), or the answer to the agent's open question.
+ * Whether a send leaves the waiting comments for the next message: a slash command or a `!` shell line
+ * (the agent runs them, and a quote before one would turn it into prose), or the answer to the agent's
+ * open question.
  */
 export function commentsWait(text: string, answering: boolean): boolean {
-  return answering || text.trimStart().startsWith("/");
+  return answering || /^[/!]/.test(text.trimStart());
 }

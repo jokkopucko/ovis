@@ -11,6 +11,10 @@ interface InFlight { sent: string; at: number }
  */
 export const SEND_LEASE_MS = 120_000;
 const SENDING_PREFIX = "ovis:composer-sending:";
+const DRAFT_PREFIX = "ovis:composer-draft:";
+/** a draft that holds an agent-only message put back by Edit (#511): it is sent `agent_only` until the box is emptied */
+export const AGENT_ONLY_PREFIX = "ovis:composer-agent-only:";
+const agentOnlyKey = (key: string): string => AGENT_ONLY_PREFIX + (key.startsWith(DRAFT_PREFIX) ? key.slice(DRAFT_PREFIX.length) : key);
 export class ComposerDraftStore {
   private drafts = new Map<string, Draft>();
   private saved = new Map<string, string | null>();
@@ -92,7 +96,7 @@ export class ComposerDraftStore {
     this.drafts.set(key, { ...draft, text });
     try {
       if (text) this.storage().setItem(key, text);
-      else this.storage().removeItem(key);
+      else { this.storage().removeItem(key); this.storage().removeItem(agentOnlyKey(key)); }
       this.saved.set(key, text || null);
       this.unsaved.delete(key);
     } catch { this.unsaved.add(key); }
@@ -100,9 +104,15 @@ export class ComposerDraftStore {
   }
   /** A withdrawn queue row joins the latest draft without replacing attachment mentions or
    * concurrent typing. Never truncate recovered input: an oversized draft can be edited down. */
-  restorePending(key: string, text: string): void {
+  restorePending(key: string, text: string, agentOnly = false): void {
     this.refresh(key);
     this.set(key, (draft) => draft ? `${draft}\n\n${text}` : text);
+    // its `> quote` lines must never reach a shell: the box stays agent-only until it is emptied
+    if (agentOnly) try { this.storage().setItem(agentOnlyKey(key), "1"); } catch { /* private mode: the flag is lost with the page's storage */ }
+  }
+  /** The draft holds a message for an agent alone, put back by Edit. */
+  isAgentOnly(key: string): boolean {
+    try { return this.storage().getItem(agentOnlyKey(key)) !== null; } catch { return false; }
   }
   /** `sent`: the draft text this send carries, settled once it is acknowledged */
   begin(key: string, sent?: string): boolean {
@@ -140,7 +150,9 @@ export class ComposerDraftStore {
   move(from: string, to: string): void {
     const text = this.read(from).text;
     if (text === "" || this.own.has(from) || this.inFlight(from) !== null || this.read(to).text !== "") return;
+    const agentOnly = this.isAgentOnly(from);
     this.set(to, text);
+    if (agentOnly) try { this.storage().setItem(agentOnlyKey(to), "1"); } catch { /* private mode */ }
     this.set(from, "");
   }
   /** Another herdr took the PC's pane IDs: its drafts are read again from where they now are. */
