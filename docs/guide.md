@@ -412,6 +412,39 @@ Open Settings → Remote PCs and choose **Add PC** (the command palette has it t
 
 More in [remote PCs](remote-pcs.md).
 
+### One always-on PC for all your PCs
+
+With several PCs, you don't need Ovis on each of them. Install it on one PC that stays on, such as a desktop or a home server, and add the others to it as remote PCs. That one app reaches them over SSH and sets up its own bridge on each, so the other PCs need only an SSH server (setup brings herdr where it is missing).
+
+1. **Install Ovis on the always-on PC** as in [Quick start](#quick-start), with its [phone address](#on-your-phone).
+2. **On each other PC, stop its own Ovis** if it has one, and keep herdr from starting it again:
+
+   ```sh
+   # an install from before the rename has the old id
+   herdr plugin action invoke devswha.ovis.stop || herdr plugin action invoke devswha.herdr-web-ui.stop
+   herdr plugin disable devswha.ovis || herdr plugin disable devswha.herdr-web-ui
+   ```
+
+   On Windows:
+
+   ```powershell
+   herdr plugin action invoke devswha.ovis.stop-windows
+   herdr plugin disable devswha.ovis
+   # an install from before the rename: devswha.herdr-web-ui.stop-windows, then disable devswha.herdr-web-ui
+   ```
+
+   From a checkout, stop `bun run start` instead, and whatever starts it again.
+
+   An Ovis left running there still works with the always-on app, but it stays a second app: it sends its own alerts and updates only through its own updater, which the always-on app can at most ask to run. Once it is stopped, the always-on app runs its own bridge there and keeps that bridge on its own version.
+3. **Add each PC in the always-on app:** Settings → Remote PCs → **Add PC**, then approve the install once. A PC already saved in herdr (`herdr machine`) is listed there already: choose **Connect**. The always-on PC must reach it over SSH as the account Ovis runs under, so try `ssh <pc>` there first. A PC the app already had, connected while that PC's own Ovis ran, keeps waiting for that Ovis to come back: open its **Manage PC** control in the sidebar, choose **Reconnect / setup** and approve the install.
+4. **Open the always-on PC's address everywhere**, in the other PCs' browsers and on your phone, install the app from there, and turn on **Alerts** in it on each device. Pairings and alerts set up with a PC's own Ovis stay with that Ovis, so pair a device again if the new address asks.
+
+Then there is one app to update: each release is downloaded and built once, the bridges on the other PCs follow it in the background (when SSH gets in with the saved key, without a password; otherwise the PC's card offers the update), push alerts come from one place, and no versions have to be kept in step.
+
+- **While the always-on PC is off or asleep**, the other PCs have no Ovis. herdr keeps running on each of them, and its own terminal app works as before.
+- **A laptop's sessions go through the always-on PC**, so a laptop that cannot reach it, offline for example, has no Ovis for them.
+- **With no PC that stays on**, install Ovis on each PC and keep them on the same version. An app that finds an older Ovis on a PC it adds offers to update it when that Ovis can update itself, and otherwise says why not ([Disconnects and updates](remote-pcs.md#disconnects-and-updates)).
+
 ## Access and safety
 
 Anyone who can reach the server can type into your terminals, so what matters is who gets in. It listens on `127.0.0.1` by default, which means only this computer. From anywhere else, a request gets in in one of three ways:
