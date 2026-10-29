@@ -77,3 +77,18 @@ export function readStatusline(home: string, now: number = Date.now()): Statusli
     return null;
   }
 }
+
+/** The exact context limit for one Claude session and model, even below 200k tokens.
+ * Usage remains the transcript's input/cache total. No subscription or account is required. */
+export function readStatuslineContext(home: string, sessionId: string, model: string | null, now = Date.now()): number | null {
+  if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId) || model === null) return null;
+  const path = join(home, ".herdr", "statusline-context", sessionId + ".json");
+  try {
+    const stat = statSync(path);
+    if (stat.size > 4096 || now - stat.mtimeMs > STALE_MS || stat.mtimeMs - now > 60_000) return null;
+    const body = record(JSON.parse(readFileSync(path, "utf8")));
+    const capacity = body["window"];
+    return body["session_id"] === sessionId && body["model"] === model
+      && typeof capacity === "number" && Number.isSafeInteger(capacity) && capacity > 0 ? capacity : null;
+  } catch { return null; }
+}

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installStatusline, removeStatusline, statuslineInstallState } from "./statusline-install.ts";
-import { readStatusline } from "./statusline.ts";
+import { readStatusline, readStatuslineContext } from "./statusline.ts";
 
 let home: string;
 const settings = (configDir = join(home, ".claude")) => join(configDir, "settings.json");
@@ -455,5 +455,63 @@ describe("status-line switch and capture", () => {
     expect(run([]).stderr).toContain("in progress");
     expect(readFileSync(join(elsewhere, "owner"), "utf8")).toStartWith(`${gone}:`);
     expect(lstatSync(join(home, ".claude", ".herdr-statusline.lock")).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe("session context through the installed wrapper", () => {
+  const payload = (session = "session-a", capacity = 1_000_000) => JSON.stringify({
+    session_id: session, model: { id: "claude-test" },
+    context_window: { context_window_size: capacity, used_percentage: 4 },
+    cwd: "/private/project", transcript_path: "/private/transcript", cost: { total_cost_usd: 3 },
+  });
+  const contextPath = (session = "session-a") => join(home, ".herdr", "statusline-context", session + ".json");
+
+  it("captures context without subscription limits, preserving the original status line", () => {
+    install();
+    const input = payload();
+    expect(draw(input)).toBe(input);
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(1_000_000);
+    const saved = JSON.parse(readFileSync(contextPath(), "utf8"));
+    expect(saved).toEqual({ session_id: "session-a", model: "claude-test", window: 1_000_000, _herdr: { profile: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+    expect(statSync(contextPath()).mode & 0o777).toBe(0o600);
+    expect(statSync(join(home, ".herdr", "statusline-context")).mode & 0o777).toBe(0o700);
+    expect(existsSync(capture())).toBe(false);
+    draw(payload("session-b", 200_000));
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(1_000_000);
+    expect(readStatuslineContext(home, "session-b", "claude-test")).toBe(200_000);
+  });
+
+  it("cleans its own session captures and preserves captures from other profiles", () => {
+    install();
+    draw(payload());
+    const configDir = join(home, ".claude-work");
+    mkdirSync(configDir);
+    writeFileSync(settings(configDir), JSON.stringify({}));
+    expect(run([], configDir).exitCode).toBe(0);
+    draw(payload("session-work"), configDir);
+    install("--remove");
+    expect(existsSync(contextPath())).toBe(false);
+    expect(readStatuslineContext(home, "session-work", "claude-test")).toBe(1_000_000);
+    expect(run(["--remove"], configDir).exitCode).toBe(0);
+    expect(existsSync(join(home, ".herdr", "statusline-context"))).toBe(false);
+  });
+
+  it("captures context when no custom status-line script exists", () => {
+    writeFileSync(settings(), JSON.stringify({}));
+    install();
+    expect(draw(payload())).toBe("");
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(1_000_000);
+  });
+
+  it("rejects unsafe session ids and a blocked context directory without losing quota", () => {
+    install();
+    expect(draw(payload("../escape"))).toBe(payload("../escape"));
+    expect(existsSync(join(home, ".herdr", "escape.json"))).toBe(false);
+    mkdirSync(join(home, ".herdr"), { recursive: true });
+    writeFileSync(join(home, ".herdr", "statusline-context"), "user file");
+    const input = JSON.parse(payload());
+    input.rate_limits = { five_hour: { used_percentage: 12 } };
+    expect(draw(JSON.stringify(input))).toBe(JSON.stringify(input));
+    expect(readStatusline(home)?.fiveHour?.usedPercent).toBe(12);
   });
 });

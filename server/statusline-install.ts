@@ -15,7 +15,7 @@
  * install (deleting it when the install created it), and otherwise puts back only the status line
  * it replaced (or its absence). It then deletes the installer's own files and the captured payload.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -427,6 +427,22 @@ function removeUnlocked(options: StatuslineInstallOptions): string {
   };
   for (const name of [...OWN_FILES, ...readdirSync(where.own).filter((name) => LEFTOVER.test(name))]) removeFile(join(where.own, name));
   removeFile(where.payload);
+  const contexts = join(where.home, ".herdr", "statusline-context");
+  try {
+    // Other Claude profiles share the home; their context captures must survive this removal.
+    if (lstatSync(contexts).isDirectory()) {
+      const profile = createHash("sha256").update(realpathSync(where.configDir)).digest("hex");
+      for (const name of readdirSync(contexts)) {
+        if (!/^[a-zA-Z0-9-]{1,128}\.json$/.test(name)) continue;
+        const path = join(contexts, name);
+        if (!lstatSync(path).isFile()) continue;
+        let captured;
+        try { captured = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+        if (captured?._herdr?.profile === profile) rmSync(path);
+      }
+      if (readdirSync(contexts).length === 0) rmdirSync(contexts);
+    }
+  } catch (error) { if (!isMissing(error)) throw error; }
   const left = readdirSync(where.own);
   if (left.length > 0) return `removed: ${outcome}, and deleted the installer's files and ${where.payload}; ${where.own} stays for what else is in it (${left.join(", ")})`;
   rmdirSync(where.own);

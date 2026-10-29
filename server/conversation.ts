@@ -36,6 +36,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { readStatuslineContext } from "./statusline.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
 import { authorizedTranscript } from "./transcript-store.ts";
 
@@ -1664,6 +1665,15 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   }
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(snapshot.panes.find((pane) => pane.pane_id === paneId)!))) throw new ConversationUnavailable("no_session_path");
   if (identity !== null) { writtenSessions.add(`${resolved.source}\0${identity}`); rememberPaneSession(paneId, `${resolved.source}\0${identity}`); }
+  if (resolved.source === "claude-transcript" && identity !== null && answer.metadata.context) {
+    const window = readStatuslineContext(userHome(), identity, answer.metadata.model);
+    if (window !== null) return {
+      ...answer,
+      metadata: { ...answer.metadata, context: { ...answer.metadata.context, window } },
+      // A statusline capture can change without a transcript append.
+      version: answerVersion(answer.version, String(window)),
+    };
+  }
   if (resolved.source === "cmd-transcript") {
     // The pane's current model can change without a transcript append. Enrich a response,
     // never the shared transcript page, and include the live model in its ETag.

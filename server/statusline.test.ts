@@ -1,9 +1,9 @@
-import { describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { STALE_MS, parseStatusline, readStatusline } from "./statusline.ts";
+import { STALE_MS, parseStatusline, readStatusline, readStatuslineContext } from "./statusline.ts";
 
 /** Claude Code 2.1.308's payload, cut to the fields this reader shows */
 const payload = {
@@ -73,5 +73,49 @@ describe("readStatusline", () => {
     utimesSync(path, new Date(now - 60_000), new Date(now - 60_000));
     expect(readStatusline(home, now)?.sevenDay?.usedPercent).toBe(64);
     rmSync(home, { recursive: true, force: true });
+  });
+});
+
+describe("Claude session context", () => {
+  const home = mkdtempSync(join(tmpdir(), "herdr-session-context-"));
+  const directory = join(home, ".herdr", "statusline-context");
+  mkdirSync(directory, { recursive: true });
+  afterAll(() => rmSync(home, { recursive: true, force: true }));
+  const path = join(directory, "session-a.json");
+  const captured = { session_id: "session-a", model: "claude-test", window: 1_000_000 };
+  const write = (value: unknown) => writeFileSync(path, JSON.stringify(value));
+
+  it("reads the exact window for this session and model, without quota or usage", () => {
+    write(captured);
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(1_000_000);
+    write({ ...captured, window: 200_000 });
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBe(200_000);
+  });
+
+  it("does not borrow another session's or model's window", () => {
+    write(captured);
+    expect(readStatuslineContext(home, "session-b", "claude-test")).toBeNull();
+    expect(readStatuslineContext(home, "session-a", "other-model")).toBeNull();
+    expect(readStatuslineContext(home, "session-a", null)).toBeNull();
+    write({ ...captured, session_id: "session-b" });
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBeNull();
+    expect(readStatuslineContext(home, "../session-a", "claude-test")).toBeNull();
+  });
+
+  it("ignores malformed, oversized, invalid, and stale captures", () => {
+    for (const value of [null, [], {}, ...[0, -1, 1.5, "1000000", null].map(window => ({ ...captured, window }))]) {
+      write(value);
+      expect(readStatuslineContext(home, "session-a", "claude-test")).toBeNull();
+    }
+    writeFileSync(path, "{torn");
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBeNull();
+    writeFileSync(path, " ".repeat(4097));
+    expect(readStatuslineContext(home, "session-a", "claude-test")).toBeNull();
+    write(captured);
+    const now = Date.now();
+    utimesSync(path, new Date(now - STALE_MS - 1000), new Date(now - STALE_MS - 1000));
+    expect(readStatuslineContext(home, "session-a", "claude-test", now)).toBeNull();
+    utimesSync(path, new Date(now + 120_000), new Date(now + 120_000));
+    expect(readStatuslineContext(home, "session-a", "claude-test", now)).toBeNull();
   });
 });
