@@ -2065,7 +2065,7 @@ class DemoSocket extends EventTarget {
       const open = new Event("open");
       this.onopen?.(open);
       this.dispatchEvent(open);
-      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping", "terminal-insert"], connection: this.connection });
+      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping", "terminal-insert", "agent-only"], connection: this.connection });
     }, 20);
     this.timers.add(opening);
   }
@@ -2098,7 +2098,7 @@ class DemoSocket extends EventTarget {
 
   send(raw: string): void {
     if (this.readyState !== 1) return;
-    let message: { type: string; pane_id?: string; cols?: number; rows?: number; text?: string; payload?: string; keys?: string[]; id?: number; mode?: string; typed?: unknown; delivery?: unknown; clear_draft?: unknown; send_anyway?: unknown; resend_id?: unknown; resend_generation?: unknown; pending_id?: string; action?: unknown; enabled?: boolean; stop?: unknown; keep_size?: boolean };
+    let message: { type: string; pane_id?: string; cols?: number; rows?: number; text?: string; payload?: string; keys?: string[]; id?: number; mode?: string; typed?: unknown; delivery?: unknown; clear_draft?: unknown; send_anyway?: unknown; resend_id?: unknown; resend_generation?: unknown; agent_only?: unknown; pending_id?: string; action?: unknown; enabled?: boolean; stop?: unknown; keep_size?: boolean };
     try { message = JSON.parse(raw); } catch { return; }
     if ((message.type === "submit" || message.type === "pending-action") && Number.isSafeInteger(message.id)) {
       const signature = JSON.stringify({ type: message.type, pane_id: message.pane_id, text: message.text, payload: message.payload, typed: message.typed, delivery: message.delivery, clear_draft: message.clear_draft, send_anyway: message.send_anyway, resend_id: message.resend_id, resend_generation: message.resend_generation, pending_id: message.pending_id, action: message.action });
@@ -2247,7 +2247,10 @@ class DemoSocket extends EventTarget {
             || queued || (message.typed !== undefined && message.typed !== false))) code = "invalid_delivery";
           else if (message.send_anyway !== undefined && (message.send_anyway !== true || queued || message.clear_draft !== undefined
             || (message.typed !== undefined && message.typed !== false))) code = "invalid_delivery";
+          else if (message.agent_only !== undefined && (message.agent_only !== true || message.typed === true)) code = "invalid_delivery";
           else if (this.mode === "observe") code = "read_only";
+          // a message for an agent alone (#511), as the bridge refuses it: nothing typed where no agent is
+          else if (message.agent_only === true && !paneOf(message.pane_id)?.agent) code = "agent_not_ready";
           // the demo agent never refuses over its input box, so there is nothing to clear or send over
           else if (message.clear_draft !== undefined || message.send_anyway !== undefined) code = "unsupported";
           else if (message.resend_id !== undefined && (typeof message.resend_id !== "string" || !message.resend_id || message.resend_id.length > 128 || queued || message.typed === true)) code = "invalid_delivery";
@@ -2265,7 +2268,7 @@ class DemoSocket extends EventTarget {
             break;
           }
           if (queued && (message.delivery === "hold" || paneOf(message.pane_id)?.agent_status === "working")) {
-            const pending: PendingMessage = { id: `demo-pending-${nextPending++}`, request_id: message.id, text, state: message.delivery === "hold" ? "held" : "queued", created_at: now() };
+            const pending: PendingMessage = { id: `demo-pending-${nextPending++}`, request_id: message.id, text, state: message.delivery === "hold" ? "held" : "queued", created_at: now(), ...(message.agent_only === true ? { agent_only: true as const } : {}) };
             this.pending.set(message.pane_id, [...(this.pending.get(message.pane_id) ?? []), pending]);
             const reply: ServerMessage = { type: "submit-result", id: message.id, pane_id: message.pane_id, ok: true, pending: structuredClone(pending) };
             this.rememberRequest(reply);

@@ -106,7 +106,6 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Close pane": "关闭面板",
   "Wrap to screen": "按屏幕宽度换行",
   "Original width": "按原始宽度显示",
-  "Save": "保存",
   "Move tab left": "向左移动标签页",
   "Move tab right": "向右移动标签页",
   "Move to workspace…": "移动到工作区…",

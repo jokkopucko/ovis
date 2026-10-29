@@ -26,6 +26,8 @@ const KINDS: readonly (readonly [string, UnsentKind])[] = [
 ];
 const LEASE_PREFIX = "ovis:composer-sending:";
 const VIEW_PREFIX = "ovis:view:";
+/** comments on a pane's replies (lib/replyComments.ts): no text of the user's own to recover, they go with the herdr whose replies they quote */
+export const REPLY_COMMENTS_PREFIX = "ovis:reply-comments:";
 const RECORD_PREFIX = "ovis:pane-lifetime:";
 /** each PC's lifetimes the record held before: a snapshot naming one of them is older than the record */
 const RETIRED_PREFIX = "ovis:pane-lifetimes-retired:";
@@ -38,7 +40,7 @@ export function paneStateKey(key: string): { machineId: string; paneId: string; 
   const lease = key.startsWith(LEASE_PREFIX);
   const rest = lease ? key.slice(LEASE_PREFIX.length) : key;
   const draft = KINDS.find(([prefix]) => rest.startsWith(prefix));
-  const prefix = draft?.[0] ?? (!lease && rest.startsWith(VIEW_PREFIX) ? VIEW_PREFIX : null);
+  const prefix = draft?.[0] ?? (lease ? null : [VIEW_PREFIX, REPLY_COMMENTS_PREFIX].find((other) => rest.startsWith(other)) ?? null);
   if (prefix === null) return null;
   const owner = rest.slice(prefix.length);
   const kind = lease || !draft ? null : draft[1];

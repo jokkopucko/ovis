@@ -146,7 +146,9 @@ export class PendingInputs<Owner, Lease> {
   }
 
   /** `held`: the message waits for an explicit send; `next` never offers it to automatic delivery. */
-  enqueue(owner: Owner, paneId: string, requestId: number, text: string, lease: Lease, identity: PendingIdentity, held = false): PendingRecord<Owner, Lease> {
+  /** `agentOnly`: for an agent alone (shared/protocol.ts submit `agent_only`); refused when `identity` names none */
+  enqueue(owner: Owner, paneId: string, requestId: number, text: string, lease: Lease, identity: PendingIdentity, held = false, agentOnly = false): PendingRecord<Owner, Lease> {
+    if (agentOnly && identity.agent === null) throw new PendingInputError("agent_not_ready", "No agent is in front of this pane now; nothing was typed");
     const previous = [...this.records.values()].find((item) => item.owner === owner && item.message.request_id === requestId);
     if (previous) {
       if (previous.paneId !== paneId || previous.message.text !== text) throw new PendingInputError("invalid_submit_id", "This submit id already belongs to another message");
@@ -171,7 +173,7 @@ export class PendingInputs<Owner, Lease> {
     if ([...this.records.values()].some((item) => item.paneId === paneId && item.message.state === "uncertain")) throw new PendingInputError("pending_uncertain", "Check the terminal before sending more pending messages");
     const item: PendingRecord<Owner, Lease> = {
       owner, paneId, lease, identity, inFlight: false,
-      message: { id: this.newId(), request_id: requestId, text, state: held ? "held" : "queued", created_at: new Date(this.now()).toISOString() },
+      message: { id: this.newId(), request_id: requestId, text, state: held ? "held" : "queued", created_at: new Date(this.now()).toISOString(), ...(agentOnly ? { agent_only: true as const } : {}) },
     };
     this.records.set(item.message.id, item);
     this.publish(owner, paneId);

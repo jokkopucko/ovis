@@ -57,6 +57,7 @@ const FIRST_MESSAGE_RETRY_CODES = new Set(["input_not_ready", "pending_lease_los
 /** a first message whose page left before it went, or that named none: held for an explicit Send now or Discard */
 const FIRST_MESSAGE_UNATTENDED = { code: "first_message_unattended", message: "The page that sent this first message is gone; send it now or discard it" };
 /** a first message whose pane runs something other than the agent launched for it, found at a pane's event */
+const AGENT_NOT_READY = { code: "agent_not_ready", message: "No agent is in front of this pane now; nothing was typed" };
 const TARGET_CHANGED = { code: "pending_target_changed", message: "The pane's terminal or agent session changed; review the message before sending it again" };
 /** a first message whose launched agent came up and left before it went: held for an explicit Send now or Discard */
 const LAUNCH_GONE = { code: "first_message_launch_ended", message: "The agent started for this message has ended; review the message before sending it" };
@@ -885,6 +886,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         result(false, "invalid_delivery", "A resend generation must be a nonnegative integer with a held-copy id");
         return;
       }
+      // #511: a chat message for an agent alone (comments on a reply, whose `> quote` lines a shell would run as redirects)
+      const agentOnly = message.agent_only !== undefined;
+      if (agentOnly && (message.agent_only !== true || message.typed === true)) {
+        result(false, "invalid_delivery", "Only a chat message can be for an agent alone, with agent_only true");
+        return;
+      }
       if (connectionOf(client).mode === "observe") {
         result(false, "read_only", "this connection is in observe mode");
         return;
@@ -906,7 +913,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           let book = pendingRequests.get(client);
           if (!book) { book = new PendingRequestBook((reply: SubmitReply) => reply.pending !== undefined && pending.retains(client, reply.pending.id)); pendingRequests.set(client, book); }
           // a digest, so a receipt kept for replay never holds a large request's bytes
-          const fingerprint = new Bun.CryptoHasher("sha256").update(JSON.stringify([message.pane_id, message.text, message.payload, message.delivery])).digest("hex");
+          const fingerprint = new Bun.CryptoHasher("sha256").update(JSON.stringify([message.pane_id, message.text, message.payload, message.delivery, agentOnly])).digest("hex");
           const previous = book.get(message.id, fingerprint);
           const lease = previous ? null : pendingLease(client, message.pane_id);
           const reply = previous ?? book.run(message.id, fingerprint, () => serialize(message.pane_id, async (): Promise<SubmitReply> => {
@@ -914,11 +921,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const mark = pending.mark(message.pane_id);
             const context = await pendingContext(client, message.pane_id, lease!);
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "This pending message waited too long; nothing was typed");
+            // kept for an agent: its delivery types it only into that same agent (samePendingIdentity)
+            if (agentOnly && context.identity.agent === null) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
             // a pane shown at rest whose queue a busy signal still holds is not ready for a queued message
             const held = queueHeld(message.pane_id);
             if (!context.working && !held) {
               // the agent left while the message was on its way: a chat follow-up is not typed into what is there now
-              if (context.identity.agent === null) throw new HerdrError("agent_not_ready", "No agent is in front of this pane now; nothing was typed");
+              if (context.identity.agent === null) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
               // A request that raced the turn's finish still needs cancellable
               // paste + Enter; agent.prompt commits its key inside herdr. With a message
               // already waiting its turn here, this one takes its place behind it instead.
@@ -927,7 +936,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             }
             pending.observe(message.pane_id, held && !context.working ? "working" : context.pane.agent_status, mark);
             // hold: kept for the owner's Send now, never sent by the turn's end
-            const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold");
+            const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold", agentOnly);
             return { ok: true, pending: item.message };
           }).catch((error): SubmitReply => ({ ok: false, ...pendingFault(error) })));
           const answer = await reply;
@@ -943,6 +952,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           // A terminal-line send is not an Ovis Chat receipt. For Chat, capture Pi independently of
           // status so an idle/done report during automatic compaction cannot make the bubble vanish.
           const identity = message.typed === true ? null : (await currentIdentity(message.pane_id)).identity;
+          if (agentOnly && identity?.agent == null) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
           const reservation = identity === null ? null : reservePiReceipt(client, identity);
           try {
             const receiptText = identity === null ? undefined : piReceiptText(identity, framed.text);

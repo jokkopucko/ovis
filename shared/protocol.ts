@@ -828,6 +828,8 @@ export interface PendingMessage {
   state: "queued" | "sending" | "held" | "uncertain";
   created_at: string;
   error?: { code: string; message: string };
+  /** its submit was `agent_only`: a resend of a saved copy says so again */
+  agent_only?: true;
 }
 
 export type ClientMessage =
@@ -877,8 +879,12 @@ export type ClientMessage =
    * `pending_uncertain`, including other generations of the same stable ID.
    * Not with `send_anyway`:
    * that combination returns invalid_delivery before reserving or replaying an ID. No `clear_draft`.
-   * Older peers ignore it. */
-  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number }
+   * Older peers ignore it.
+   * `agent_only` (feature "agent-only"): the message is for an agent alone (a chat message carrying comments on
+   * a reply, #511, whose `> quote` lines a shell would read as redirects). The server refuses it with
+   * agent_not_ready, typing nothing, when no agent is in front of the pane as it would type it; a queued or held
+   * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery. */
+  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true }
   /** `withdrawal_only`: Edit's discard may withdraw only queued/held input; uncertain text stays
    * with its owner and returns pending_uncertain, rather than being dismissed. Older servers ignore
    * this optional field and retain their existing discard behaviour, without this protection.
@@ -952,7 +958,7 @@ export interface ClientConnectionTrace {
 }
 
 /** What a server supports beyond the base protocol, listed in its `features` frame and its first snapshot; older bridges list nothing. */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert";
+export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only";
 
 export type ServerMessage =
   /** the first frame of a connection, before the snapshot that can wait seconds on herdr: what this server

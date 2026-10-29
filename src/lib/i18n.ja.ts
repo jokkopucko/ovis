@@ -23,6 +23,7 @@ import { PALETTE_JA } from "./i18n/palette.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Save": "保存",
   "Goal": "目標",
   "Waiting for your answer": "回答待ち",
   "Back": "戻る",

@@ -106,7 +106,6 @@ export const TERMINAL_KO: Record<string, string> = {
   "Close pane": "패널 닫기",
   "Wrap to screen": "화면 폭에 맞춰 줄바꿈",
   "Original width": "원래 폭으로 보기",
-  "Save": "저장",
   "Move tab left": "탭을 왼쪽으로 이동",
   "Move tab right": "탭을 오른쪽으로 이동",
   "Move to workspace…": "워크스페이스로 이동…",

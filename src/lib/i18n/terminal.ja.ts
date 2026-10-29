@@ -106,7 +106,6 @@ export const TERMINAL_JA: Record<string, string> = {
   "Close pane": "ペインを閉じる",
   "Wrap to screen": "画面の幅で折り返す",
   "Original width": "元の幅で表示",
-  "Save": "保存",
   "Move tab left": "タブを左に移動",
   "Move tab right": "タブを右に移動",
   "Move to workspace…": "ワークスペースへ移動…",
