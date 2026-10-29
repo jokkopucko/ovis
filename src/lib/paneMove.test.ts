@@ -35,7 +35,11 @@ it("leaves a draft whose send is on its way, and keeps what the new ID holds alr
   expect(drafts.begin("ovis:composer-draft:w1:p1", "on its way")).toBe(true);
   data.set("ovis:view:w1:p1", "chat");
   data.set("ovis:view:w2:p4", "terminal");
+  // the comments that send carries settle under the ID it went with (#511): moved, they would go twice
+  data.set("ovis:reply-comments:w1:p1", JSON.stringify([{ id: "c1", quote: "q", comment: "c" }]));
   carryPaneState("local", "w1:p1", "w2:p4", drafts, storage);
+  expect(data.get("ovis:reply-comments:w2:p4")).toBeUndefined();
+  expect(data.has("ovis:reply-comments:w1:p1")).toBe(true);
   expect(drafts.read("ovis:composer-draft:w1:p1")).toEqual({ text: "on its way", sending: true });
   expect(drafts.read("ovis:composer-draft:w2:p4").text).toBe("");
   expect(data.get("ovis:view:w2:p4")).toBe("terminal");

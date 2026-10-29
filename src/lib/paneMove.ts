@@ -20,6 +20,8 @@ const CARRIED = ["ovis:terminal-draft:", PANE_VIEW_KEY_PREFIX, REPLY_COMMENTS_PR
 export function carryPaneState(machineId: string, from: string, to: string, drafts: ComposerDraftStore = composerDrafts, storage: () => KeyStorage = () => paneLifetimes.paneStorage): void {
   const before = paneStorageId(machineId, from);
   const after = paneStorageId(machineId, to);
+  // a send on its way carries the comments it took, and settles them under the ID it went with: they stay there with it
+  const sending = drafts.read(`ovis:composer-draft:${before}`).sending;
   drafts.move(`ovis:composer-draft:${before}`, `ovis:composer-draft:${after}`);
   // a touch screen's terminal input line, through its store (it keeps the line in memory too); a
   // line on its way stays, as a chat draft on its way does
@@ -30,6 +32,7 @@ export function carryPaneState(machineId: string, from: string, to: string, draf
   }
   // through the herdr fence (lib/paneLifetime.ts): a PC whose herdr is not proven keeps them in this page
   for (const prefix of CARRIED) {
+    if (prefix === REPLY_COMMENTS_PREFIX && sending) continue;
     try {
       const value = storage().getItem(prefix + before);
       // a key the new ID holds already is that pane's own
