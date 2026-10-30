@@ -1,5 +1,7 @@
 import { afterEach, expect, it } from "bun:test";
 import http from "node:http";
+import https from "node:https";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,4 +97,21 @@ it("proxies WebSocket upgrades and closes them on revocation", async () => {
 
 it("refuses a public listener without TLS", () => {
   expect(() => createShareGateway({ id: "d83ab961-d9b4-4f6e-8c18-804719202947", cookieSecret: "a".repeat(64), backendToken: "b".repeat(64), socketPath: "/tmp/no.sock", publicOrigin: "https://share.test:7300", expiresAt: new Date(Date.now() + 1000).toISOString(), hostname: "0.0.0.0", port: 7300 })).toThrow("TLS");
+});
+
+it("serves the admitted instance over TLS with a secure cookie", async () => {
+  const f = await fixture();
+  const directory = mkdtempSync(join(tmpdir(), "ovis-share-tls-"));
+  const key = join(directory, "key.pem"), cert = join(directory, "cert.pem");
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=share.test"], { stdio: "ignore" });
+  const secure = createShareGateway({ ...f.config, tls: { key, cert } });
+  await new Promise<void>(resolve => secure.server.listen(0, "127.0.0.1", resolve));
+  cleanups.push(async () => { await secure.close(); rmSync(directory, { recursive: true, force: true }); });
+  const port = (secure.server.address() as { port: number }).port;
+  const response = await new Promise<{ status: number; cookie: string }>((resolve, reject) => {
+    https.get({ hostname: "127.0.0.1", port, path: "/" + f.config.id, rejectUnauthorized: false, headers: { host: "share.test:7300" } }, result => {
+      result.resume(); result.on("end", () => resolve({ status: result.statusCode!, cookie: result.headers["set-cookie"]![0]! }));
+    }).on("error", reject);
+  });
+  expect(response.status).toBe(200); expect(response.cookie).toContain("Secure");
 });
