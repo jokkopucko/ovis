@@ -1,6 +1,7 @@
 import { fileUriPath } from "./fileUri.ts";
 import { charBefore } from "./lookbehind.ts";
 import { parseHtmlBlock, startsHtml } from "./markdownHtml.ts";
+import { linkTaskCode, linkTaskIds } from "./taskLinks.ts";
 
 export type InlineNode =
   | { type: "text"; value: string }
@@ -277,7 +278,7 @@ export function parseInline(source: string, links = true, depth = 0): InlineNode
     // the `!` of an image stays in the text before its bracket
     const image = token.startsWith("[") && index > offset && source[index - 1] === "!";
     const textEnd = image ? index - 1 : index;
-    if (textEnd > offset) nodes.push({ type: "text", value: source.slice(offset, textEnd) });
+    if (textEnd > offset) nodes.push(...plainText(source.slice(offset, textEnd), links));
     // like an http address it stops at the first non-ASCII character (`file:///tmp/a.md에서`); a
     // name with other letters in it is percent-encoded in a URI
     if (token.startsWith(":codex-file-citation{")) {
@@ -297,7 +298,7 @@ export function parseInline(source: string, links = true, depth = 0): InlineNode
       const href = /^www\./i.test(token) ? `https://${token}` : token;
       nodes.push(links ? { type: "link", href, children: [{ type: "text", value: token }] } : { type: "text", value: token });
     } else if (token.startsWith("`")) {
-      nodes.push({ type: "code", value: token.slice(1, -1) });
+      nodes.push(links ? linkTaskCode(token.slice(1, -1)) : { type: "code", value: token.slice(1, -1) });
     } else if (token.startsWith("\\(")) {
       nodes.push({ type: "math", value: token.slice(2, -2) });
     } else if (token.startsWith("$")) {
@@ -321,8 +322,12 @@ export function parseInline(source: string, links = true, depth = 0): InlineNode
     }
     offset = index + token.length;
   }
-  if (offset < source.length) nodes.push({ type: "text", value: source.slice(offset) });
+  if (offset < source.length) nodes.push(...plainText(source.slice(offset), links));
   return nodes;
+}
+
+function plainText(value: string, links: boolean): InlineNode[] {
+  return links ? linkTaskIds(value) : [{ type: "text", value }];
 }
 
 // `s`: the text may hold a line separator (U+2028) that `.` would stop at, and the pattern then
