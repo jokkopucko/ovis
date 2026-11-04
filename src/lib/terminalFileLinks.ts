@@ -27,17 +27,37 @@ export function isWebLink(uri: string): boolean {
   return /^https?:\/\//i.test(uri);
 }
 
-/**
- * Opens an http(s) address in a new tab, as a chat link does: a link's own click, with no opener
- * and no referrer. window.open with a features string (even "noopener") opens a popup window instead.
- */
-export function openWebLink(uri: string): void {
-  const link = document.createElement("a");
-  link.href = uri;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  link.click();
+/** Makes an http(s) link opener. Each instance owns at most one reusable tab. */
+export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
+  let reusable: Window | null = null;
+  const newTab = (uri: string): void => {
+    const link = document.createElement("a");
+    link.href = uri;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.click();
+  };
+  return (uri, reuse) => {
+    if (!reuse) {
+      newTab(uri);
+      return;
+    }
+    if (reusable === null || reusable.closed) {
+      // Open a blank page first, then sever its access to Ovis before an external page loads.
+      reusable = window.open("about:blank", "_blank");
+      if (reusable === null) {
+        newTab(uri);
+        return;
+      }
+      reusable.opener = null;
+    }
+    reusable.location.href = uri;
+    reusable.focus();
+  };
 }
+
+/** Opens links from coding-agent chat and terminal output. */
+export const openWebLink = createWebLinkOpener();
 
 /**
  * The OSC 8 handler that keeps a hyperlink this app cannot open from being drawn as one (#739).

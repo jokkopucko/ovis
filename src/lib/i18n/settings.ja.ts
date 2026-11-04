@@ -246,6 +246,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Only a page this PC serves, such as a dev server on localhost, opens beside the pane. Shift-click opens it the other way.": "localhost の開発サーバーなど、この PC が配信するページだけがペインの横に開きます。Shift キーを押しながらクリックすると、もう一方で開きます。",
   "Beside the pane": "ペインの横",
   "In a new tab": "新しいタブ",
+  "Reuse tab for external links": "外部リンク用のタブを再利用",
+  "External links reuse one browser tab instead of opening a new tab each time.": "外部リンクを開くたびに新しいタブを作らず、1 つのブラウザータブを再利用します。",
   "A phone shows one column either way.": "スマートフォンではどちらでも1列で表示します。",
   "theme themes palette dark light mode colors density language sidebar logos": "テーマ パレット palette ダーク ライト モード 色 密度 言語 サイドバー ロゴ",
   "chat font size message width composer enter send thinking code": "チャット フォント 文字サイズ メッセージ 幅 入力欄 エンター 送信 思考 コード",

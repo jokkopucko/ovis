@@ -1,7 +1,48 @@
 import { describe, expect, it } from "bun:test";
 import { Terminal } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
-import { hyperlinkFilter, isWebLink, terminalFileLinks } from "./terminalFileLinks.ts";
+import { createWebLinkOpener, hyperlinkFilter, isWebLink, terminalFileLinks } from "./terminalFileLinks.ts";
+
+describe("openWebLink", () => {
+  it("keeps new-tab behavior by default and reuses one protected tab when asked", () => {
+    const clicked: Record<string, string>[] = [];
+    const opened: { closed: boolean; opener: unknown; location: { href: string }; focus: () => void; focused: number }[] = [];
+    let blocked = false;
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => {
+      const link = { href: "", target: "", rel: "", click: () => clicked.push({ href: link.href, target: link.target, rel: link.rel }) };
+      return link;
+    } } });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { open: () => {
+      if (blocked) return null;
+      const tab = { closed: false, opener: {}, location: { href: "about:blank" }, focused: 0, focus() { this.focused++; } };
+      opened.push(tab);
+      return tab;
+    } } });
+    try {
+      const open = createWebLinkOpener();
+      open("https://one.example", false);
+      open("https://two.example", true);
+      open("https://three.example", true);
+      expect(clicked).toEqual([{ href: "https://one.example", target: "_blank", rel: "noopener noreferrer" }]);
+      expect(opened).toHaveLength(1);
+      expect(opened[0]).toMatchObject({ opener: null, location: { href: "https://three.example" }, focused: 2 });
+      opened[0]!.closed = true;
+      open("https://four.example", true);
+      expect(opened).toHaveLength(2);
+      expect(opened[1]).toMatchObject({ opener: null, location: { href: "https://four.example" }, focused: 1 });
+      blocked = true;
+      createWebLinkOpener()("https://blocked.example", true);
+      expect(clicked.at(-1)).toEqual({ href: "https://blocked.example", target: "_blank", rel: "noopener noreferrer" });
+    } finally {
+      if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+      else Reflect.deleteProperty(globalThis, "document");
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+});
 
 /** a plain press of the primary button, as xterm hands one to a link */
 const click = { button: 0 } as MouseEvent;

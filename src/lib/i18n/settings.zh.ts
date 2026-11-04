@@ -246,6 +246,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Only a page this PC serves, such as a dev server on localhost, opens beside the pane. Shift-click opens it the other way.": "只有这台 PC 提供的页面（例如 localhost 上的开发服务器）会在窗格旁打开。按住 Shift 点击则以另一种方式打开。",
   "Beside the pane": "在窗格旁",
   "In a new tab": "在新标签页中",
+  "Reuse tab for external links": "重复使用外部链接标签页",
+  "External links reuse one browser tab instead of opening a new tab each time.": "外部链接会重复使用一个浏览器标签页，而不是每次都打开新标签页。",
   "A phone shows one column either way.": "手机上无论如何都显示为单栏。",
   "theme themes palette dark light mode colors density language sidebar logos": "主题 调色板 palette 深色 浅色 模式 颜色 密度 语言 侧边栏 徽标",
   "chat font size message width composer enter send thinking code": "聊天 字体 字号 消息 宽度 输入框 回车 发送 思考 代码",

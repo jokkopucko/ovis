@@ -246,6 +246,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Only a page this PC serves, such as a dev server on localhost, opens beside the pane. Shift-click opens it the other way.": "localhost 개발 서버처럼 이 PC가 여는 페이지만 창 옆에 열립니다. Shift-클릭하면 반대쪽으로 엽니다.",
   "Beside the pane": "창 옆에",
   "In a new tab": "새 탭에서",
+  "Reuse tab for external links": "외부 링크에 탭 재사용",
+  "External links reuse one browser tab instead of opening a new tab each time.": "외부 링크를 열 때마다 새 탭을 만들지 않고 브라우저 탭 하나를 재사용합니다.",
   "A phone shows one column either way.": "휴대전화에서는 어느 쪽이든 한 열로 표시됩니다.",
   "theme themes palette dark light mode colors density language sidebar logos": "테마 팔레트 palette 다크 라이트 모드 색상 밀도 언어 사이드바 로고",
   "chat font size message width composer enter send thinking code": "채팅 글꼴 글자 크기 메시지 너비 입력창 엔터 보내기 생각 코드",

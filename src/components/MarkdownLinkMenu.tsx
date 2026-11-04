@@ -13,6 +13,8 @@ import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { inAndroidApp } from "../lib/nativeApp.ts";
+import { useSettings } from "../lib/settings.ts";
+import { isWebLink, openWebLink } from "../lib/terminalFileLinks.ts";
 
 /** The rendered Markdown link a long press landed on; null for a mouse's menu or anything else. */
 export function pressedLink(event: MouseEvent): HTMLAnchorElement | null {
@@ -32,6 +34,7 @@ function hostOf(href: string): string {
 
 export function MarkdownLinkMenu() {
   const t = useT();
+  const { settings } = useSettings();
   const [pressed, setPressed] = useState<{ link: HTMLAnchorElement; point: { x: number; y: number } } | null>(null);
   const close = useCallback(() => setPressed(null), []);
   useEffect(() => {
@@ -59,6 +62,7 @@ export function MarkdownLinkMenu() {
     // taken off the page cannot be clicked, so its address opens as a new window would
     { id: "open", label: t("Open link"), icon: ExternalLink, run: () => {
       if (link.isConnected) link.click();
+      else if (isWebLink(href)) openWebLink(href, settings.reuseExternalLinkTab);
       else window.open(href, "_blank", "noopener,noreferrer");
     } },
     ...(typeof navigator.share === "function" ? [{ id: "share", label: t("Share link"), icon: Share2, run: () => {
