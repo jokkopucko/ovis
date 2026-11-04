@@ -196,6 +196,7 @@ try {
       const send = socket.send.bind(socket);
       socket.send = (raw) => {
         const frame = JSON.parse(raw);
+        if (frame.type === "submit") window.fitSubmitCount = (window.fitSubmitCount ?? 0) + 1;
         if (!window.fitHoldSend || frame.type !== "submit") return send(raw);
         window.fitReply = (ok) => socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
           type: "submit-result", id: frame.id, pane_id: frame.pane_id, ok,
@@ -699,6 +700,49 @@ try {
         assert.deepEqual(await snapshot(), before, `${width}px: an agent prompt update preserves the focused draft's geometry, scroll and selection`);
       });
       console.log("PASS prompt updates preserve a focused, internally scrolled draft and its mid-text caret at 390 and 1440px");
+
+      for (const width of [390, 1440]) await withCard(browser, width, { model: "gpt-5.6", status: "idle", pending: false, freezeConversation: true, suggestion: "Review the changes" }, async (page) => {
+        const box = page.getByRole("textbox", { name: "Message", exact: true });
+        await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>(".composer-text")?.placeholder === "Review the changes");
+        await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
+        const suggestion = page.locator(".composer-inline-suggestion > span");
+        if (width === 390) {
+          // Padding is still the textarea, not an acceptance button.
+          await box.tap({ position: { x: 4, y: 4 } });
+          assert.equal(await box.inputValue(), "");
+          await page.keyboard.type("My own reply");
+          assert.equal(await box.inputValue(), "My own reply");
+          assert.equal(await page.locator(".composer-inline-suggestion").count(), 0);
+          await box.fill("");
+          const bounds = await suggestion.boundingBox();
+          assert.ok(bounds);
+          const session = await page.context().newCDPSession(page);
+          const x = bounds.x + 8, y = bounds.y + bounds.height / 2;
+          await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+          await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - 60 }] });
+          await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+          await session.detach();
+          assert.equal(await box.inputValue(), "", "a swipe across the suggestion does not accept it");
+          await suggestion.tap();
+        } else {
+          assert.equal(await suggestion.isVisible(), false);
+          await box.click();
+          await box.press("Shift+Tab");
+          assert.equal(await box.inputValue(), "");
+          await box.focus();
+          await box.press("Tab");
+        }
+        assert.equal(await box.inputValue(), "Review the changes");
+        assert.equal(await box.evaluate((node: HTMLTextAreaElement) => document.activeElement === node && node.selectionStart === node.value.length && node.selectionEnd === node.value.length), true);
+        await page.keyboard.type(" please");
+        assert.equal(await box.inputValue(), "Review the changes please");
+        assert.equal(await page.locator(".composer-inline-suggestion").count(), 0);
+        await box.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(0, 0));
+        await page.keyboard.type("Now ");
+        assert.equal(await box.inputValue(), "Now Review the changes please");
+        assert.equal(await page.evaluate(() => (window as unknown as { fitSubmitCount: number }).fitSubmitCount), 0, "accepting and editing never sends a message");
+      });
+      console.log("PASS touch suggestion acceptance and desktop Tab preserve focus, caret and editing without sending");
 
       for (const agent of ["claude", "codex", "pi"] as const) for (const width of [320, 1280]) await withCard(browser, width, { agent, model: "gpt-5.6", status: "idle" }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
