@@ -35,7 +35,14 @@ describe("openWebLink", () => {
       blocked = true;
       createWebLinkOpener()("https://blocked.example", true);
       expect(clicked.at(-1)).toEqual({ href: "https://blocked.example", target: "_blank", rel: "noopener noreferrer" });
+      // an app hands the address to the system browser: it never keeps a window to reuse
+      blocked = false;
+      (globalThis as { Capacitor?: unknown }).Capacitor = { isNativePlatform: () => true };
+      createWebLinkOpener()("https://app.example", true);
+      expect(opened).toHaveLength(2);
+      expect(clicked.at(-1)).toEqual({ href: "https://app.example", target: "_blank", rel: "noopener noreferrer" });
     } finally {
+      Reflect.deleteProperty(globalThis, "Capacitor");
       if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
       else Reflect.deleteProperty(globalThis, "document");
       if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
