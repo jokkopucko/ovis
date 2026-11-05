@@ -241,7 +241,7 @@ export const SETTINGS_KO: Record<string, string> = {
   "Beside the pane": "창 옆에",
   "In a new tab": "새 탭에서",
   "Reuse tab for external links": "외부 링크에 탭 재사용",
-  "External links reuse one browser tab instead of opening a new tab each time.": "외부 링크를 열 때마다 새 탭을 만들지 않고 브라우저 탭 하나를 재사용합니다.",
+  "External links reuse one browser tab instead of opening a new tab each time. The site in that tab can see and navigate this Ovis tab, so this is off by default.": "외부 링크를 열 때마다 새 탭을 만들지 않고 브라우저 탭 하나를 재사용합니다. 그 탭의 사이트가 이 Ovis 탭을 보고 다른 주소로 옮길 수 있어 기본으로 꺼져 있습니다.",
   "A phone shows one column either way.": "휴대전화에서는 어느 쪽이든 한 열로 표시됩니다.",
   "theme themes palette dark light mode colors density language sidebar logos": "테마 팔레트 palette 다크 라이트 모드 색상 밀도 언어 사이드바 로고",
   "chat font size message width composer enter send thinking code": "채팅 글꼴 글자 크기 메시지 너비 입력창 엔터 보내기 생각 코드",

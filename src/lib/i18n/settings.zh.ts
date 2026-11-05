@@ -241,7 +241,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Beside the pane": "在窗格旁",
   "In a new tab": "在新标签页中",
   "Reuse tab for external links": "重复使用外部链接标签页",
-  "External links reuse one browser tab instead of opening a new tab each time.": "外部链接会重复使用一个浏览器标签页，而不是每次都打开新标签页。",
+  "External links reuse one browser tab instead of opening a new tab each time. The site in that tab can see and navigate this Ovis tab, so this is off by default.": "外部链接会重复使用一个浏览器标签页，而不是每次都打开新标签页。该标签页中的网站可以看到并跳转这个 Ovis 标签页，因此默认关闭。",
   "A phone shows one column either way.": "手机上无论如何都显示为单栏。",
   "theme themes palette dark light mode colors density language sidebar logos": "主题 调色板 palette 深色 浅色 模式 颜色 密度 语言 侧边栏 徽标",
   "chat font size message width composer enter send thinking code": "聊天 字体 字号 消息 宽度 输入框 回车 发送 思考 代码",

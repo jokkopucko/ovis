@@ -38,7 +38,11 @@ export function isWebLink(uri: string): boolean {
   return /^https?:\/\//i.test(uri);
 }
 
-/** Makes an http(s) link opener. Each instance owns at most one reusable tab. */
+/**
+ * Makes an http(s) link opener. Each instance owns at most one reusable tab. A browser lets a page
+ * steer a tab of another site only as its opener, so the reused tab keeps its opener: the site in it
+ * can see and navigate this tab. That is why reuse is a setting, off by default; a new tab has none.
+ */
 export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
   let reusable: Window | null = null;
   const newTab = (uri: string): void => {
@@ -54,13 +58,9 @@ export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
       return;
     }
     if (reusable === null || reusable.closed) {
-      // Open a blank page first, then sever its access to Ovis before an external page loads.
-      reusable = window.open("about:blank", "_blank");
-      if (reusable === null) {
-        newTab(uri);
-        return;
-      }
-      reusable.opener = null;
+      reusable = window.open(uri, "_blank");
+      if (reusable === null) newTab(uri);
+      return;
     }
     try {
       reusable.location.href = uri;

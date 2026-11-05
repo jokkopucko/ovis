@@ -4,9 +4,10 @@ import { fileUriPath } from "../../shared/fileUri.ts";
 import { bareNameLinks, createWebLinkOpener, hyperlinkFilter, isWebLink, terminalFileLinks } from "./terminalFileLinks.ts";
 
 describe("openWebLink", () => {
-  it("keeps new-tab behavior by default and reuses one protected tab when asked", () => {
+  // which path a click takes; what a real browser does with it is scripts/external-link-tab-regression.ts
+  it("opens a new tab unless asked to reuse, and falls back to one whenever the reused tab is gone or refused", () => {
     const clicked: Record<string, string>[] = [];
-    const opened: { closed: boolean; opener: unknown; location: { href: string }; focus: () => void; focused: number }[] = [];
+    const opened: { closed: boolean; location: { href: string }; focus: () => void; focused: number }[] = [];
     let blocked = false;
     const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
@@ -14,9 +15,9 @@ describe("openWebLink", () => {
       const link = { href: "", target: "", rel: "", click: () => clicked.push({ href: link.href, target: link.target, rel: link.rel }) };
       return link;
     } } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { open: () => {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { open: (uri: string) => {
       if (blocked) return null;
-      const tab = { closed: false, opener: {}, location: { href: "about:blank" }, focused: 0, focus() { this.focused++; } };
+      const tab = { closed: false, location: { href: uri }, focused: 0, focus() { this.focused++; } };
       opened.push(tab);
       return tab;
     } } });
@@ -27,11 +28,11 @@ describe("openWebLink", () => {
       open("https://three.example", true);
       expect(clicked).toEqual([{ href: "https://one.example", target: "_blank", rel: "noopener noreferrer" }]);
       expect(opened).toHaveLength(1);
-      expect(opened[0]).toMatchObject({ opener: null, location: { href: "https://three.example" }, focused: 2 });
+      expect(opened[0]).toMatchObject({ location: { href: "https://three.example" }, focused: 1 });
       opened[0]!.closed = true;
       open("https://four.example", true);
       expect(opened).toHaveLength(2);
-      expect(opened[1]).toMatchObject({ opener: null, location: { href: "https://four.example" }, focused: 1 });
+      expect(opened[1]).toMatchObject({ location: { href: "https://four.example" }, focused: 0 });
       blocked = true;
       createWebLinkOpener()("https://blocked.example", true);
       expect(clicked.at(-1)).toEqual({ href: "https://blocked.example", target: "_blank", rel: "noopener noreferrer" });

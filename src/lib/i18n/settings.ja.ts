@@ -241,7 +241,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Beside the pane": "ペインの横",
   "In a new tab": "新しいタブ",
   "Reuse tab for external links": "外部リンク用のタブを再利用",
-  "External links reuse one browser tab instead of opening a new tab each time.": "外部リンクを開くたびに新しいタブを作らず、1 つのブラウザータブを再利用します。",
+  "External links reuse one browser tab instead of opening a new tab each time. The site in that tab can see and navigate this Ovis tab, so this is off by default.": "外部リンクを開くたびに新しいタブを作らず、1 つのブラウザータブを再利用します。そのタブのサイトはこの Ovis タブを参照して別のページへ移動させられるため、既定ではオフです。",
   "A phone shows one column either way.": "スマートフォンではどちらでも1列で表示します。",
   "theme themes palette dark light mode colors density language sidebar logos": "テーマ パレット palette ダーク ライト モード 色 密度 言語 サイドバー ロゴ",
   "chat font size message width composer enter send thinking code": "チャット フォント 文字サイズ メッセージ 幅 入力欄 エンター 送信 思考 コード",
