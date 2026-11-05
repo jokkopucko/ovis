@@ -620,6 +620,11 @@ export function Composer({
     if (activeRef.current) element.focus();
   }, []);
 
+  const acceptSuggestion = useCallback(() => {
+    if (offered === null || textRef.current !== "" || composingRef.current) return;
+    setTextAndCaret(offered, offered.length);
+  }, [offered, setTextAndCaret]);
+
   // an upload finishes while the user may be typing: its mention goes to the start (insertLeadingMention),
   // and the caret and selection only move along with the text they sit in, without taking focus
   /** 0 once inserted; otherwise how many characters short the message is, and nothing changed */
@@ -979,7 +984,7 @@ export function Composer({
       // Tab takes the suggestion into the empty box, as in Claude's own input
       if (event.key === "Tab" && !event.shiftKey && offered !== null && textRef.current === "") {
         event.preventDefault();
-        setTextAndCaret(offered, offered.length);
+        acceptSuggestion();
         return;
       }
       const shouldSend = event.key === "Enter" && (settings.enterSends
@@ -1004,7 +1009,7 @@ export function Composer({
       event.preventDefault();
       send();
     },
-    [agentStatus, choices, connected, menuDismissed, menuOpen, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, settings.enterSends, trigger, waitingAnswer],
+    [acceptSuggestion, agentStatus, choices, connected, menuDismissed, menuOpen, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, settings.enterSends, trigger, waitingAnswer],
   );
 
   const onPaste = useCallback(
@@ -1094,7 +1099,7 @@ export function Composer({
       {/* no Tab key on a phone: the suggestion can be a chip there that fills the box, when Settings asks for it */}
       {settings.suggestionChip && offered !== null && text === "" && (
         <div className="composer-quick composer-suggestion-row">
-          <button type="button" className="composer-quick-reply composer-suggestion" title={t("Use the suggestion")} onClick={() => setTextAndCaret(offered, offered.length)}>
+          <button type="button" className="composer-quick-reply composer-suggestion" title={t("Use the suggestion")} onClick={acceptSuggestion}>
             <span aria-hidden="true">↹ </span>{offered}
           </button>
         </div>
@@ -1307,7 +1312,7 @@ export function Composer({
           // in a frame, after the caret of dictation held through the composition has landed
           setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
         }}
-          className="composer-text"
+          className={`composer-text${offered !== null && text === "" ? " has-suggestion" : ""}`}
           rows={1}
           maxLength={MAX_COMPOSER_CHARS}
           value={text}
@@ -1338,6 +1343,12 @@ export function Composer({
             setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
           }}
         />
+        {offered !== null && text === "" && (
+          <div className="composer-inline-suggestion">
+            <span role="button" tabIndex={-1} aria-label={t("Use the suggestion")}
+              onClick={acceptSuggestion}>{offered}</span>
+          </div>
+        )}
         <textarea
           ref={measurementRef}
           className="composer-measure"
