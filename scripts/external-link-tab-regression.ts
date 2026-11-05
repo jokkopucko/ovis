@@ -30,10 +30,14 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
 /** Clicks `button` and resolves with the page that then shows `path`, the tab it opened or the one it steered. */
 async function follow(context: BrowserContext, page: Page, button: string, path: string): Promise<Page> {
   const shows = (url: URL): boolean => url.pathname === path;
-  const opened = context.waitForEvent("page").then(async (tab) => { await tab.waitForURL(shows); return tab; });
-  const steered = context.pages().filter((tab) => tab !== page).map(async (tab) => { await tab.waitForURL(shows); return tab; });
+  const waits = [
+    context.waitForEvent("page").then(async (tab) => { await tab.waitForURL(shows); return tab; }),
+    ...context.pages().filter((tab) => tab !== page).map(async (tab) => { await tab.waitForURL(shows); return tab; }),
+  ];
+  // the waits that lose, or a click that fails, still settle quietly once the context closes
+  for (const wait of waits) wait.catch(() => undefined);
   await page.click(button);
-  const tab = await Promise.any([opened, ...steered]).catch(() => { throw new Error(`no tab showed ${path} after ${button}`); });
+  const tab = await Promise.any(waits).catch(() => { throw new Error(`no tab showed ${path} after ${button}`); });
   await tab.waitForFunction(() => document.title.startsWith("{"));
   return tab;
 }
@@ -49,14 +53,15 @@ try {
       page.setDefaultTimeout(15_000);
       await page.goto(`http://127.0.0.1:${server.port}/links?reuse=${reuse ? 1 : 0}`);
       const first = await follow(context, page, "#one", "/page-one");
+      const one = await seen(first);
       const second = await follow(context, page, "#two", "/page-two");
+      const two = await seen(second);
       const tabs = context.pages().map((tab) => new URL(tab.url()).pathname);
-      const [one, two] = [await seen(first), await seen(second)];
       console.log(`REUSE=${reuse} tabs=${JSON.stringify(tabs)} first=${JSON.stringify(one)} second=${JSON.stringify(two)}`);
       if (reuse) {
         assert.equal(second, first, "the second link replaces the first one's tab");
         assert.deepEqual(tabs, ["/links", "/page-two"]);
-        assert.equal(two.opener, true, "a tab Ovis steers keeps it as opener: the setting says so");
+        assert.equal(one.opener && two.opener, true, "a tab Ovis steers keeps it as opener: the setting says so");
       } else {
         assert.notEqual(second, first, "each link opens a tab of its own");
         assert.deepEqual(tabs, ["/links", "/page-one", "/page-two"]);

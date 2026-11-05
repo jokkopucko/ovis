@@ -43,6 +43,11 @@ describe("openWebLink", () => {
       Object.defineProperty(opened.at(-1)!.location, "href", { set: () => { throw new Error("SecurityError"); } });
       refusing("https://six.example", true);
       expect(clicked.at(-1)).toEqual({ href: "https://six.example", target: "_blank", rel: "noopener noreferrer" });
+      const windowOpen = (globalThis as unknown as { window: { open: unknown } }).window.open;
+      (globalThis as unknown as { window: { open: unknown } }).window.open = () => { throw new Error("SecurityError"); };
+      createWebLinkOpener()("https://seven.example", true);
+      expect(clicked.at(-1)).toEqual({ href: "https://seven.example", target: "_blank", rel: "noopener noreferrer" });
+      (globalThis as unknown as { window: { open: unknown } }).window.open = windowOpen;
       // an app hands the address to the system browser: it never keeps a window to reuse
       (globalThis as { Capacitor?: unknown }).Capacitor = { isNativePlatform: () => true };
       createWebLinkOpener()("https://app.example", true);

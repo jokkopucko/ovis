@@ -57,16 +57,16 @@ export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
       newTab(uri);
       return;
     }
-    if (reusable === null || reusable.closed) {
-      reusable = window.open(uri, "_blank");
-      if (reusable === null) newTab(uri);
-      return;
-    }
     try {
+      if (reusable === null || reusable.closed) {
+        reusable = window.open(uri, "_blank");
+        if (reusable === null) newTab(uri);
+        return;
+      }
       reusable.location.href = uri;
       reusable.focus();
     } catch {
-      // the browser refused to steer that tab (it no longer counts this page as its opener): a click never does nothing
+      // the browser refused to open or steer that tab (say, it no longer counts this page as its opener): a click never does nothing
       reusable = null;
       newTab(uri);
     }
