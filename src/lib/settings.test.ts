@@ -171,6 +171,19 @@ describe("saved theme migration", () => {
     }
   });
 
+  it("keeps Reuse tab for external links in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().reuseExternalLinkTab).toBe(false);
+    saveSettings(sanitizeSettings({ reuseExternalLinkTab: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("reuseExternalLinkTab");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().reuseExternalLinkTab).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), reuseExternalLinkTab: false });
+    expect(loadSettings().reuseExternalLinkTab).toBe(false);
+    records.set("ovis:reuse-external-link-tab", "\"true\"");
+    expect(loadSettings().reuseExternalLinkTab).toBe(false);
+  });
+
   it("survives repeated stale saves from an already-open old tab (f1)", () => {
     putOld({ theme: "dark", palette: "charcoal" });
     const stale = readOld();
