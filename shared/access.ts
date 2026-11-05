@@ -1,9 +1,18 @@
+import type { PortalSignIn } from "./portal.ts";
+
 /** How a request got in, when it did. */
-export type AccessVia = "local" | "tailscale" | "device" | "token" | "open";
+export type AccessVia = "local" | "tailscale" | "device" | "token" | "open" | "portal" | "relay";
 /** Why a request did not. */
 export type AccessRefusal = "other_user" | "pairing_required" | "token_required";
 /** What a paired device may do: drive (type, answer, manage) or only watch. */
 export type DeviceRole = "drive" | "watch";
+
+/** Who Portal's own sign-in let in, as it states it to the app (server/access.ts `portalLogin`). */
+export interface PortalLogin {
+  /** the wallet address, link name, or verified email or sub:<id> that signed in */
+  readonly user: string;
+  readonly method: PortalSignIn;
+}
 
 /** GET /api/health `auth`: `authenticated` is whether this request got in; `required` is the opposite, kept for older clients. */
 export interface HealthAuth {
@@ -13,6 +22,8 @@ export interface HealthAuth {
   /** with `via: "token"`: the token came in an `Authorization` header (a proxy sends it), so signing out of this browser would change nothing */
   readonly bearer?: true;
   readonly role?: DeviceRole;
+  /** with `via: "portal"`: who signed in through Portal */
+  readonly portal?: PortalLogin;
   readonly reason?: AccessRefusal;
 }
 
@@ -32,8 +43,8 @@ export interface LanExposure {
 
 /** The configured bind address, read from its literal (`bindScope` in server/access.ts): never a DNS lookup or the request's Host. */
 export type BindScope = "loopback" | "tailnet" | "other";
-/** How this one request arrived, as far as it proves (`observedIngress` in server/access.ts); not how every device reaches the server. `direct`: no proxy said it forwarded the request, which a proxy that adds nothing (an SSH tunnel, nginx's bare `proxy_pass`) also looks like. */
-export type ObservedIngress = "direct" | "proxy" | "tailscale" | "funnel" | "unknown";
+/** How this one request arrived, as far as it proves (`observedIngress` in server/access.ts); not how every device reaches the server. `direct`: no proxy said it forwarded the request, which a proxy that adds nothing (an SSH tunnel, nginx's bare `proxy_pass`) also looks like. `portal`: Portal vouched for the request with its proof, whatever signed it in (the token or a paired device too). */
+export type ObservedIngress = "direct" | "proxy" | "tailscale" | "funnel" | "unknown" | "relay" | "portal";
 
 /**
  * GET /api/health (both scopes), authenticated requests only, a watching device's included:
@@ -61,6 +72,8 @@ export interface PairedDevice {
   readonly last_seen_at: string | null;
   /** the device this request came from */
   readonly current: boolean;
+  /** paired with a public key for relay access, not a browser cookie */
+  readonly via_relay?: true;
 }
 
 /** POST /api/devices/pair/start */

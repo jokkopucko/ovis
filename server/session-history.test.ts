@@ -76,10 +76,10 @@ const piStore = (home: string) => join(home, ".pi", "agent", "sessions", FOLDERS
 describe("listSessions", () => {
   for (const agent of SESSION_HISTORY_AGENTS) {
     // Command Code's slug keeps a Windows drive's colon, which no Windows folder name may hold
-    it.skipIf(agent === "cmd" && WINDOWS)(`lists ${agent}'s own sessions of the folder, newest first, with its resume command`, () => {
+    it.skipIf(agent === "cmd" && WINDOWS)(`lists ${agent}'s own sessions of the folder, newest first, with its resume command`, async () => {
       const home = newHome();
       install(agent, home);
-      const rows = listSessions(agent, CWD, { home, env: {} });
+      const rows = await listSessions(agent, CWD, { home, env: {} });
       expect(rows.map((row) => row.id)).toEqual(EXPECTED[agent]);
       expect(rows.map((row) => row.firstMessage)).toEqual([`Fixture ${agent} prompt 2`, `Fixture ${agent} prompt 1`]);
       for (const row of rows) {
@@ -92,12 +92,12 @@ describe("listSessions", () => {
     });
   }
 
-  it("lists nothing from a store that is not there", () => {
+  it("lists nothing from a store that is not there", async () => {
     const home = newHome();
-    for (const agent of SESSION_HISTORY_AGENTS) expect(listSessions(agent, CWD, { home, env: {} })).toEqual([]);
+    for (const agent of SESSION_HISTORY_AGENTS) expect(await listSessions(agent, CWD, { home, env: {} })).toEqual([]);
   });
 
-  it.skipIf(!SYMLINKS)("refuses a session file or folder that a link puts outside the store", () => {
+  it.skipIf(!SYMLINKS)("refuses a session file or folder that a link puts outside the store", async () => {
     const home = newHome();
     install("pi", home);
     const outside = join(root, `outside-${homes}`);
@@ -109,11 +109,11 @@ describe("listSessions", () => {
     writeFileSync(join(outside, "day", `rollout-2026-10-09T09-00-00-${ID(9)}.jsonl`),
       `${JSON.stringify({ type: "session_meta", payload: { id: ID(9), cwd: CWD, source: "cli" } })}\n`);
     symlinkSync(join(outside, "day"), join(home, ".codex", "sessions", "2026", "10", "09"), "dir");
-    expect(listSessions("pi", CWD, { home, env: {} }).map((row) => row.id)).toEqual(EXPECTED.pi);
+    expect((await listSessions("pi", CWD, { home, env: {} })).map((row) => row.id)).toEqual(EXPECTED.pi);
     expect(listSessions("codex", CWD, { home, env: {} }).map((row) => row.id)).toEqual(EXPECTED.codex);
   });
 
-  it(`returns at most ${MAX_ROWS} sessions, the newest`, () => {
+  it(`returns at most ${MAX_ROWS} sessions, the newest`, async () => {
     const home = newHome();
     mkdirSync(piStore(home), { recursive: true });
     for (let n = 0; n < MAX_ROWS + 10; n++) {
@@ -121,20 +121,21 @@ describe("listSessions", () => {
       writeFileSync(path, piHeader(`session-${n}`) + piPrompt(`prompt ${n}`));
       utimesSync(path, 1_790_000_000 + n, 1_790_000_000 + n);
     }
-    const rows = listSessions("pi", CWD, { home, env: {} });
+    const rows = await listSessions("pi", CWD, { home, env: {} });
     expect(rows).toHaveLength(MAX_ROWS);
     expect(rows[0]!.id).toBe(`session-${MAX_ROWS + 9}`);
     expect(rows.at(-1)!.id).toBe("session-10");
   });
 
-  it("reads only the head of a 10 MB session file", () => {
+  it("still reads only the head of a 10 MB non-Pi family session file", () => {
     const home = newHome();
-    mkdirSync(piStore(home), { recursive: true });
-    const path = join(piStore(home), "large.jsonl");
+    const store = join(home, ".omp", "agent", "sessions", FOLDERS.omp!);
+    mkdirSync(store, { recursive: true });
+    const path = join(store, "large.jsonl");
     writeFileSync(path, piHeader(ID(5)) + piPrompt("large prompt") + `${JSON.stringify({ type: "message", message: { role: "assistant", content: "x".repeat(10 * 1024 * 1024) } })}\n`);
     expect(statSync(path).size).toBeGreaterThan(10 * 1024 * 1024);
     let bytes = 0;
-    const rows = listSessions("pi", CWD, {
+    const rows = listSessions("omp", CWD, {
       home, env: {},
       readHead: (fd, max) => {
         const buffer = Buffer.alloc(max);
@@ -296,7 +297,7 @@ describe("listSessions", () => {
     expect(rows).toHaveLength(MAX_ROWS);
   });
 
-  it.skipIf(!SYMLINKS)(`counts every path resolution against the ${MAX_STATS} checks, whether it resolves, fails or lands outside`, () => {
+  it.skipIf(!SYMLINKS)(`counts every path resolution against the ${MAX_STATS} checks, whether it resolves, fails or lands outside`, async () => {
     const home = newHome();
     mkdirSync(piStore(home), { recursive: true });
     const outside = join(root, `outside-links-${homes}`);
@@ -306,7 +307,7 @@ describe("listSessions", () => {
     for (let n = 0; n < 100; n++) symlinkSync(join(outside, "elsewhere.jsonl"), join(piStore(home), `outside-${n}.jsonl`));
     let resolutions = 0;
     let stats = 0;
-    const rows = listSessions("pi", CWD, {
+    const rows = await listSessions("pi", CWD, {
       home, env: {},
       resolve: (path) => { resolutions++; return realpathSync(path); },
       stat: (path, bigint) => { stats++; return statAs(path, bigint); },
@@ -316,7 +317,7 @@ describe("listSessions", () => {
     expect(resolutions + stats).toBeLessThanOrEqual(MAX_STATS);
   });
 
-  it.skipIf(!SYMLINKS)("reads nothing from a session file swapped for a link out of the store after it was checked", () => {
+  it.skipIf(!SYMLINKS)("reads nothing from a session file swapped for a link out of the store after it was checked", async () => {
     const home = newHome();
     mkdirSync(piStore(home), { recursive: true });
     const outside = join(root, `outside-swap-${homes}`);
@@ -325,7 +326,7 @@ describe("listSessions", () => {
     const session = join(piStore(home), "session.jsonl");
     writeFileSync(session, piHeader(ID(1)) + piPrompt("inside the store"));
     const checked = realpathSync(session);
-    const rows = listSessions("pi", CWD, {
+    const rows = await listSessions("pi", CWD, {
       home, env: {},
       // the file is checked, then swapped for a link out of the store before it is opened
       stat: (path, bigint) => {
@@ -382,29 +383,39 @@ describe("listSessions", () => {
     expect(rows).toEqual([]);
   });
 
-  it.skipIf(!SYMLINKS)("gives a reader only the checked file, so no reader can read a file swapped in after the check", () => {
+  it.skipIf(!SYMLINKS)("gives a head reader only the checked descriptor, never an unchecked path", () => {
     const home = newHome();
-    mkdirSync(piStore(home), { recursive: true });
+    const store = join(home, ".omp", "agent", "sessions", FOLDERS.omp!);
+    mkdirSync(store, { recursive: true });
     const outside = join(root, `outside-reader-${homes}`);
     mkdirSync(outside);
     writeFileSync(join(outside, "secret.jsonl"), piHeader(ID(9)) + piPrompt("outside the store"));
-    const session = join(piStore(home), "session.jsonl");
+    const session = join(store, "session.jsonl");
     writeFileSync(session, piHeader(ID(1)) + piPrompt("inside the store"));
     const checked = realpathSync(session);
-    const rows = listSessions("pi", CWD, {
+    let swap = false;
+    const targets: Array<number | string> = [];
+    const listed = () => listSessions("omp", CWD, {
       home, env: {},
       stat: (path, bigint) => {
         const stat = statAs(path, bigint);
-        if (path === checked) { rmSync(path); symlinkSync(join(outside, "secret.jsonl"), path); }
+        if (path === checked && swap) { rmSync(path); symlinkSync(join(outside, "secret.jsonl"), path); }
         return stat;
       },
-      // a reader that does no check of its own: given a path it would follow the link
-      readHead: ((target: number | string, max: number) => typeof target === "number"
-        ? (() => { const buffer = Buffer.alloc(max); return buffer.subarray(0, readSync(target, buffer, 0, max, 0)); })()
-        : readFileSync(target).subarray(0, max)) as never,
+      // A deliberately unchecked reader: handed a path, it would follow the swapped-in link.
+      readHead: ((target: number | string, max: number) => {
+        targets.push(target);
+        if (typeof target !== "number") return readFileSync(target).subarray(0, max);
+        const buffer = Buffer.alloc(max);
+        return buffer.subarray(0, readSync(target, buffer, 0, max, 0));
+      }) as never,
     });
-    expect(rows.map((row) => row.firstMessage)).not.toContain("outside the store");
-    expect(rows).toEqual([]);
+    expect(listed().map((row) => row.firstMessage)).toEqual(["inside the store"]);
+    expect(targets.map((target) => typeof target)).toEqual(["number"]);
+    swap = true;
+    expect(listed()).toEqual([]);
+    // The unsafe replacement was refused before the reader could see it.
+    expect(targets).toHaveLength(1);
   });
 
   // NTFS file IDs often pass 2^53: two that differ only in their low bits round to one number
@@ -412,19 +423,19 @@ describe("listSessions", () => {
   const withIno = <T extends Stats | BigIntStats>(stat: T, ino: bigint): T =>
     Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as T, stat, { ino: typeof stat.ino === "bigint" ? ino : Number(ino) });
 
-  it("refuses a session file whose opened identity differs from the checked one only past 2^53", () => {
+  it("refuses a session file whose opened identity differs from the checked one only past 2^53", async () => {
     const home = newHome();
     mkdirSync(piStore(home), { recursive: true });
     const session = join(piStore(home), "session.jsonl");
     writeFileSync(session, piHeader(ID(1)) + piPrompt("inside the store"));
     const checked = realpathSync(session);
-    const listed = (opened: bigint) => listSessions("pi", CWD, {
+    const listed = async (opened: bigint) => (await listSessions("pi", CWD, {
       home, env: {},
       stat: (path, bigint) => path === checked ? withIno(statAs(path, bigint), NEAR + 1n) : statAs(path, bigint),
       fstat: (fd, bigint) => withIno(bigint ? fstatSync(fd, { bigint: true }) : fstatSync(fd), opened),
-    }).map((row) => row.id);
-    expect(listed(NEAR + 1n)).toEqual([ID(1)]);
-    expect(listed(NEAR + 2n)).toEqual([]);
+    })).map((row) => row.id);
+    expect(await listed(NEAR + 1n)).toEqual([ID(1)]);
+    expect(await listed(NEAR + 2n)).toEqual([]);
   });
 
   it("refuses a SQLite store whose opened descriptor differs from the checked one only past 2^53", () => {
@@ -906,13 +917,13 @@ describe("listSessions", () => {
     expect(walked).toBe(MAX_WALK);
   });
 
-  it(`reads at most ${MAX_ENTRIES} entries of a folder, however many it holds`, () => {
+  it(`reads at most ${MAX_ENTRIES} entries of a folder, however many it holds`, async () => {
     const home = newHome();
     mkdirSync(piStore(home), { recursive: true });
     for (let n = 0; n < MAX_ENTRIES + 500; n++) writeFileSync(join(piStore(home), `s-${n}.jsonl`), "");
     let looked = 0;
     try {
-      listSessions("pi", CWD, { home, env: {}, lstat: (path) => { looked++; return lstatSync(path); } });
+      await listSessions("pi", CWD, { home, env: {}, lstat: (path) => { looked++; return lstatSync(path); } });
     } finally {
       // removed here, inside this test's own time: on NTFS making and removing them takes seconds
       rmSync(home, { recursive: true, force: true });
@@ -1104,13 +1115,13 @@ describe("listSessions", () => {
     expect(resolved).toEqual([SHORT]);
   });
 
-  it("finds a pi session folder of a Windows short-name cwd's long name", () => {
+  it("finds a pi session folder of a Windows short-name cwd's long name", async () => {
     const home = newHome();
     const folder = join(home, ".pi", "agent", "sessions", "--C--Program Files-Project Folder--");
     mkdirSync(folder, { recursive: true });
     writeFileSync(join(folder, "long.jsonl"), piHeader(ID(3), LONG) + piPrompt("long-name prompt"));
     const resolved: string[] = [];
-    expect(listSessions("pi", SHORT, { home, env: {}, platform: "win32", realpath: shortAlias(resolved) }).map((row) => row.id)).toEqual([ID(3)]);
+    expect((await listSessions("pi", SHORT, { home, env: {}, platform: "win32", realpath: shortAlias(resolved) })).map((row) => row.id)).toEqual([ID(3)]);
     expect(resolved).toEqual([SHORT]);
   });
 
@@ -1149,17 +1160,17 @@ describe("listSessions", () => {
     });
   }
 
-  it("lists a pi session only in a layout version pi documents", () => {
+  it("lists a pi session only in a layout version pi documents", async () => {
     const home = newHome();
     mkdirSync(piStore(home), { recursive: true });
     const header = (id: string, version?: number) => `${JSON.stringify({ type: "session", ...(version === undefined ? {} : { version }), id, timestamp: "2026-10-01T09:00:00.000Z", cwd: CWD })}\n`;
     writeFileSync(join(piStore(home), "future.jsonl"), header("future", 999) + piPrompt("future"));
     writeFileSync(join(piStore(home), "v1.jsonl"), header("v1") + piPrompt("v1"));
     writeFileSync(join(piStore(home), "v2.jsonl"), header("v2", 2) + piPrompt("v2"));
-    expect(listSessions("pi", CWD, { home, env: {} }).map((row) => row.id).sort()).toEqual(["v1", "v2"]);
+    expect((await listSessions("pi", CWD, { home, env: {} })).map((row) => row.id).sort()).toEqual(["v1", "v2"]);
   });
 
-  it("puts the most recently written session first, whatever its file name", () => {
+  it("puts the most recently written session first, whatever its file name", async () => {
     const home = newHome();
     mkdirSync(piStore(home), { recursive: true });
     for (const [name, seconds] of [["2026-10-01T09-00-00_a.jsonl", 1_790_000_300], ["2026-10-02T09-00-00_b.jsonl", 1_790_000_100], ["2026-10-03T09-00-00_c.jsonl", 1_790_000_200]] as const) {
@@ -1167,14 +1178,14 @@ describe("listSessions", () => {
       writeFileSync(path, piHeader(name) + piPrompt(name));
       utimesSync(path, seconds, seconds);
     }
-    expect(listSessions("pi", CWD, { home, env: {} }).map((row) => row.id)).toEqual(["2026-10-01T09-00-00_a.jsonl", "2026-10-03T09-00-00_c.jsonl", "2026-10-02T09-00-00_b.jsonl"]);
+    expect((await listSessions("pi", CWD, { home, env: {} })).map((row) => row.id)).toEqual(["2026-10-01T09-00-00_a.jsonl", "2026-10-03T09-00-00_c.jsonl", "2026-10-02T09-00-00_b.jsonl"]);
   });
 
-  it("gives no resume command for an id that could be read as an option", () => {
+  it("gives no resume command for an id that could be read as an option", async () => {
     const home = newHome();
     mkdirSync(piStore(home), { recursive: true });
     writeFileSync(join(piStore(home), "flag.jsonl"), piHeader("--yolo") + piPrompt("flag"));
-    expect(listSessions("pi", CWD, { home, env: {} }).map((row) => [row.id, row.resume])).toEqual([["--yolo", null]]);
+    expect((await listSessions("pi", CWD, { home, env: {} })).map((row) => [row.id, row.resume])).toEqual([["--yolo", null]]);
   });
 });
 

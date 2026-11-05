@@ -18,3 +18,22 @@
 .usage-hub-login, .usage-hub-login form { display: flex; flex-direction: column; gap: var(--space-4); }
 .usage-hub-login .input { width: 100%; min-width: 0; }
 .usage-hub-login a { color: var(--accent); }
+
+/* the in-browser sign-in (UsageSignInDialog): the page to open, Codex's code, Claude's code box */
+.usage-sign-in-steps { align-items: flex-start; }
+.usage-sign-in-open { display: inline-flex; align-items: center; gap: var(--space-2); text-decoration: none; }
+.usage-sign-in-open svg, .usage-sign-in-footer .btn svg, .usage-sign-in-code .btn svg { width: 16px; height: 16px; }
+.usage-sign-in-host { margin-top: calc(-1 * var(--space-1)); overflow-wrap: anywhere; }
+.usage-sign-in-code { display: inline-flex; align-items: center; gap: var(--space-2); }
+.usage-sign-in-code code {
+  padding: var(--space-1) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-lg);
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+.usage-sign-in-paste { display: flex; flex-direction: column; gap: var(--space-2); align-self: stretch; }
+.usage-sign-in-paste .btn { align-self: flex-start; }
+.usage-sign-in-footer { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-4); }
+.usage-sign-in-footer .btn { display: inline-flex; align-items: center; gap: var(--space-2); }

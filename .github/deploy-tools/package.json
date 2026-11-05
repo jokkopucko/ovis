@@ -1,0 +1,8 @@
+{
+  "name": "ovis-deploy-tools",
+  "private": true,
+  "description": "The wrangler the hosted shell's deploy jobs install with --frozen-lockfile (release.yml, shell-preview.yml; docs/development.md#releasing)",
+  "dependencies": {
+    "wrangler": "4.156.0"
+  }
+}

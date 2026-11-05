@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { DROPLET_REPEAT_MS, FLICK_WINDOW_MS, LONG_TURN_MS, dropletAllows, endedTurn, flickVelocity, onDroplet, seedStatuses, showDroplet, trackTurn, type DropletNotice, type QueuedDroplet } from "./droplet.ts";
 import { shouldNotifyStatus } from "../../shared/notify-policy.ts";
+import { paneStorageId } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 
 const notice: DropletNotice = { machineId: "local", paneId: "p1", agent: "claude", title: "api", machine: null, kind: "blocked" };
@@ -146,6 +147,20 @@ describe("seedStatuses", () => {
     expect(known.get("p1")).toBe("idle");
     expect(turns.started.has("p1")).toBe(false);
     expect(turns.lasted.get("p1")).toBe(9_000);
+  });
+
+  it("drops the turns of a pane closed on a PC whose roster was read, and keeps an offline PC's", () => {
+    const known = new Map<string, AgentStatus>();
+    const turns = { started: new Map<string, number>(), lasted: new Map<string, number>() };
+    const remote = paneStorageId("pc:2", "p1");
+    seedStatuses(known, [...roster(["p1", "idle"], ["p2", "idle"]), { id: "pc:2", snapshot: { panes: [{ pane_id: "p1", agent_status: "idle" as AgentStatus }] } }], turns, 0);
+    seedStatuses(known, [...roster(["p1", "working"], ["p2", "idle"]), { id: "pc:2", snapshot: { panes: [{ pane_id: "p1", agent_status: "working" as AgentStatus }] } }], turns, 1_000);
+    turns.lasted.set("p2", 500);
+    expect([...turns.started.keys()].sort()).toEqual(["p1", remote].sort());
+    // p1 and p2 closed here (no pane-exited is sent for a closed pane); pc:2 is offline for now
+    seedStatuses(known, [{ id: "local", snapshot: { panes: [] } }, { id: "pc:2", snapshot: null }], turns, 2_000);
+    expect([...turns.started.keys()]).toEqual([remote]);
+    expect(turns.lasted.size).toBe(0);
   });
 
   it("takes a pane first seen as it is: no news", () => {

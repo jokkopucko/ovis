@@ -1,0 +1,6 @@
+# what scripts/build.ts downloads, stages and builds
+.cache/
+stage/
+out/
+dist/
+renderer/ovis-logo.png

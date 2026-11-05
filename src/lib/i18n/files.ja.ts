@@ -3,10 +3,11 @@
  * components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
  * components/TextFileView.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
- * components/RepoDiff.tsx, lib/repoDiff.ts, components/WebPanel.tsx.
+ * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const FILES_JA: Record<string, string> = {
+  "Too large to open on the phone - download on the PC": "スマートフォンで開くには大きすぎます。PCでダウンロードしてください。",
   "Show source": "ソースを表示",
   "Resize file panel": "ファイルパネルの幅を変更",
   "Show beside the pane": "ペインの横に表示",
@@ -116,4 +117,20 @@ export const FILES_JA: Record<string, string> = {
   "Collapse all folders": "すべてのフォルダを折りたたむ",
   "Expand all folders": "すべてのフォルダを展開",
   "Browse folders in the palette": "パレットでフォルダを参照",
+  "Add a note on this line": "この行にメモを追加",
+  "Diff lines: the arrow keys pick a line, Enter adds a note on it": "差分の行: 矢印キーで行を選び、Enterでメモを追加します",
+  "Note added. It goes first in the next message you send from this pane's Chat (not with a slash command, a ! line or an answer to a question).": "メモを追加しました。このペインのチャットから送る次のメッセージの先頭に入ります(スラッシュコマンド、! の行、質問への回答には入りません)。",
+  "Click or tap a line, or use the arrow keys, to add a note on it.": "行をクリックまたはタップするか、矢印キーで選んでメモを追加します。",
+  "Add a note": "メモを追加",
+  "This note would make your next message too long. Shorten the note or the message, or remove a waiting comment.": "このメモを入れると次のメッセージが長すぎます。メモかメッセージを短くするか、待機中のコメントを削除してください。",
+  "This note could not be saved on this device.": "この端末にメモを保存できませんでした。",
+  "Note on {place}": "{place}へのメモ",
+  "What should the agent know about this line?": "この行についてエージェントに伝えることは?",
+  "Note": "メモ",
+  "Add to next message": "次のメッセージに追加",
+  "Notes go to the pane this diff came from, and it has none.": "メモはこの差分を開いたペインに送られますが、そのペインがありません。",
+  "The pane this diff came from has closed, so a note has nowhere to go.": "この差分を開いたペインが閉じたため、メモの送り先がありません。",
+  "No agent is running in the pane this diff came from.": "この差分を開いたペインで実行中のエージェントがありません。",
+  "This window only watches the pane while another one types in it. Click the pane to type, then add the note.": "別のウィンドウが入力している間、このウィンドウはペインを表示するだけです。ペインをクリックして入力できるようにしてから、メモを追加してください。",
+  "Open the pane this diff came from first, so this window knows it can type there.": "まずこの差分を開いたペインを開いてください。そうするとこのウィンドウがそこに入力できるか分かります。",
 };

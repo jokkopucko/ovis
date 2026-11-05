@@ -283,6 +283,21 @@ describe("push delivery", () => {
     });
   });
 
+  it("counts a pane alert a device took, never the test push or one the push service refused", async () => {
+    let delivered = 0;
+    const push = subscribed({ onAlertDelivered: () => { delivered += 1; } });
+    expect(await push.sendTest(fake.subscription.endpoint)).toEqual({ ok: true });
+    expect(delivered).toBe(0);
+    push.seed([pane("w1:p1", "working", "claude: fix the build")]);
+    await push.onStatus("w1:p1", "blocked");
+    expect(fake.received.at(-1)!.payload).toMatchObject({ pane_id: "w1:p1" });
+    expect(delivered).toBe(1);
+    fake.answerWith(500);
+    await push.onStatus("w1:p1", "working");
+    await push.onStatus("w1:p1", "blocked");
+    expect(delivered).toBe(1);
+  });
+
   it("forgets a device its push service reports gone", async () => {
     const push = subscribed();
     fake.answerWith(410);

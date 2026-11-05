@@ -39,21 +39,11 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
         expect(answerKeys(rich, answer)).toEqual(answerKeys(single, answer));
       }
 
-      // a question omp cut at four rows, which its footer offers to expand, is matched by what it
-      // shows and given whole; at 60 columns the footer is cut before `expand`, and the card stays as drawn
+      // a question omp cut at four rows stays as drawn: what it shows is a prefix, which another call's
+      // question may share, and the card must not give one call's words to the menu of another
       const multi = card(screen(version, "multi", width));
       expect(multi.question.endsWith("…")).toBe(true);
-      const richMulti = ompMarkdownPrompt(multi, open(version));
-      if (width === 60) {
-        expect(richMulti).toBe(multi);
-        return;
-      }
-      expect(richMulti).toMatchObject({
-        id: multi.id, text_format: "markdown", multi_select: true,
-        question: "Pick the **targets**:\n\n- Desktop *first*\n- Phone `390px`\n\n```sh\nbun run qa\n```",
-        options: [{ label: "Desktop", description: "~~Old~~ wide layout." }, { label: "`Phone`", description: "Narrow **layout**." }],
-      });
-      expect(answerKeys(richMulti, { option_indices: [0, 1] })).toEqual(answerKeys(multi, { option_indices: [0, 1] }));
+      expect(ompMarkdownPrompt(multi, open(version))).toBe(multi);
     });
 
     it(`leaves an option with a preview as drawn (${version}, ${width} columns)`, () => {
@@ -161,10 +151,14 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
 
   it("leaves the card as drawn for a question the card would draw as a diagram, or options it would show alike (#2233)", () => {
     // omp draws a ```mermaid fence's code; the chat's Markdown would draw a diagram in its place
+    // (this fixture's question is cut, so it stays as drawn whatever its fences; the rule below holds for whole ones)
     const multi = card(screen("18.13.2", "multi", 120));
-    expect(ompMarkdownPrompt(multi, open("18.13.2"))?.text_format).toBe("markdown");
-    const diagram = withArgs(open("18.13.2"), (args) => { args.questions[1]!.question = args.questions[1]!.question.replace("```sh", "```mermaid"); });
-    expect(ompMarkdownPrompt(multi, diagram)).toBe(multi);
+    expect(ompMarkdownPrompt(multi, open("18.13.2"))).toBe(multi);
+    // and a ```svg fence's, which the chat draws as a figure, and a ```math one's, drawn as a formula
+    for (const language of ["mermaid", "svg", "math"]) {
+      const diagram = withArgs(open("18.13.2"), (args) => { args.questions[1]!.question = args.questions[1]!.question.replace("```sh", `\`\`\`${language}`); });
+      expect(ompMarkdownPrompt(multi, diagram)).toBe(multi);
+    }
 
     // two options omp draws as different characters (or with different link addresses) that the card shows alike
     const version = "18.12.6";

@@ -171,3 +171,67 @@ describe("completion replay across a moved subscription key", () => {
     }
   });
 });
+
+describe("a pane moved to another workspace outside this server (#1503)", () => {
+  it("tells clients both IDs before the structure change, and a new-ID attach is not held by the old-ID one", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "ovis-test-moved-ids-"));
+    let source: Awaited<ReturnType<typeof workspaceCreate>> | undefined;
+    let target: Awaited<ReturnType<typeof workspaceCreate>> | undefined;
+    let app: ReturnType<typeof createServer> | undefined;
+    const sockets: WebSocket[] = [];
+    const open = async (frames: ServerMessage[]): Promise<WebSocket> => {
+      const ws = new WebSocket(`ws://localhost:${app!.port}/ws`);
+      sockets.push(ws);
+      const snapshot = Promise.withResolvers<void>();
+      ws.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data)) as ServerMessage;
+        frames.push(frame);
+        if (frame.type === "snapshot") snapshot.resolve();
+      });
+      await snapshot.promise;
+      return ws;
+    };
+    const until = (frames: ServerMessage[], matches: (frame: ServerMessage) => boolean, ws: WebSocket, what: string, timeoutMs = 5000): Promise<void> => new Promise((resolve, reject) => {
+      if (frames.some(matches)) { resolve(); return; }
+      const timer = setTimeout(() => { ws.removeEventListener("message", check); reject(new Error(`no ${what} within ${timeoutMs} ms`)); }, timeoutMs);
+      function check() { if (!frames.some(matches)) return; clearTimeout(timer); ws.removeEventListener("message", check); resolve(); }
+      ws.addEventListener("message", check);
+    });
+    try {
+      source = await workspaceCreate({ cwd: stateDir, label: "ovis-test-moved-ids-source" });
+      // a second pane keeps the source workspace open after the move
+      await herdrRpc("pane.split", { target_pane_id: source.root_pane.pane_id, direction: "right", cwd: stateDir, focus: false });
+      target = await workspaceCreate({ cwd: stateDir, label: "ovis-test-moved-ids-target" });
+      app = createServer({ port: 0, stateDir });
+      await app.statusReady;
+      const from = source.root_pane.pane_id;
+      const mover: ServerMessage[] = [], stayer: ServerMessage[] = [];
+      const moverWs = await open(mover), stayerWs = await open(stayer);
+      // both show the pane's terminal; the second keeps its old-ID attach after the move
+      for (const ws of [moverWs, stayerWs]) ws.send(JSON.stringify({ type: "attach", pane_id: from, cols: 80, rows: 24 }));
+      await until(mover, (frame) => frame.type === "input-ready" && frame.pane_id === from, moverWs, "old-ID input-ready");
+      await until(stayer, (frame) => frame.type === "input-ready" && frame.pane_id === from, stayerWs, "old-ID input-ready");
+      mover.length = 0;
+      // the RPC behind `herdr pane move <pane> --new-tab --workspace <id>` in herdr's own window
+      const { move_result } = await herdrRpc<{ move_result: { pane: { pane_id: string } } }>("pane.move", {
+        pane_id: from, destination: { type: "new_tab", workspace_id: target.workspace.workspace_id }, focus: false,
+      });
+      const to = move_result.pane.pane_id;
+      expect(to).not.toBe(from);
+      await until(mover, (frame) => frame.type === "session-changed", moverWs, "session-changed");
+      const moved = mover.findIndex((frame) => frame.type === "pane-moved");
+      expect(mover[moved]).toEqual({ type: "pane-moved", from, to });
+      expect(moved).toBeLessThan(mover.findIndex((frame) => frame.type === "session-changed"));
+      moverWs.send(JSON.stringify({ type: "detach", pane_id: from }));
+      moverWs.send(JSON.stringify({ type: "attach", pane_id: to, cols: 80, rows: 24 }));
+      await until(mover, (frame) => frame.type === "input-ready" && frame.pane_id === to, moverWs, "new-ID input-ready");
+      expect(mover.filter((frame) => frame.type === "error" && frame.code === "attach_held")).toEqual([]);
+    } finally {
+      for (const ws of sockets) ws.close();
+      app?.stop();
+      if (target) await workspaceClose(target.workspace.workspace_id).catch(() => {});
+      if (source) await workspaceClose(source.workspace.workspace_id).catch(() => {});
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }, 20000);
+});

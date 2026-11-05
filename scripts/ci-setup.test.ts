@@ -265,6 +265,7 @@ describe("action pins and checkout credentials", () => {
       for (const [, uses] of text.matchAll(/uses:\s*([^\s#]+)/g)) if (!uses!.startsWith("./")) names.add(actionName(uses!));
     }
     expect([...names].sort()).toEqual([
+      "actions/attest-build-provenance",
       "actions/cache", "actions/cache/restore", "actions/checkout", "actions/deploy-pages", "actions/download-artifact",
       "actions/setup-node", "actions/upload-artifact", "actions/upload-pages-artifact", "oven-sh/setup-bun",
     ]);

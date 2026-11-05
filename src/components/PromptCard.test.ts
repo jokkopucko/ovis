@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PromptCard } from "./PromptCard.tsx";
@@ -8,13 +9,13 @@ import system from "../../server/fixtures/pi-ask-system-theme.json";
 import { parseInteractivePrompt } from "../../server/prompt.ts";
 import fixtures from "../../server/fixtures/pi-ask-navigation.json";
 
-const render = (screen: string): string => {
-  const prompt = parseInteractivePrompt("pi", screen)!;
+const render = (screen: string, agent = "pi", typedAnswer: { option_index: number } | null = null): string => {
+  const prompt = parseInteractivePrompt(agent, screen)!;
   const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
   try {
     return renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(PromptCard, {
-      paneId: "fictional-pi-pane", prompt, onAnswered() {}, onPromptChanged() {},
+      paneId: "fictional-pi-pane", prompt, onAnswered() {}, onPromptChanged() {}, typedAnswer,
     }) }));
   } finally {
     if (languages) Object.defineProperty(navigator, "languages", languages);
@@ -60,4 +61,11 @@ test("navigation never silently discards web-only edits, but saved native values
   expect(blocksStepNavigation(multi, new Set([0]), "")).toBe(false);
   expect(blocksStepNavigation(multi, new Set([0, 1]), "")).toBe(true);
   expect(blocksStepNavigation({ ...prompt, agent: "opencode" }, new Set(), "unsent")).toBe(false);
+});
+
+test("Claude's steps and Back wait while a typed answer waits for Confirm, which a move would drop", () => {
+  const review = readFileSync(new URL("../../server/fixtures/claude-tabs-2.1.312-review-120.ansi", import.meta.url), "utf8");
+  const back = (html: string) => /<button[^>]*class="btn btn-ghost prompt-card-back"[^>]*>/.exec(html)?.[0] ?? "";
+  expect(back(render(review, "claude"))).not.toContain("disabled");
+  expect(back(render(review, "claude", { option_index: 0 }))).toContain("disabled");
 });

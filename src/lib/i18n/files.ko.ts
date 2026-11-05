@@ -3,10 +3,11 @@
  * components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
  * components/TextFileView.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
- * components/RepoDiff.tsx, lib/repoDiff.ts, components/WebPanel.tsx.
+ * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const FILES_KO: Record<string, string> = {
+  "Too large to open on the phone - download on the PC": "휴대폰에서 열기에는 너무 큽니다. PC에서 다운로드하세요.",
   "Show source": "소스 보기",
   "Resize file panel": "파일 패널 너비 조절",
   "Show beside the pane": "창 옆에 표시",
@@ -116,4 +117,20 @@ export const FILES_KO: Record<string, string> = {
   "Collapse all folders": "모든 폴더 접기",
   "Expand all folders": "모든 폴더 펼치기",
   "Browse folders in the palette": "팔레트에서 폴더 탐색",
+  "Add a note on this line": "이 줄에 메모 추가",
+  "Diff lines: the arrow keys pick a line, Enter adds a note on it": "변경 내용 줄: 화살표 키로 줄을 고르고, Enter로 메모를 추가합니다",
+  "Note added. It goes first in the next message you send from this pane's Chat (not with a slash command, a ! line or an answer to a question).": "메모를 추가했습니다. 이 패널의 채팅에서 보내는 다음 메시지 맨 앞에 들어갑니다(슬래시 명령, ! 줄, 질문에 대한 답변에는 들어가지 않습니다).",
+  "Click or tap a line, or use the arrow keys, to add a note on it.": "줄을 클릭하거나 탭하거나 화살표 키로 골라 메모를 추가하세요.",
+  "Add a note": "메모 추가",
+  "This note would make your next message too long. Shorten the note or the message, or remove a waiting comment.": "이 메모를 넣으면 다음 메시지가 너무 길어집니다. 메모나 메시지를 줄이거나, 대기 중인 코멘트를 지우세요.",
+  "This note could not be saved on this device.": "이 기기에 메모를 저장할 수 없습니다.",
+  "Note on {place}": "{place}에 단 메모",
+  "What should the agent know about this line?": "이 줄에 대해 에이전트가 알아야 할 점은?",
+  "Note": "메모",
+  "Add to next message": "다음 메시지에 추가",
+  "Notes go to the pane this diff came from, and it has none.": "메모는 이 변경 내용을 연 패널로 가는데, 그 패널이 없습니다.",
+  "The pane this diff came from has closed, so a note has nowhere to go.": "이 변경 내용을 연 패널이 닫혀서 메모를 보낼 곳이 없습니다.",
+  "No agent is running in the pane this diff came from.": "이 변경 내용을 연 패널에서 실행 중인 에이전트가 없습니다.",
+  "This window only watches the pane while another one types in it. Click the pane to type, then add the note.": "이 창은 다른 창이 입력하는 동안 이 패널을 보기만 합니다. 패널을 클릭해 입력한 뒤 메모를 추가하세요.",
+  "Open the pane this diff came from first, so this window knows it can type there.": "이 변경 내용을 연 패널을 먼저 여세요. 그래야 이 창이 그 패널에 입력할 수 있는지 압니다.",
 };

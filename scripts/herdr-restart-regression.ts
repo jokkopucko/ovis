@@ -104,9 +104,9 @@ try {
   const otherReady = frame(socket, "other pane ready", (m) => m.type === "input-ready" && m.pane_id === other && m.ready !== false);
   await page.locator(`.pane-select[title^="${other} —"]`).click();
   await otherReady;
-  const backReady = frame(socket, "original pane ready again", (m) => m.type === "input-ready" && m.pane_id === pane && m.ready !== false);
   await page.locator(`.pane-select[title^="${pane} —"]`).click();
-  await backReady;
+  // A warm tab keeps its original attachment, so returning needs no new input-ready receipt.
+  await page.locator(`[data-layout-pane="${pane}"] [data-pane-content]`).waitFor();
   const attaches: string[] = [];
   socket.on("framesent", ({ payload }) => {
     const message: { type: string; pane_id?: string } = JSON.parse(String(payload));

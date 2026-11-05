@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { paneStorageId } from "../../shared/machines.ts";
+import { prefetchPaneConversation } from "./api.ts";
 import { PaneLenses } from "./paneLens.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import type { PaneView } from "./actions.ts";
@@ -26,8 +27,8 @@ export function lensOwner(machineId: string, paneId: string): string {
   return typeof lifetime === "string" ? `${lifetime}\u0000${pane}` : pane;
 }
 
-/** `hasAgent`: herdr leaves `agent` out for a shell, so callers compare with `!= null` */
-export function storedView(lenses: PaneLenses, picks: ReadonlyMap<string, PaneView>, paneId: string, machineId: string, hasAgent: boolean | null, terminalAttach: boolean): PaneView {
+/** `hasAgent`: herdr leaves `agent` out for a shell, so callers compare with `!= null`; `keep` false only asks (a press, not a pick) */
+export function storedView(lenses: PaneLenses, picks: ReadonlyMap<string, PaneView>, paneId: string, machineId: string, hasAgent: boolean | null, terminalAttach: boolean, keep = true): PaneView {
   if (!terminalAttach) return "chat";
   const key = lensOwner(machineId, paneId);
   const picked = picks.get(key);
@@ -38,7 +39,8 @@ export function storedView(lenses: PaneLenses, picks: ReadonlyMap<string, PaneVi
   } catch {
     /* private mode */
   }
-  return lenses.of(key, hasAgent, window.matchMedia?.("(pointer: coarse)").matches === true);
+  const coarse = window.matchMedia?.("(pointer: coarse)").matches === true;
+  return keep ? lenses.of(key, hasAgent, coarse) : lenses.peek(key, hasAgent, coarse);
 }
 
 export function usePaneLensState() {
@@ -48,13 +50,15 @@ export function usePaneLensState() {
   return { lens, setLens, viewPicks, setViewPicks };
 }
 
-export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, notificationViewTarget, setNotificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek }: {
+export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, attachOn, notificationViewTarget, setNotificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek }: {
   settings: Settings;
   selectedPaneId: string | null;
   selectedMachineId: string;
   selectedPane: HerdrPane | null;
   selectedAgent: HerdrPane["agent"] | null;
   terminalAttach: boolean;
+  /** terminalAttach for any PC, the one selected or not */
+  attachOn: (machineId: string) => boolean;
   notificationViewTarget: NotificationTarget | null;
   setNotificationViewTarget: Dispatch<SetStateAction<NotificationTarget | null>>;
   lens: { key: string; view: PaneView };
@@ -93,7 +97,12 @@ export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selec
   // its lens picked by hand) the pane is back on the lens it had. A shell has no conversation to
   // show (storedView), so its alert opens its own lens; until the snapshot says, it counts as an agent
   if (notificationView !== null && !(notificationView === "chat" && selectedPane !== null && selectedAgent === null)) view = notificationView;
-  return { lenses, view };
+  // a press on an agent pane's tab or sidebar row starts its chat's first read before the pick renders
+  // it, when the lens a pick gives it (asked, not kept) is the chat
+  const pressPane = (machineId: string, paneId: string): void => {
+    if (storedView(lenses, viewPicks, paneId, machineId, true, attachOn(machineId), false) === "chat") prefetchPaneConversation(paneId, machineId, settings.historyPrompts);
+  };
+  return { lenses, view, pressPane };
 }
 
 export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setTerminalPeek, setLens, setAutoSelected, selectedPaneId, selectedMachineId }: {

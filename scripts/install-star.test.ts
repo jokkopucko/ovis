@@ -108,8 +108,19 @@ class Pc {
       const real = Bun.which(tool);
       if (!real) continue;
       if (tool !== "bash") { symlinkSync(real, join(bin, tool)); continue; }
-      // bash as the PC has it, which also leaves how the question's read ended for answerRead()
-      writeFileSync(join(bin, "bash"), `#!/bin/sh\ncase "$*" in\n  *"${QUESTION_READ}"*) '${real}' "$@"; status=$?; echo "$status" > "$SCRATCH/read.status"; exit "$status" ;;\nesac\nexec '${real}' "$@"\n`);
+      // Clock both ends beside the real read, independently of the parent's output delivery.
+      writeFileSync(join(bin, "bash"), `#!/bin/sh
+case "$*" in
+  *"${QUESTION_READ}"*)
+    perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'print clock_gettime(CLOCK_MONOTONIC) * 1000' > "$SCRATCH/read.started"
+    '${real}' "$@"
+    status=$?
+    perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'print clock_gettime(CLOCK_MONOTONIC) * 1000' > "$SCRATCH/read.ended"
+    echo "$status" > "$SCRATCH/read.status"
+    exit "$status" ;;
+esac
+exec '${real}' "$@"
+`);
       chmodSync(join(bin, "bash"), 0o755);
     }
     symlinkSync(process.execPath, join(bin, "bun"));
@@ -199,14 +210,13 @@ class Pc {
    * typed as the install starts, long before the question. The wrapping shell survives Ctrl-C as
    * the user's own shell does, and reports the installer's exit code.
    */
-  async atTerminal(typed: string | null, extra?: Record<string, string>, typedAhead?: string, background = false): Promise<{ out: string; exitCode: number; asked: boolean; askedAt: number | null }> {
+  async atTerminal(typed: string | null, extra?: Record<string, string>, typedAhead?: string, background = false, observeAfterExit = false): Promise<{ out: string; exitCode: number; asked: boolean; readDuration: number | null }> {
     // a background job of a shell with job control: its own process group, not the terminal's foreground
     const install = background ? `bash -c 'set -m; (cat "${join(ROOT, "install.sh")}" | sh) & wait %1'` : `cat "${join(ROOT, "install.sh")}" | sh`;
     const command = `trap : INT; ${install}; echo "exit=$?"`;
     const child = Bun.spawn([Bun.which("script")!, "-qec", command, "/dev/null"], { cwd: this.scratch, env: this.environment(extra), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     let out = "";
     let answered = false;
-    let askedAt: number | null = null;
     let again: ReturnType<typeof setInterval> | undefined;
     // The installer can end before what is typed reaches it (Ctrl-C is pressed until it lands). As
     // script(1) exits it closes its end of the pipe, and until it is reaped a write there throws
@@ -223,10 +233,10 @@ class Pc {
     if (typedAhead) type(typedAhead);
     const decoder = new TextDecoder();
     try {
+      if (observeAfterExit) await child.exited;
       // the terminal's output ends with the installer (or when deadline() ends script(1))
       for await (const chunk of child.stdout) {
         out += decoder.decode(chunk, { stream: true });
-        if (askedAt === null && out.includes(QUESTION)) askedAt = Date.now();
         if (answered || typed === null || !out.includes(QUESTION)) continue;
         answered = true;
         type(typed);
@@ -240,7 +250,11 @@ class Pc {
     }
     child.stdin.end();
     if (ended()) throw new Error(`install.sh did not end within ${RUN_ENDS_WITHIN_MS} ms at a terminal; it printed:\n${out}`);
-    return { out, exitCode: Number(/exit=(\d+)/.exec(out)?.[1] ?? -1), asked: out.includes(QUESTION), askedAt };
+    const readStarted = join(this.scratch, "read.started");
+    const readEnded = join(this.scratch, "read.ended");
+    const readDuration = existsSync(readStarted) && existsSync(readEnded)
+      ? Number(readFileSync(readEnded, "utf8")) - Number(readFileSync(readStarted, "utf8")) : null;
+    return { out, exitCode: Number(/exit=(\d+)/.exec(out)?.[1] ?? -1), asked: out.includes(QUESTION), readDuration };
   }
 }
 const pcs: string[] = [];
@@ -555,19 +569,19 @@ describe.skipIf(platform() !== "linux" || !Bun.which("script"))("install.sh at a
     expect(asked).toBe(false);
   });
 
-  it.concurrent("goes on by itself when nobody is at the terminal", async () => {
+  for (const observeAfterExit of [false, true]) it.concurrent(`goes on by itself when nobody is at the terminal${observeAfterExit ? ", even when its output is read after it exits" : ""}`, async () => {
     const pc = new Pc("not");
     const started = Date.now();
-    const { asked, askedAt, exitCode } = await pc.atTerminal(null);
+    const { asked, readDuration, exitCode } = await pc.atTerminal(null, {}, undefined, false, observeAfterExit);
     const ended = Date.now();
     expect(asked).toBe(true);
     expect(exitCode).toBe(0);
     expect(pc.answerRead()).toBeGreaterThan(128);
     expect(pc.stars()).toBe(0);
-    // the 20 seconds are the question's, from the moment it is on the terminal
-    expect(askedAt).not.toBeNull();
-    expect(ended - askedAt!).toBeGreaterThanOrEqual(19_000);
-    expect(ended - askedAt!).toBeLessThan(27_000);
+    // Measure the child's read, not when this process got around to receiving its output.
+    expect(readDuration).not.toBeNull();
+    expect(readDuration!).toBeGreaterThanOrEqual(19_000);
+    expect(readDuration!).toBeLessThan(27_000);
     expect(ended - started).toBeLessThan(40_000);
   });
 });

@@ -39,6 +39,13 @@ export type SessionResumeResponse =
   | { action: "opened"; workspace_id: string; pane_id: string }
   | { action: "created"; workspace_id: string; pane_id: string; agent_started: boolean; error?: { code: string; message: string } };
 
+/**
+ * Pi establishes all rows with bounded header reads before scanning labels. A label deadline keeps
+ * every established row, with null unfinished labels or unchanged cached labels, even on label read
+ * failures or file changes. Later listings resume unchanged files and unfinished headers. Header
+ * expiry/failure with no checked rows, a full header queue or reader shutdown answers 503
+ * `session_history_busy` with Retry-After: 1. Both responses carry Cache-Control: no-store.
+ */
 export interface SessionHistoryResponse {
   workspace_id: string;
   agent: SessionHistoryAgent;

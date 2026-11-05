@@ -44,11 +44,12 @@ export function minimapCurrent(turnRows: readonly number[], firstVisible: number
 /**
  * How many ticks a rail this tall draws for `count` turns: one per turn while they sit
  * MINIMAP_TICK_MIN_PX apart, else one per slot of that size, so a long history loaded into the
- * chat adds no buttons once the rail is full.
+ * chat adds no buttons once the rail is full. A rail too short for MINIMAP_MIN_TURNS ticks gets
+ * fewer, never closer ones.
  */
 export function minimapSlots(count: number, railPx: number): number {
   if (!(railPx > 0)) return count;
-  return Math.max(Math.min(count, MINIMAP_MIN_TURNS), Math.min(count, Math.floor(railPx / MINIMAP_TICK_MIN_PX) + 1));
+  return Math.min(count, Math.floor(railPx / MINIMAP_TICK_MIN_PX) + 1);
 }
 
 /** The first turn of a slot: turns are shared out evenly, the last slot ending at the last turn. */

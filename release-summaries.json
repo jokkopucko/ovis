@@ -1,4 +1,322 @@
 {
+  "0.4.22": {
+    "en": {
+      "new": [
+        "Turn on relay remote access in Settings (off by default); app.ovis.sh ships separately.",
+        "Chat shows the pictures in Copilot, Grok and Hermes sessions.",
+        "Chat draws svg code blocks as figures in the theme's colors.",
+        "Chat draws math written between dollar signs.",
+        "Portal can sign visitors in by link or login; they watch by default.",
+        "DeepSeek Harness joins Settings → Agents; Chat reads its conversations on Linux.",
+        "A numbered tab is named from a few words of its first message.",
+        "Add a note on a diff line; it goes into your next message."
+      ],
+      "improved": [
+        "Chat can open thinking or fold work by default, set in Settings.",
+        "Select words in a Chat reply to quote them into your message.",
+        "Drag a key bar key by its handle to reorder it in Settings.",
+        "On phones, same-host links can open in a popup inside the app.",
+        "Claude question cards list each question as a step, with Back.",
+        "OmO, Codex and Hermes cards go between questions with Back and Next.",
+        "Connect a phone through the Ovis relay, no Tailscale needed, or Tailscale or a code.",
+        "Chat shows pictures whole, up to the width of the column."
+      ],
+      "fixed": [
+        "Panes show again in Safari 16.4 to 17.3 and on iOS 16.4 and later.",
+        "Stop with a message queued no longer loses the stopped message.",
+        "A first message from New tab reliably reaches Claude Code.",
+        "Codex Chat shows the conversation again once an answer finishes.",
+        "Question cards show as soon as the agent asks and stay put.",
+        "Chat no longer redraws turns or jumps when you send or reopen it.",
+        "A setting changed just before a reload is no longer lost.",
+        "Claude's plan card shows in narrow panes too."
+      ]
+    },
+    "ko": {
+      "new": [
+        "설정에서 Ovis 릴레이를 통한 원격 접속을 켤 수 있습니다(기본은 꺼짐). app.ovis.sh는 따로 배포됩니다.",
+        "Chat에서 Copilot, Grok, Hermes 세션의 그림을 보여 줍니다.",
+        "Chat이 svg 코드 블록을 테마 색의 그림으로 그립니다.",
+        "Chat이 달러 기호로 쓴 수식을 그립니다.",
+        "Portal 로그인으로 링크나 계정으로 방문자를 들이며, 기본은 보기 전용입니다.",
+        "DeepSeek Harness가 설정 → 에이전트에 추가되고, Linux에서 대화를 Chat으로 읽습니다.",
+        "번호로만 불리는 탭에 첫 메시지의 몇 단어를 이름으로 보여 줍니다.",
+        "diff의 줄에 메모를 달면 다음 메시지에 함께 들어갑니다."
+      ],
+      "improved": [
+        "설정에서 Chat의 생각을 펼치거나 작업을 접은 채로 시작할 수 있습니다.",
+        "Chat 답변에서 고른 글을 인용으로 메시지에 넣을 수 있습니다.",
+        "설정에서 키 바의 키를 손잡이로 끌어 순서를 바꿉니다.",
+        "휴대폰에서 같은 호스트의 링크를 앱 안의 팝업으로 엽니다.",
+        "Claude 질문 카드가 질문을 단계로 보여 주고 뒤로 갈 수 있습니다.",
+        "OmO, Codex, Hermes 질문 카드에서 뒤로·다음으로 질문 사이를 오갑니다.",
+        "Tailscale 없이 Ovis 릴레이로, 또는 Tailscale이나 코드로 휴대폰을 연결합니다.",
+        "Chat이 그림을 열 너비까지 잘리지 않고 온전히 보여 줍니다."
+      ],
+      "fixed": [
+        "Safari 16.4~17.3과 iOS 16.4 이상에서 창이 다시 보입니다.",
+        "대기 중인 메시지가 있을 때 중지해도 멈춘 메시지가 사라지지 않습니다.",
+        "새 탭에서 보낸 첫 메시지가 Claude Code에 제대로 전달됩니다.",
+        "답변이 끝난 뒤에도 Codex Chat에 대화가 다시 보입니다.",
+        "질문 카드가 에이전트가 묻는 즉시 나타나고 그대로 남습니다.",
+        "메시지를 보내거나 다시 열 때 Chat이 턴을 다시 그리거나 튀지 않습니다.",
+        "새로고침 직전에 바꾼 설정이 사라지지 않습니다.",
+        "좁은 창에서도 Claude의 계획 카드가 보입니다."
+      ]
+    },
+    "ja": {
+      "new": [
+        "設定で Ovis リレー経由のリモートアクセスをオンにできます(既定はオフ)。app.ovis.sh は別途デプロイします。",
+        "チャットで Copilot、Grok、Hermes のセッションの画像を表示します。",
+        "チャットが svg コードブロックをテーマの色の図として描きます。",
+        "チャットがドル記号で書いた数式を描きます。",
+        "Portal のサインインで、リンクやログインから訪問者を招けます(既定は閲覧のみ)。",
+        "DeepSeek Harness が 設定 → エージェント に加わり、Linux で会話をチャットで読めます。",
+        "番号だけのタブに、最初のメッセージの数語を名前として表示します。",
+        "diff の行にメモを付けると、次のメッセージに入ります。"
+      ],
+      "improved": [
+        "設定で、チャットの思考を開いたまま、作業を畳んだまま始められます。",
+        "チャットの返信で選んだ文を引用としてメッセージに入れられます。",
+        "設定で、キーバーのキーをハンドルでドラッグして並べ替えられます。",
+        "スマートフォンでは、同じホストのリンクをアプリ内のポップアップで開けます。",
+        "Claude の質問カードが質問をステップで示し、「戻る」で戻れます。",
+        "OmO、Codex、Hermes の質問カードで、「戻る」「次へ」で質問間を移動できます。",
+        "Tailscale なしで Ovis リレーから、または Tailscale かコードでスマートフォンを接続できます。",
+        "チャットが画像を列の幅まで切らずに表示します。"
+      ],
+      "fixed": [
+        "Safari 16.4〜17.3 と iOS 16.4 以降で、ペインが再び表示されます。",
+        "メッセージを待機中に停止しても、停止したメッセージが消えなくなりました。",
+        "新しいタブからの最初のメッセージが確実に Claude Code に届きます。",
+        "Codex のチャットで、回答が終わった後も会話が表示されるようになりました。",
+        "質問カードがエージェントの質問と同時に表示され、そのまま残ります。",
+        "送信や再表示のときに、チャットがターンを描き直したり跳んだりしなくなりました。",
+        "再読み込みの直前に変えた設定が失われなくなりました。",
+        "狭いペインでも Claude のプランカードが表示されます。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "可在设置中开启经由 Ovis 中继的远程访问（默认关闭）；app.ovis.sh 将另行部署。",
+        "聊天会显示 Copilot、Grok 和 Hermes 会话中的图片。",
+        "聊天会把 svg 代码块按主题颜色绘制成图。",
+        "聊天会绘制用美元符号书写的数学公式。",
+        "Portal 可通过链接或登录让访客进入，默认仅可观看。",
+        "DeepSeek Harness 加入 设置 → 代理，在 Linux 上聊天可读取其对话。",
+        "仅以编号命名的标签页会以其第一条消息中的几个词为名称。",
+        "可以给 diff 中的某一行添加备注，它会放进下一条消息。"
+      ],
+      "improved": [
+        "可在设置中让聊天默认展开思考或折叠工作。",
+        "可在聊天回复中选中文字，作为引用放进消息。",
+        "在设置中可按住手柄拖动键栏按键来调整顺序。",
+        "在手机上，同主机链接可在应用内的弹窗中打开。",
+        "Claude 的提问卡片会把问题列为步骤，并可返回上一步。",
+        "OmO、Codex 和 Hermes 的提问卡片可用“返回”和“下一步”在问题间切换。",
+        "无需 Tailscale 即可通过 Ovis 中继连接手机，也可用 Tailscale 或配对码。",
+        "聊天会完整显示图片，最宽到栏宽。"
+      ],
+      "fixed": [
+        "在 Safari 16.4 至 17.3 及 iOS 16.4 以上，窗格重新可以显示。",
+        "有消息排队时点停止，不再丢失被停止的消息。",
+        "从新标签页发送的第一条消息能可靠地送达 Claude Code。",
+        "回答结束后，Codex 聊天会重新显示对话。",
+        "代理一提问，提问卡片就会出现并保持不动。",
+        "发送或重新打开时，聊天不再重绘轮次或跳动。",
+        "刷新前刚改的设置不再丢失。",
+        "在窄窗格中也会显示 Claude 的计划卡片。"
+      ]
+    }
+  },
+  "0.4.21": {
+    "en": {
+      "new": [
+        "A setup guide on a fresh install finds or installs your coding agent.",
+        "Add another coding agent from the New tab and New workspace pickers.",
+        "Comment on part of an agent's reply and send it with your next message.",
+        "List a Claude Code session's Artifact pages, once turned on in Settings.",
+        "Sign Claude Code or Codex in from the browser, without a terminal."
+      ],
+      "improved": [
+        "Cmd+click (Ctrl+click) a bare file name in the terminal to open it.",
+        "Turn on reading Claude's limits from its status line where its API is blocked.",
+        "Pi's Earlier sessions shows names from deep in long sessions.",
+        "A loading spinner shows while the app downloads on a slow link.",
+        "Settings → Agents shows each agent's version, accounts and limits on one page."
+      ],
+      "fixed": [
+        "Light themes no longer show a black frame around the terminal.",
+        "Ctrl with a trackpad wheel scrolls apps at normal speed again.",
+        "iPhone dictation starts from a tap instead of saying permission was denied.",
+        "A Codex pane's chat never shows another session's conversation.",
+        "Chat sends to Claude Code while its terminal is scrolled up."
+      ]
+    },
+    "ko": {
+      "new": [
+        "새로 설치하면 설정 안내가 코딩 에이전트를 찾거나 설치해 줍니다.",
+        "새 탭·새 워크스페이스 선택 화면에서 다른 코딩 에이전트를 추가합니다.",
+        "에이전트 답변의 일부에 코멘트를 달아 다음 메시지와 함께 보냅니다.",
+        "설정에서 켜면 Claude Code 세션이 Artifact로 게시한 페이지 목록이 보입니다.",
+        "터미널 없이 브라우저에서 Claude Code나 Codex에 로그인합니다."
+      ],
+      "improved": [
+        "터미널의 파일 이름만 Cmd+클릭(Ctrl+클릭)해도 파일이 열립니다.",
+        "사용량 API가 막힌 곳에서는 설정에서 켜면 Claude 한도를 상태 줄에서 읽습니다.",
+        "Pi의 이전 세션 목록에 긴 세션 깊숙이 있는 이름도 보입니다.",
+        "느린 연결에서는 앱을 내려받는 동안 로딩 표시가 나옵니다.",
+        "설정 → Agents 한 페이지에서 agent마다 버전, 계정, 한도를 봅니다."
+      ],
+      "fixed": [
+        "밝은 테마에서 터미널 둘레에 검은 테두리가 보이지 않습니다.",
+        "Ctrl을 누른 트랙패드 휠이 다시 보통 속도로 앱을 스크롤합니다.",
+        "iPhone 음성 입력이 권한 거부 대신 탭으로 시작됩니다.",
+        "Codex 패인의 Chat에 다른 세션의 대화가 더는 보이지 않습니다.",
+        "터미널을 위로 스크롤한 Claude Code에도 Chat 메시지가 전송됩니다."
+      ]
+    },
+    "ja": {
+      "new": [
+        "新しくインストールすると、セットアップガイドがコーディングエージェントを探すかインストールします。",
+        "新しいタブ・ワークスペースの選択画面から、別のコーディングエージェントを追加できます。",
+        "エージェントの返信の一部にコメントを付け、次のメッセージと一緒に送れます。",
+        "設定でオンにすると、Claude Code のセッションが Artifact として公開したページの一覧が表示されます。",
+        "ターミナルを使わずに、ブラウザから Claude Code や Codex にサインインできます。"
+      ],
+      "improved": [
+        "ターミナルのファイル名だけでも Cmd+クリック(Ctrl+クリック)で開けます。",
+        "使用量 API が使えない環境では、設定でオンにすると Claude の上限をステータスラインから読み取ります。",
+        "Pi の過去のセッション一覧に、長いセッションの奥にある名前も表示されます。",
+        "遅い回線では、アプリのダウンロード中に読み込み表示が出ます。",
+        "設定 → Agents の 1 ページで、エージェントごとのバージョン、アカウント、上限を確認できます。"
+      ],
+      "fixed": [
+        "ライトテーマでターミナルの周りに黒い枠が出なくなりました。",
+        "Ctrl を押したトラックパッドのホイールで、アプリが再び通常の速さでスクロールします。",
+        "iPhone の音声入力が、権限の拒否ではなくタップで始まります。",
+        "Codex のペインのチャットに、別のセッションの会話が表示されなくなりました。",
+        "ターミナルを上にスクロールした Claude Code にもチャットのメッセージが送られます。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "全新安装时，设置向导会查找或安装编程代理。",
+        "可以在新建标签页和新建工作区的选择界面中添加其他编程代理。",
+        "可以对代理回复的一部分添加评论，并随下一条消息发送。",
+        "在设置中开启后，可列出 Claude Code 会话通过 Artifact 发布的页面。",
+        "无需终端，直接在浏览器中登录 Claude Code 或 Codex。"
+      ],
+      "improved": [
+        "在终端中按住 Cmd(Ctrl)点击单独的文件名即可打开文件。",
+        "在用量 API 被拦截的网络中，可在设置中开启从状态栏读取 Claude 的额度。",
+        "Pi 的历史会话列表能显示长会话深处的名称。",
+        "网络较慢时，下载应用期间会显示加载指示。",
+        "在设置 → Agents 一个页面中查看每个代理的版本、账户和额度。"
+      ],
+      "fixed": [
+        "浅色主题下终端周围不再出现黑色边框。",
+        "按住 Ctrl 滚动触控板时，应用的滚动速度恢复正常。",
+        "iPhone 语音输入通过点按开始，不再提示权限被拒绝。",
+        "Codex 窗格的聊天不再显示其他会话的对话。",
+        "终端向上滚动时，聊天消息也能发送给 Claude Code。"
+      ]
+    }
+  },
+  "0.4.20": {
+    "en": {
+      "new": [
+        "Chat reads Letta Code conversations.",
+        "Start Claude Code with Ultracode on, at your chosen effort level.",
+        "Sign in again to an expired Claude or Codex account from usage.",
+        "Give Ovis a pure black background with the new Black theme.",
+        "Send Claude Code's existing draft without losing your Chat message."
+      ],
+      "improved": [
+        "The terminal draws whole screens without mixing old and new output.",
+        "A sent Chat message appears at once while the agent takes it.",
+        "Chat tabs reopen faster, with a choice of history page size.",
+        "Long OMO and GJC chats refresh faster while the agent works.",
+        "Terminal text uses the same coding font on Mac, Safari and Chrome."
+      ],
+      "fixed": [
+        "Korean typing in the iOS app is fixed by the PC update, without a new app build.",
+        "Chat keeps following new output when work blocks fold.",
+        "Claude Code Chat follows the conversation after branching.",
+        "Slow file previews no longer freeze every terminal.",
+        "Windows app updates recover from an old server left running."
+      ]
+    },
+    "ko": {
+      "new": [
+        "Letta Code 대화를 채팅에서 읽을 수 있습니다.",
+        "원하는 노력 수준을 고르고 Ultracode를 켠 채 Claude Code를 시작합니다.",
+        "사용량 화면에서 만료된 Claude나 Codex 계정에 다시 로그인합니다.",
+        "새 Black 테마로 Ovis의 배경을 완전한 검정으로 바꿀 수 있습니다.",
+        "채팅 메시지를 남겨 둔 채 Claude Code 입력창의 초안을 보낼 수 있습니다."
+      ],
+      "improved": [
+        "터미널이 이전 출력과 새 출력을 섞지 않고 완성된 화면을 그립니다.",
+        "보낸 채팅 메시지가 에이전트에 전달되는 동안에도 바로 보입니다.",
+        "채팅 탭이 더 빨리 열리고, 한 번에 불러올 대화 기록의 양을 고를 수 있습니다.",
+        "긴 OMO와 GJC 채팅도 에이전트가 일하는 동안 더 빨리 갱신됩니다.",
+        "Mac 앱, Safari, Chrome에서 터미널 글꼴이 같아집니다."
+      ],
+      "fixed": [
+        "PC를 업데이트하면 새 iOS 앱을 설치하지 않아도 터미널 한글 입력이 바로잡힙니다.",
+        "작업 블록이 접혀도 채팅이 새 출력을 계속 따라갑니다.",
+        "Claude Code에서 대화를 분기한 뒤에도 채팅이 그 대화를 따라갑니다.",
+        "파일 미리보기가 느려도 모든 터미널이 함께 멈추지 않습니다.",
+        "Windows 앱이 남아 있던 옛 서버 때문에 실패한 업데이트를 복구합니다."
+      ]
+    },
+    "ja": {
+      "new": [
+        "Letta Code の会話をチャットで読めます。",
+        "好みの思考レベルで Ultracode をオンにして Claude Code を起動できます。",
+        "使用量の画面から、期限切れの Claude や Codex アカウントに再ログインできます。",
+        "新しい Black テーマで Ovis の背景を真っ黒にできます。",
+        "チャットの入力を残したまま、Claude Code の入力欄にある下書きを送れます。"
+      ],
+      "improved": [
+        "ターミナルが古い出力と新しい出力を混ぜず、完成した画面を描画します。",
+        "送ったチャットメッセージが、エージェントに届くまでの間もすぐに表示されます。",
+        "チャットのタブが素早く開き、一度に読み込む履歴の量を選べます。",
+        "長い OMO や GJC のチャットも、エージェントの作業中に素早く更新されます。",
+        "Mac アプリ、Safari、Chrome でターミナルのフォントがそろいます。"
+      ],
+      "fixed": [
+        "PC を更新すると、iOS アプリを更新せずにターミナルの韓国語入力が直ります。",
+        "作業ブロックが折りたたまれても、チャットが新しい出力を追い続けます。",
+        "Claude Code で会話を分岐した後も、チャットがその会話を追います。",
+        "ファイルのプレビューが遅くても、すべてのターミナルが止まらなくなりました。",
+        "古いサーバーが残って失敗した Windows アプリの更新から復旧できます。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "可以在聊天中阅读 Letta Code 对话。",
+        "按所选的思考强度，开启 Ultracode 启动 Claude Code。",
+        "可以从用量界面重新登录已过期的 Claude 或 Codex 账号。",
+        "新的 Black 主题可以将 Ovis 背景设为纯黑色。",
+        "可以保留聊天输入框中的消息，发送 Claude Code 输入框里已有的草稿。"
+      ],
+      "improved": [
+        "终端会绘制完整画面，不再混杂新旧输出。",
+        "聊天消息发送后立即显示，无需等代理接收。",
+        "聊天标签页打开更快，还可以选择每次加载的历史记录数量。",
+        "代理工作时，较长的 OMO 和 GJC 聊天也能更快刷新。",
+        "Mac 应用、Safari 和 Chrome 的终端使用相同的编程字体。"
+      ],
+      "fixed": [
+        "更新电脑上的 Ovis 即可修复 iOS 终端的韩文输入，无需更新手机应用。",
+        "工作块折叠后，聊天仍会跟随新输出。",
+        "在 Claude Code 中分支后，聊天仍会跟随该对话。",
+        "文件预览缓慢时，不再导致所有终端卡住。",
+        "Windows 应用可以从旧服务器残留导致的更新失败中恢复。"
+      ]
+    }
+  },
   "0.4.19": {
     "en": {
       "new": [

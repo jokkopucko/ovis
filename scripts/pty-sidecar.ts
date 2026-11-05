@@ -10,8 +10,10 @@
  * the app installs and every install.sh run. It takes the binary of the release named by
  * package.json's version, only when that release was built from this checkout's crate sources
  * (their git tree), checks its SHA-256 against the release's manifest and that it runs here, and
- * moves it into place in one rename. Without one, it says why and exits 0: the server then runs
- * the Node sidecar where the PC has Node, or mirrors its panes. `--strict` exits 1 instead.
+ * moves it into place in one rename. A checkout whose crate sources no release was built from (a beta
+ * build of main, .github/workflows/beta.yml) takes the host of the `pty-sidecar-<crate tree>` prerelease
+ * the beta workflow publishes for those sources instead, checked the same way. Without one, it says
+ * why and exits 0: the server then runs the Node sidecar where the PC has Node, or mirrors its panes. `--strict` exits 1 instead.
  */
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -178,10 +180,21 @@ function verifiedFor(target: string, crate: string): boolean {
 export async function install(options: { releases?: string; target?: string; platform?: string } = {}): Promise<{ ok: boolean; message: string }> {
   const target = options.target ?? INSTALLED;
   let sources: ReturnType<typeof crateTree> = { error: "the crate sources could not be read" };
-  let result: { ok: boolean; message: string };
+  let result: { ok: boolean; message: string; elsewhere?: boolean };
   try {
     sources = crateTree();
-    result = "error" in sources ? { ok: false, message: sources.error } : await attempt(sources.tree, target, options);
+    if ("error" in sources) result = { ok: false, message: sources.error };
+    else {
+      const releases = (options.releases ?? RELEASES).replace(/\/$/, "");
+      const version = packageVersion();
+      result = await attempt(sources.tree, target, options, { base: `${releases}/v${version}`, name: `release v${version}`, version });
+      // sources no release was built from: the host the beta workflow built from these very sources
+      if (!result.ok && result.elsewhere) {
+        const built = await attempt(sources.tree, target, options,
+          { base: `${releases}/${TREE_RELEASE}${sources.tree}`, name: `prerelease ${TREE_RELEASE}${sources.tree.slice(0, 12)}` });
+        result = built.ok || !built.elsewhere ? built : { ok: false, message: `${result.message}, and ${built.message}` };
+      }
+    }
   } catch (error) {
     result = { ok: false, message: `could not install the Rust PTY host (${message(error)})` };
   }
@@ -197,30 +210,38 @@ export async function install(options: { releases?: string; target?: string; pla
   return result;
 }
 
-async function attempt(crate: string, target: string, options: { releases?: string; platform?: string }): Promise<{ ok: boolean; message: string }> {
+/** The prerelease the beta workflow attaches a host built from one crate tree to: `pty-sidecar-<tree>`. */
+export const TREE_RELEASE = "pty-sidecar-";
+
+/**
+ * One place a host may come from: a release (`version`: its manifest must be that version's) or the
+ * prerelease of a crate tree (any version: the crate check is what ties it to these sources).
+ * `elsewhere` on a failure: this place has no host for these sources, so another may be tried.
+ */
+async function attempt(crate: string, target: string, options: { platform?: string }, source: { base: string; name: string; version?: string }): Promise<{ ok: boolean; message: string; elsewhere?: boolean }> {
   const platform = options.platform ?? `${process.platform}-${process.arch}`;
   const asset = PLATFORM_ASSET[platform];
   if (!asset) return { ok: false, message: `no Rust PTY host for ${platform}` };
   const version = packageVersion();
-  const base = `${(options.releases ?? RELEASES).replace(/\/$/, "")}/v${version}`;
+  const { base, name } = source;
   const signal = AbortSignal.timeout(INSTALL_DEADLINE_MS);
   let found: unknown;
   try {
     found = JSON.parse(new TextDecoder().decode(await download(`${base}/${MANIFEST}`, signal)));
   } catch (error) {
-    return { ok: false, message: `release v${version} has no Rust PTY host (${message(error)})` };
+    return { ok: false, message: `${name} has no Rust PTY host (${message(error)})`, elsewhere: true };
   }
-  if (!isObject(found) || found["version"] !== version || typeof found["crate"] !== "string" || !isObject(found["assets"])) {
-    return { ok: false, message: `release v${version}'s ${MANIFEST} is not a manifest for v${version}` };
+  if (!isObject(found) || (source.version !== undefined && found["version"] !== source.version) || typeof found["crate"] !== "string" || !isObject(found["assets"])) {
+    return { ok: false, message: `${name}'s ${MANIFEST} is not a manifest for ${source.version === undefined ? "a host" : `v${source.version}`}` };
   }
-  if (found["crate"] !== crate) return { ok: false, message: `release v${version}'s host was built from other ${CRATE} sources than this checkout's` };
+  if (found["crate"] !== crate) return { ok: false, message: `${name}'s host was built from other ${CRATE} sources than this checkout's`, elsewhere: true };
   const entry = found["assets"][platform];
   if (!isObject(entry) || typeof entry["sha256"] !== "string" || !/^[0-9a-f]{64}$/.test(entry["sha256"]) || entry["file"] !== `${NAME}-${asset}`) {
-    return { ok: false, message: `release v${version}'s manifest names no host for ${platform}` };
+    return { ok: false, message: `${name}'s manifest names no host for ${platform}` };
   }
   const expected = entry["sha256"];
   const file = entry["file"];
-  if (verifiedFor(target, crate) && sha256(readFileSync(target)) === expected && runsHere(target)) return { ok: true, message: `Rust PTY host v${version} already installed at ${target}` };
+  if (verifiedFor(target, crate) && sha256(readFileSync(target)) === expected && runsHere(target)) return { ok: true, message: `Rust PTY host of ${name} already installed at ${target}` };
   let bytes: Uint8Array;
   try {
     bytes = await download(`${base}/${file}`, signal);
@@ -228,7 +249,7 @@ async function attempt(crate: string, target: string, options: { releases?: stri
     return { ok: false, message: `could not download ${file} (${message(error)})` };
   }
   const digest = sha256(bytes);
-  if (digest !== expected) return { ok: false, message: `${file} does not match its SHA-256 in release v${version}'s manifest (got ${digest}); nothing was installed` };
+  if (digest !== expected) return { ok: false, message: `${file} does not match its SHA-256 in ${name}'s manifest (got ${digest}); nothing was installed` };
   mkdirSync(join(target, ".."), { recursive: true });
   const temporary = `${target}.${process.pid}.tmp`;
   try {
@@ -242,7 +263,7 @@ async function attempt(crate: string, target: string, options: { releases?: stri
   } finally {
     rmSync(temporary, { force: true });
   }
-  return { ok: true, message: `installed the Rust PTY host of release v${version} (sha256 ${digest}) at ${target}` };
+  return { ok: true, message: `installed the Rust PTY host of ${name} (sha256 ${digest}) at ${target}` };
 }
 
 if (import.meta.main) {

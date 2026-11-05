@@ -78,6 +78,8 @@ try {
     'case "$1" in',
     "  version) printf '%s\\n' 'v2.6.1' ;;",
     "  expose)",
+    // the status asks which sign-ins this Portal offers: that is a question, not a service
+    "    [ \"$2\" = --help ] && exit 0",
     "    trap 'exit 0' TERM",
     // the stand-in's way to end on its own, as a crashed Portal would
     "    trap 'exit 3' USR1",
@@ -262,6 +264,7 @@ try {
   const recoveringFixture = {
     supported: true, version: "v2.6.1", min_version: "v2.6.1", usable: true, phase: "recovering",
     relay: "https://relay.example", url: null, blocked: null, error: null, output: `INF service ready at ${portalAddress}:443`,
+    auth: { method: "none", allow: [], issuer: null, client_id: null }, auth_methods: [], oidc_secret: false,
   } satisfies PortalStatus;
   let answer: "recovering" | "offline" | "older" = "recovering";
   const portalPosts: string[] = [];
@@ -306,6 +309,45 @@ try {
   for (const context of [ownerContext, watchContext]) await context.unroute("**/api/portal**");
   assert.deepEqual(pageErrors, [], "the fixture Portal pages have no browser errors");
   console.log("PASS Portal recovering fixtures: owner Stop, watch-only disabled, offline mid-recovery without a stale address, older server hidden");
+
+  // The invite's read-only bearer link still needs keyboard focus, using the global theme ring.
+  const inviteFixture = {
+    ...recoveringFixture, phase: "running", url: portalAddress,
+    auth: { method: "credential", allow: [], issuer: null, client_id: null },
+    auth_methods: ["credential"],
+  } satisfies PortalStatus;
+  await ownerContext.route("**/api/portal**", (route) => route.fulfill({
+    json: route.request().method() === "POST"
+      ? { redeem_url: `${portalAddress}/_portal/auth/login#credential=fixture-link` }
+      : inviteFixture,
+  }));
+  await reopenPhoneSettings(ownerPage);
+  await settingsOf(ownerPage).getByLabel("Link name", { exact: true }).fill("alice");
+  await settingsOf(ownerPage).getByRole("button", { name: "Create link", exact: true }).click();
+  const privateLink = settingsOf(ownerPage).getByRole("textbox", { name: "Private link for alice", exact: true });
+  await privateLink.waitFor();
+  for (const width of [390, 1440]) for (const theme of ["light", "dark"]) {
+    await ownerPage.setViewportSize({ width, height: 900 });
+    await ownerPage.evaluate((value) => { document.documentElement.dataset["theme"] = value; }, theme);
+    await privateLink.focus();
+    await ownerPage.keyboard.press("Shift+Tab");
+    await ownerPage.keyboard.press("Tab");
+    await privateLink.scrollIntoViewIfNeeded();
+    const focus = await privateLink.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { active: document.activeElement === element, visible: element.matches(":focus-visible"), style: style.outlineStyle, width: Number.parseFloat(style.outlineWidth) };
+    });
+    assert.equal(focus.active && focus.visible, true, `${width}/${theme}: the private link is keyboard-focused`);
+    assert.equal(focus.style, "solid", `${width}/${theme}: the private link retains its focus ring`);
+    assert.ok(focus.width >= 2, `${width}/${theme}: the focus ring is visible`);
+    const screenshots = process.env["PORTAL_SCREENSHOT_DIR"];
+    if (screenshots) {
+      mkdirSync(screenshots, { recursive: true });
+      await ownerPage.screenshot({ path: join(screenshots, `portal-invite-${width}-${theme}.png`), animations: "disabled" });
+    }
+  }
+  await ownerContext.unroute("**/api/portal**");
+  console.log("PASS Portal private-link keyboard focus: visible theme ring at phone and desktop widths in light and dark");
 
   const blockedState = join(root, "no-token-server");
   mkdirSync(blockedState, { recursive: true });

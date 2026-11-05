@@ -9,6 +9,7 @@ import { parsePrompt } from "./dialogs/live.ts";
 import { finishPrompt, type DialogReader } from "./dialogs/shared.ts";
 import { bindCommandProcess, commandSendFrom, handlePromptRequest, noteCommandEvidence, noteSubmitted } from "./prompt.ts";
 import { socketAddress } from "./herdr/client.ts";
+import { readCommandTranscript } from "./conversation.ts";
 import * as processStart from "./process-start.ts";
 import { registry } from "./dialogs/registry.ts";
 import { source as claudeSource } from "./skills/claude.ts";
@@ -143,6 +144,27 @@ describe("evidence-only command outcomes", () => {
     }
     expect(outcome(send("/compact", "codex", [row("compact")]), { transcript: entry("compacted") }).state).toBe("accepted");
     expect(outcome(send("/context", "codex"), { transcript: local("/context") }).state).toBe("accepted");
+  });
+  it("calls Claude's /compact done only once the compaction is recorded, not when its line is written at the start", () => {
+    const line = (entry: object, ms: number) => JSON.stringify({ ...entry, timestamp: new Date(at + ms).toISOString() });
+    // Claude Code 2.1: `/compact` as a user line when it starts; the boundary, the summary, its echo and output when it ends
+    const started = line({ type: "user", message: { role: "user", content: "/compact" } }, 10);
+    const ended = [started,
+      line({ type: "system", subtype: "compact_boundary", content: "Conversation compacted" }, 40_000),
+      line({ type: "user", isCompactSummary: true, message: { role: "user", content: "This session is being continued from a previous conversation." } }, 40_000),
+      line({ type: "user", message: { role: "user", content: "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>" } }, 10),
+      line({ type: "user", message: { role: "user", content: "<local-command-stdout>Compacted</local-command-stdout>" } }, 40_001)].join("\n");
+    const sent = send("/compact", "claude", [row("compact")]);
+    expect(outcome(sent, { now: at + 2_000, transcript: started }).state).toBe("accepted");
+    expect(outcome(sent, { now: at + 41_000, transcript: ended })).toMatchObject({ state: "result-observed", evidence: [{ kind: "transcript", at: new Date(at + 40_000).toISOString() }] });
+  });
+  it("does not call a queued Claude /compact done on an automatic compaction", () => {
+    const line = (entry: object, ms: number) => JSON.stringify({ ...entry, timestamp: new Date(at + ms).toISOString() });
+    const boundary = (trigger: string) => line({ type: "system", subtype: "compact_boundary", content: "Conversation compacted", compactMetadata: { trigger, preTokens: 160_000 } }, 30_000);
+    const summary = line({ type: "user", isCompactSummary: true, message: { role: "user", content: "This session is being continued from a previous conversation." } }, 30_000);
+    const sent = send("/compact", "claude", [row("compact")]);
+    expect(outcome(sent, { now: at + 31_000, transcript: [boundary("auto"), summary].join("\n") }).state).toBe("accepted");
+    expect(outcome(sent, { now: at + 31_000, transcript: [boundary("manual"), summary].join("\n") }).state).toBe("result-observed");
   });
 });
 
@@ -359,6 +381,8 @@ it("correlates Pi's thinking card and session-only commit with bare /thinking, n
   const pane = {
     pane_id: "fixture", workspace_id: "w", tab_id: "t", terminal_id: "fixture-terminal",
     focused: false, revision: 0, agent: "pi", agent_status: "idle", status: "idle", screen: "Ready",
+    // pi holds the pane's input: its cards answer only then
+    pid: 2147483646, argv: ["pi"],
   };
   await withFakeHerdr(pane, async (paneId, keys) => {
     const catalog = ["thinking", "model"].map((name) => ({ ...row(name), forms: piSource.forms?.[name] }));
@@ -528,6 +552,48 @@ describe("session-scoped command outcomes", () => {
       rmSync(store, { recursive: true, force: true });
     }
   });
+
+  // the Codex, omp and gjc lookups take the poll's process read too, rather than asking herdr again (#1879); Codex
+  // reads once more right before a screen match may bind a rollout to its processes
+  for (const [agent, text, reads] of [["codex", "$imagegen", 2], ["omp", "/context", 1], ["gjc", "/context", 1]] as const) {
+    it(`reads a ${agent} pane's processes once per poll while a command's transcript is open`, async () => {
+      const store = mkdtempSync(join(tmpdir(), `outcome-${agent}-store-`));
+      const previous = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = store;
+      const pane = { ...target(), agent, pid: 2147483645, argv: [agent], cwd: store, agent_session: { ...session("fixture-session"), agent } };
+      try {
+        await withFakeHerdr(pane, async (paneId, _keys, _processReads, calls) => {
+          const catalog: SlashCommand[] = agent === "codex" ? [{ ...row("imagegen"), source: "skill", trigger: "$" }] : [row("context")];
+          const command = commandSendFrom(pane, agent, catalog, text);
+          if (!command) throw new Error("fixture command was not recorded");
+          bindCommandProcess(paneId, command);
+          noteSubmitted(paneId, text, command);
+          await command.visibility?.binding;
+          const before = calls();
+          expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
+          const made = (method: string) => (calls()[method] ?? 0) - (before[method] ?? 0);
+          expect(made("pane.process_info")).toBe(reads);
+          expect(made("session.snapshot")).toBe(1);
+        });
+      } finally {
+        if (previous === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previous;
+        rmSync(store, { recursive: true, force: true });
+      }
+    });
+  }
+
+  // a poll read with no omp in it (none in front, only the shell, or an omp gone since) says nothing of the omp
+  // the pane runs now, which may keep another store than the session herdr still reports
+  for (const [label, foreground] of [["no process", []], ["only the shell", [{ pid: 2147483640, argv: ["bash"] }]]] as const) {
+    it(`asks for an omp pane's processes again when the poll's read names ${label}`, async () => {
+      const pane = { ...target(), agent: "omp", pid: 2147483645, argv: ["omp"], cwd: "/tmp", agent_session: null as HerdrPane["agent_session"] };
+      await withFakeHerdr(pane, async (paneId, _keys, processReads) => {
+        await readCommandTranscript(paneId, undefined, { processes: { foreground_processes: [...foreground] } as never }).catch(() => null);
+        expect(processReads()).toBe(1);
+      });
+    });
+  }
 
   it("omits a known session's sends once a restarted agent still reports that session id", async () => {
     // herdr keeps a restarted Claude Code's old session id until the new process's first turn

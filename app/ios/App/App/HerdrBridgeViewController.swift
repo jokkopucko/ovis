@@ -7,13 +7,22 @@ import Capacitor
 enum PCStore {
     private static let defaults = UserDefaults.standard
 
-    /// Origins opened before, the latest first.
+    /// PCs opened before, the latest first, each by its key: the origin of a PC opened at its own
+    /// address, or the scope of one opened through the Ovis relay (`https://app.ovis.sh/s/<server_id>/`),
+    /// as every relay PC shares the hosted shell's origin. Entries saved before relay PCs are origins
+    /// and stay as they are.
     static var saved: [String] {
         get { defaults.stringArray(forKey: "herdr.saved") ?? [] }
         set { defaults.set(newValue, forKey: "herdr.saved") }
     }
 
-    /// The PC the app opens at launch, an origin; nil shows the connect screen.
+    /// Labels of saved PCs by key, from a relay pairing offer's name.
+    static var names: [String: String] {
+        get { defaults.dictionary(forKey: "herdr.names") as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: "herdr.names") }
+    }
+
+    /// The PC the app opens at launch, a key (see `saved`); nil shows the connect screen.
     static var current: String? {
         get { defaults.string(forKey: "herdr.current") }
         set { defaults.set(newValue, forKey: "herdr.current") }
@@ -94,14 +103,45 @@ enum PCStore {
         return name.contains(".") && ![".ts.net", ".local", ".lan", ".home.arpa", ".internal"].contains { name.hasSuffix($0) }
     }
 
-    static func remember(_ origin: String) {
-        saved = [origin] + saved.filter { $0 != origin }
+    static func remember(_ key: String) {
+        saved = [key] + saved.filter { $0 != key }
     }
 
-    static func forget(_ origin: String) {
-        saved = saved.filter { $0 != origin }
-        if current == origin { current = nil }
-        if last == origin { last = nil }
+    static func forget(_ key: String) {
+        saved = saved.filter { $0 != key }
+        names[key] = nil
+        if current == key { current = nil }
+        if last == key { last = nil }
+    }
+
+    /// The key of a PC opened through the Ovis relay: `scope`, when it is an http or https origin with
+    /// a path ending in `/` and `url` is on that origin within that path; nil otherwise.
+    static func scopeKey(_ scope: String, for url: URL) -> String? {
+        guard let scopeURL = URL(string: scope), let scopeOrigin = origin(of: scopeURL), scopeOrigin == origin(of: url),
+              let path = URLComponents(string: scope)?.percentEncodedPath, path.count > 1, path.hasSuffix("/"),
+              scope == scopeOrigin + path, belongs(url, to: scope) else { return nil }
+        return scope
+    }
+
+    /// The origin of a PC's key.
+    static func origin(ofKey key: String) -> String? {
+        URL(string: key).flatMap { origin(of: $0) }
+    }
+
+    /// The address a PC's key opens at: its scope, or its origin's root.
+    static func firstPage(_ key: String) -> String {
+        key.hasSuffix("/") ? key : key + "/"
+    }
+
+    /// Whether `url` is a page of the PC `key`: on its origin, and for a relay PC within its scope, path
+    /// segment by path segment and only as a browser would load it (ScopePath): `<scope>../<other>/`
+    /// resolves to another PC. A PC saved by its origin takes any page of it.
+    static func belongs(_ url: URL, to key: String) -> Bool {
+        guard let pageOrigin = origin(of: url), pageOrigin == origin(ofKey: key) else { return false }
+        let scope = URLComponents(string: key)?.percentEncodedPath ?? ""
+        if scope.isEmpty || scope == "/" { return true }
+        guard let path = URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath else { return false }
+        return ScopePath.within(path, scope: scope)
     }
 
     /// `scheme://host[:port]` of an http or https URL, the host in lowercase as WebKit reports it, or nil.
@@ -353,9 +393,11 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     override func instanceDescriptor() -> InstanceDescriptor {
         let descriptor = super.instanceDescriptor()
         if let origin = PCStore.current, let host = URL(string: origin)?.host {
-            // what server.url sets; the pairing link until a PC page has loaded, the origin after it
-            descriptor.serverURL = PCStore.pendingStart ?? origin + "/"
-            // the whole PC is the app: its own links stay in the WebView, others go to Safari
+            // what server.url sets; the pairing link until a PC page has loaded, the PC's first page
+            // after it (a relay PC's scope keeps a pairing offer's `#offer=` fragment through here)
+            descriptor.serverURL = PCStore.pendingStart ?? PCStore.firstPage(origin)
+            // the whole PC is the app: its own links stay in the WebView, others go to Safari. For a
+            // relay PC that host is the hosted shell's (app.ovis.sh), the one the app then allows
             descriptor.allowedNavigationHostnames = descriptor.allowedNavigationHostnames + [host]
         }
         return descriptor
@@ -428,7 +470,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// What shows while a PC opens: which PC, and Change PC, so a PC that never answers does not
     /// leave a blank screen.
     private func showOpening(_ origin: String) {
-        let host = URL(string: origin)?.host ?? origin
+        let host = PCStore.names[origin] ?? URL(string: origin)?.host ?? origin
         let cover = UIView(frame: view.bounds)
         cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         cover.backgroundColor = UIColor(red: 0x12 / 255, green: 0x10 / 255, blue: 0x0e / 255, alpha: 1)
@@ -621,7 +663,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         if !pageShown, provisional, navigationAction.targetFrame?.isMainFrame == true,
            let current = PCStore.current, let url = navigationAction.request.url,
-           let next = PCStore.origin(of: url), next != current {
+           let next = PCStore.origin(of: url), next != PCStore.origin(ofKey: current) {
             decisionHandler(.cancel)
             follow(url, from: current, in: webView)
             return
@@ -677,10 +719,10 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
         inner?.webView?(webView, didFinish: navigation)
         onLoaded?()
         // the PC's page is up: a pairing link has done its work, and the PC is one worth keeping
-        if let url = webView.url, let origin = PCStore.origin(of: url), origin == PCStore.current {
+        if let url = webView.url, let current = PCStore.current, PCStore.belongs(url, to: current) {
             PCStore.pendingStart = nil
             PCStore.redirects = 0
-            PCStore.remember(origin)
+            PCStore.remember(current)
         }
     }
 

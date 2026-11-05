@@ -168,6 +168,36 @@ describe("file threads", () => {
     for (const commands of await Promise.all([...scans, third])) expect(names(commands)).toContain("listed");
   });
 
+  /** A Claude task list scanned on a file thread (`root` holds no session: the scan answers at once) */
+  const tasks = (): FileTask => ({ op: "claude-tasks", path: join(root, "session.jsonl"), live: true, since: null });
+
+  it("runs one Claude task-list scan at a time, and a stuck one leaves commands scans a thread", async () => {
+    setUp({ workers: 4, waiting: 4, deadlineMs: 30_000, longDeadlineMs: 30_000, scanDeadlineMs: 30_000, scans: 2, taskScans: 1 });
+    const hold = gate();
+    const stuck = fileTask(held(tasks(), hold.buffer));
+    const second = fileTask(tasks());
+    expect(filePoolSize()).toEqual({ threads: 1, idle: 0, waiting: 1 });
+    // the commands scan takes the other scan thread at once
+    const commands = fileTask(held(scan(), hold.buffer));
+    expect(filePoolSize()).toEqual({ threads: 2, idle: 0, waiting: 1 });
+    hold.release();
+    await Promise.all([stuck, second, commands]);
+  });
+
+  it("counts scans of both kinds against `scans` together, so file tasks always keep two of four threads", async () => {
+    setUp({ workers: 4, waiting: 4, deadlineMs: 30_000, longDeadlineMs: 30_000, scanDeadlineMs: 30_000, scans: 2, taskScans: 1 });
+    const hold = gate();
+    const running = [fileTask(held(scan(), hold.buffer)), fileTask(held(scan(), hold.buffer))];
+    // two commands scans hold both scan threads: a task-list scan waits with the third commands scan
+    const waiting = [fileTask(tasks()), fileTask(scan())];
+    expect(filePoolSize()).toEqual({ threads: 2, idle: 0, waiting: 2 });
+    // two file tasks at once still each take a thread of their own
+    await Promise.all([fileTask({ op: "info", path: file }), fileTask({ op: "info", path: file })]);
+    expect(filePoolSize()).toEqual({ threads: 4, idle: 2, waiting: 2 });
+    hold.release();
+    await Promise.all([...running, ...waiting]);
+  });
+
   it("gives a commands scan a deadline of its own, longer than a folder walk's", async () => {
     setUp({ workers: 2, waiting: 0, deadlineMs: 150, longDeadlineMs: 150, scanDeadlineMs: 30_000 });
     const hold = gate();

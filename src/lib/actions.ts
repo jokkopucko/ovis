@@ -19,6 +19,10 @@ export interface AppActions {
   selectPane: (paneId: string) => void;
   /** the previous/next pane in sidebar order; wraps around */
   selectAdjacentPane: (direction: -1 | 1) => void;
+  /** the previous/next tab of the selected pane's workspace in tab strip order; wraps around */
+  selectAdjacentTab: (direction: -1 | 1) => void;
+  /** the previous/next workspace of the selected PC in sidebar order (pins, worktree groups); wraps around */
+  selectAdjacentWorkspace: (direction: -1 | 1) => void;
   setView: (view: PaneView) => void;
   toggleView: () => void;
   /** Focus the selected pane's mounted input without sending any text or keys. */

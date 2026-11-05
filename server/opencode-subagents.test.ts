@@ -1,12 +1,12 @@
-import { afterAll, describe, expect, it } from "bun:test";
-import { Database } from "bun:sqlite";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { HerdrPane } from "../shared/protocol.ts";
 import { handleTasksRequest } from "./tasks-routes.ts";
-import { opencodeSubagentState, OpencodeSubagentStatus, pagedState, RUNNING_LIMIT, SUBAGENT_PAGE } from "./opencode-subagents.ts";
+import { opencodeSubagentState, OpencodeSubagentStatus, pagedState, readSubagents, RUNNING_LIMIT, SUBAGENT_PAGE } from "./opencode-subagents.ts";
 import { withStore } from "./opencode.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-opencode-subagents-"));
@@ -117,8 +117,143 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     expect(state.tasks.find((task) => task.id === "ses_continued")!.ended_at).toBeNull();
   });
 
-  it("counts for the turn only what that turn started, and reads nothing for the list when only counting", () => {
+  it("lists the session's background commands with its subagents, as Claude's are listed", () => {
     const s = store();
+    s.prompt(s.parent, NOW - 30 * MIN);
+    s.session("ses_working", NOW - 20 * MIN, { title: "index the repo" });
+    s.prompt("ses_working", NOW - 20 * MIN);
+    s.step("ses_working", NOW - 19 * MIN);
+    s.session("ses_done", NOW - 40 * MIN, { title: "find the bug" });
+    s.prompt("ses_done", NOW - 40 * MIN);
+    s.step("ses_done", NOW - 39 * MIN);
+    s.step("ses_done", NOW - 38 * MIN, { finish: "stop", content: [{ type: "text", text: "found it" }] });
+    s.idle("ses_done", NOW - 37 * MIN);
+    const shell = (at: number, data: Record<string, unknown>) => s.add(s.parent, "shell", at, data);
+    // the rows the chat reads: running, exited well, exited badly
+    shell(NOW - 6 * MIN, { metadata: { background: true }, shellID: "sh_run", command: "sleep 60", status: "running", exit: null, output: null, time: { created: NOW - 6 * MIN } });
+    shell(NOW - 8 * MIN, { metadata: { background: true }, shellID: "sh_ok", command: "make build", status: "exited", exit: 0, output: { output: "done", size: 4, truncated: false }, time: { created: NOW - 9 * MIN } });
+    shell(NOW - 10 * MIN, { metadata: { background: true }, shellID: "sh_bad", command: "make test", status: "exited", exit: 2, output: null, time: { created: NOW - 12 * MIN } });
+    // a foreground command and a `!` command are not background work
+    shell(NOW - 4 * MIN, { command: "ls", status: "exited", exit: 0, time: { created: NOW - 4 * MIN } });
+    shell(NOW - 3 * MIN, { metadata: { background: false }, shellID: "sh_fg", command: "echo hi", status: "exited", exit: 0, output: null, time: { created: NOW - 3 * MIN } });
+
+    const state = opencodeSubagentState(s.path, s.parent, true, NOW)!;
+    expect(state.tasks.map((task) => [task.id, task.status])).toEqual([
+      ["ses_working", "running"], ["sh_run", "running"],
+      ["sh_ok", "completed"], ["sh_bad", "failed"], ["ses_done", "completed"],
+    ]);
+    expect(state.running).toBe(2);
+    // a command never counts for the turn: the parent does not wait on it
+    expect(state.turnRunning).toBe(1);
+    expect(state.tasks.find((task) => task.id === "sh_run")).toEqual({
+      id: "sh_run", title: "sleep 60", category: "shell", model: null, status: "running",
+      started_at: new Date(NOW - 6 * MIN).toISOString(), ended_at: null,
+      turns: null, tool_calls: null, tokens: null, detail_kind: null,
+    });
+    expect(state.tasks.find((task) => task.id === "sh_ok")!.ended_at).toBe(new Date(NOW - 8 * MIN).toISOString());
+  });
+
+  it("counts an older background command behind more than a thousand ended commands", () => {
+    const s = store();
+    s.add(s.parent, "shell", NOW - 50 * MIN, { metadata: { background: true }, shellID: "sh_early", status: "running" });
+    for (let n = 0; n < 1010; n++) {
+      s.add(s.parent, "shell", NOW - 30 * MIN + n, { metadata: { background: true }, shellID: `sh_done${n}`, status: "exited", exit: 0 });
+    }
+
+    const state = opencodeSubagentState(s.path, s.parent, true, NOW);
+
+    expect(state?.running).toBe(1);
+    expect(state?.unlisted).toBe(0);
+    expect(state?.tasks.map((task) => task.id)).toEqual(["sh_early", ...Array.from({ length: 10 }, (_, n) => `sh_done${1009 - n}`)]);
+  });
+
+  it("counts every running background command beyond the display limit", () => {
+    const s = store();
+    for (let n = 0; n < 1015; n++) {
+      s.add(s.parent, "shell", NOW - 30 * MIN + n, { metadata: { background: true }, shellID: `sh_run${n}`, status: "running" });
+    }
+
+    const state = opencodeSubagentState(s.path, s.parent, true, NOW);
+
+    expect(state?.running).toBe(1015);
+    expect(state?.unlisted).toBe(15);
+    expect(state?.turnRunning).toBe(0);
+    expect(state?.tasks).toHaveLength(1000);
+    expect(state?.tasks.map((task) => task.id)).toEqual(Array.from({ length: 1000 }, (_, n) => `sh_run${n + 15}`));
+  });
+
+  it.each([true, false])("bounds materialized running shell rows with detail %s while counting every command", (detail) => {
+    const s = store();
+    for (let n = 0; n < 1015; n++) {
+      s.add(s.parent, "shell", NOW - MIN + n, { metadata: { background: true }, shellID: `sh_run${n}`, status: "running" });
+    }
+    let runningRows = 0;
+    const reads: { mockRestore(): void }[] = [];
+    const query = s.db.query.bind(s.db);
+    reads.push(spyOn(s.db, "query").mockImplementation(function <Result, Bindings extends SQLQueryBindings | SQLQueryBindings[]>(sql: string) {
+      const statement = query<Result, Bindings>(sql);
+      const all = statement.all.bind(statement);
+      reads.push(spyOn(statement, "all").mockImplementation((...bindings) => {
+        const result = all(...bindings);
+        runningRows += result.filter((row) => row !== null && typeof row === "object" && "status" in row && row.status === "running").length;
+        return result;
+      }));
+      return statement;
+    }));
+    try {
+      const state = readSubagents(s.db, s.parent, true, NOW, null, detail);
+
+      expect(state.running).toBe(1015);
+      expect(state.unlisted).toBe(15);
+      expect(state.tasks).toHaveLength(RUNNING_LIMIT);
+      expect(runningRows).toBe(RUNNING_LIMIT);
+    } finally {
+      for (const read of reads) read.mockRestore();
+    }
+  });
+
+  it.each([null, NOW])("keeps an overflow of stale running commands bounded with service start %s", (serviceStart) => {
+    const s = store();
+    for (let n = 0; n < 1015; n++) {
+      s.add(s.parent, "shell", NOW - MIN + n, { metadata: { background: true }, shellID: `sh_lost${n}`, status: "running" });
+    }
+
+    const state = readSubagents(s.db, s.parent, serviceStart !== null, NOW, serviceStart, false);
+
+    expect(state.running).toBe(0);
+    expect(state.unlisted).toBe(0);
+    expect(state.tasks.map((task) => [task.id, task.status])).toEqual(Array.from({ length: 10 }, (_, n) => [`sh_lost${1014 - n}`, "lost"]));
+  });
+
+  it.each([null, undefined])("marks an exited background command with exit %s as failed", (exit) => {
+    const s = store();
+    s.add(s.parent, "shell", NOW - MIN, { metadata: { background: true }, shellID: "sh_unknown", status: "exited", exit });
+
+    const state = opencodeSubagentState(s.path, s.parent, true, NOW);
+
+    expect(state?.tasks.map((task) => [task.id, task.status])).toEqual([["sh_unknown", "failed"]]);
+  });
+
+  it("leaves a running background command lost once its session is left, and lists only the recently ended", () => {
+    const s = store();
+    const shell = (at: number, data: Record<string, unknown>) => s.add(s.parent, "shell", at, data);
+    shell(NOW - 6 * MIN, { metadata: { background: true }, shellID: "sh_run", command: "sleep 60", status: "running", exit: null, output: null, time: { created: NOW - 6 * MIN } });
+    shell(NOW - 2 * MIN, { metadata: { background: true }, shellID: "sh_new", command: "make build", status: "exited", exit: 0, output: null, time: { created: NOW - 5 * MIN } });
+    shell(NOW - 26 * 60 * MIN, { metadata: { background: true }, shellID: "sh_old", command: "make old", status: "exited", exit: 0, output: null, time: { created: NOW - 30 * 60 * MIN } });
+
+    const live = opencodeSubagentState(s.path, s.parent, true, NOW)!;
+    expect(live.tasks.map((task) => [task.id, task.status])).toEqual([
+      ["sh_run", "running"], ["sh_new", "completed"],
+    ]);
+    expect(live.running).toBe(1);
+    const gone = opencodeSubagentState(s.path, s.parent, false, NOW)!;
+    expect(gone.tasks.map((task) => [task.id, task.status])).toEqual([
+      ["sh_new", "completed"], ["sh_run", "lost"],
+    ]);
+    expect(gone.running).toBe(0);
+  });
+
+  it("counts for the turn only what that turn started, and reads nothing for the list when only counting", () => {    const s = store();
     s.session("ses_before", NOW - 20 * MIN);
     s.prompt("ses_before", NOW - 20 * MIN);
     s.prompt(s.parent, NOW - 10 * MIN);
@@ -384,6 +519,7 @@ describe("the OpenCode subagent tracker", () => {
     let held = true;
     const flaky: typeof withStore = (path, read, busyMs) => withStore(path, (db) => read(new Proxy(db, {
       get(target, key) {
+        if (key === "transaction") return target.transaction.bind(target);
         if (key !== "query") return Reflect.get(target, key, target);
         return (sql: string) => {
           const statement = target.query(sql);

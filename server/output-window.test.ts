@@ -186,6 +186,17 @@ describe("terminal output credit", () => {
     expect(window.check(0, withAhead)).toBe("stop");
   });
 
+  it("gives a joiner time beyond the cap for a large snapshot queued ahead of its replay (#2566)", () => {
+    const large = 2 * 1024 * 1024;
+    const window = new OutputWindow();
+    window.join("screen", 0, 0, large);
+    window.write(OUTPUT_HIGH_BYTES);
+    const snapshotCrossing = Math.ceil(large * 1000 / OUTPUT_JOIN_BYTES_PER_SECOND);
+    expect(snapshotCrossing).toBeGreaterThan(OUTPUT_JOIN_MAX_MS);
+    expect(window.check(0, snapshotCrossing)).toBe("flow");
+    expect(window.check(0, window.joinUntil!)).toBe("stop");
+  });
+
   it("gives a large frame still in flight after the replay ACK the time it needs to cross", () => {
     const replay = "\x1b[31mred\x1b[0m ".repeat(Math.floor(128 * 1024 / 13));
     const live = "\x1b[32mgrn\x1b[0m ".repeat(Math.floor(64 * 1024 / 13));

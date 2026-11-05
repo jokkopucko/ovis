@@ -53,7 +53,7 @@ const HOOK = `<script>(() => {
     releaseClipboard() { const held = this.held; this.held = null; if (held) held(); },
     closeSockets() { for (const socket of [...sockets]) socket.close(1006, "test"); },
     push(message) { for (const socket of sockets) socket.push(message); },
-    hideClipboard(hidden) { navigator.clipboard.readText = hidden ? undefined : readText; },
+    hideClipboard(hidden) { navigator.clipboard.readText = hidden ? undefined : readText; navigator.clipboard.read = hidden ? undefined : read; },
   };
   const Socket = function (...args) {
     const socket = new DemoSocket(...args);
@@ -89,6 +89,9 @@ const HOOK = `<script>(() => {
     return realRead();
   };
   navigator.clipboard.readText = readText;
+  // the line reads with clipboard.read() where the browser has it, for an image too: the same text, as one item
+  const read = () => readText().then((text) => [new ClipboardItem({ "text/plain": new Blob([text], { type: "text/plain" }) })]);
+  navigator.clipboard.read = read;
 })();</script>`;
 
 type Variant = { width: 390 | 1440; theme: "light" | "dark"; language: "en" | "ko" };

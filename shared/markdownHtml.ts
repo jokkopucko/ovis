@@ -1,5 +1,5 @@
 import type { InlineNode, MarkdownBlock } from "./markdown.ts";
-import { markdownFileTarget, safeMarkdownHref, webLikeHref } from "./markdown.ts";
+import { markdownFileNode, safeMarkdownHref, webLikeHref } from "./markdown.ts";
 
 /**
  * The HTML a README carries (a centered logo, a row of badges, `<details>`), read into the blocks
@@ -85,8 +85,11 @@ function readHtml(source: string): MarkdownBlock[] {
       const children = holder.children;
       if (holder.kind === "link") {
         if (holder.href !== null) push({ type: "link", href: holder.href, children });
-        else if (holder.file !== null) push({ type: "file", path: holder.file, children });
-        else for (const child of children) push(child);
+        else {
+          const file = holder.file === null ? null : markdownFileNode(holder.file, children);
+          if (file !== null) push(file);
+          else for (const child of children) push(child);
+        }
       } else push({ type: holder.kind, children });
     }
   };
@@ -135,7 +138,7 @@ function readHtml(source: string): MarkdownBlock[] {
       if (closing) { close("link"); continue; }
       const raw = attribute(attributes, "href") ?? "";
       const href = safeMarkdownHref(raw) ?? webLikeHref(raw);
-      holders.push({ kind: "link", href, file: href === null ? markdownFileTarget(raw) : null, children: [] });
+      holders.push({ kind: "link", href, file: href === null ? raw : null, children: [] });
       continue;
     }
     if (name === "strong" || name === "b") { if (closing) close("strong"); else holders.push({ kind: "strong", children: [] }); continue; }

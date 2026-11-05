@@ -3,10 +3,11 @@
  * components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
  * components/TextFileView.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
- * components/RepoDiff.tsx, lib/repoDiff.ts, components/WebPanel.tsx.
+ * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const FILES_ZH: Record<string, string> = {
+  "Too large to open on the phone - download on the PC": "文件太大，无法在手机上打开。请在电脑上下载。",
   "Show source": "显示源代码",
   "Resize file panel": "调整文件面板宽度",
   "Show beside the pane": "在窗格旁显示",
@@ -116,4 +117,20 @@ export const FILES_ZH: Record<string, string> = {
   "Collapse all folders": "折叠所有文件夹",
   "Expand all folders": "展开所有文件夹",
   "Browse folders in the palette": "在命令面板中浏览文件夹",
+  "Add a note on this line": "为此行添加备注",
+  "Diff lines: the arrow keys pick a line, Enter adds a note on it": "差异行：用方向键选择一行，按 Enter 为其添加备注",
+  "Note added. It goes first in the next message you send from this pane's Chat (not with a slash command, a ! line or an answer to a question).": "已添加备注。它会放在你从此窗格的聊天发出的下一条消息最前面（斜杠命令、! 行或对问题的回答不会带上它）。",
+  "Click or tap a line, or use the arrow keys, to add a note on it.": "点击或轻点一行，或用方向键选择，即可为其添加备注。",
+  "Add a note": "添加备注",
+  "This note would make your next message too long. Shorten the note or the message, or remove a waiting comment.": "加上此备注后下一条消息会太长。请缩短备注或消息，或删除一条等待中的评论。",
+  "This note could not be saved on this device.": "无法在此设备上保存此备注。",
+  "Note on {place}": "{place}的备注",
+  "What should the agent know about this line?": "关于这一行，代理需要知道什么？",
+  "Note": "备注",
+  "Add to next message": "添加到下一条消息",
+  "Notes go to the pane this diff came from, and it has none.": "备注会发往打开此差异的窗格，但它没有窗格。",
+  "The pane this diff came from has closed, so a note has nowhere to go.": "打开此差异的窗格已关闭，备注无处可去。",
+  "No agent is running in the pane this diff came from.": "打开此差异的窗格中没有正在运行的代理。",
+  "This window only watches the pane while another one types in it. Click the pane to type, then add the note.": "另一个窗口正在此窗格中输入，此窗口只能查看。点击窗格开始输入后，再添加备注。",
+  "Open the pane this diff came from first, so this window knows it can type there.": "请先打开此差异所属的窗格，这样此窗口才知道能否在其中输入。",
 };

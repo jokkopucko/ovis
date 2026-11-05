@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type Ref } from "react";
+import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type Ref } from "react";
 import { CornerDownLeft, SendHorizontal, TextCursorInput } from "lucide-react";
 
 import "./TerminalInput.css";
 import { readTerminalDraft, writeTerminalDraft, TERMINAL_LINE_LIMIT, subscribeTerminalDraft, terminalDraftSending, setTerminalDraftSending, acknowledgeTerminalDraft, terminalDraftVersion } from "../lib/terminalDraft.ts";
 
+import { AttachmentTooLargeError, assertAttachable } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
+import { plainError } from "../lib/paneTerminalShared.ts";
 import { useSettings } from "../lib/settings.ts";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 
@@ -26,15 +28,19 @@ export interface TerminalInputProps {
   pasteTarget?: () => string | null;
   /** a paste waits on the clipboard: the key bar's Paste is off meanwhile */
   onPasting?: (active: boolean) => void;
+  /** stores a pasted file beside this line's pane (POST /api/pane/image) and resolves to its path */
+  uploadFile?: (file: Blob) => Promise<string>;
   /** the line took the focus */
   onFocus?: () => void;
   ref?: Ref<TerminalInputHandle>;
 }
 
-/** What the key bar's Paste asks of the line (PaneTerminal.tsx). */
+/** What the key bar's Paste and the mode switch ask of the line (PaneTerminal.tsx). */
 export interface TerminalInputHandle {
   /** reads the clipboard for the line, from the user's own tap and for this line alone */
   paste(): void;
+  /** takes the focus without dismissing or re-raising the keyboard, caret kept: true when the field was there */
+  focus(): boolean;
 }
 
 /** Lines the box grows to before it scrolls. */
@@ -59,7 +65,7 @@ interface SendAttempt {
  * keyboard's own editing and goes to the pane whole, then Enter. Autocorrect and spell-check stay
  * off, as in the composer: they would swap a flag, path or branch name for a dictionary word.
  */
-export function TerminalInput({ owner, active = true, connected, onSend, onEnter, onInsert, pasteTarget, onPasting, onComposing, onFocus, ref }: TerminalInputProps) {
+export function TerminalInput({ owner, active = true, connected, onSend, onEnter, onInsert, pasteTarget, onPasting, uploadFile, onComposing, onFocus, ref }: TerminalInputProps) {
   const t = useT();
   const text = useSyncExternalStore(subscribeTerminalDraft, () => readTerminalDraft(owner));
   const setText = useCallback((value: string | ((previous: string) => string)) => {
@@ -228,72 +234,194 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   }, [clearPendingSend, connected, dictation.forget, onInsert, owner, t]);
 
   /**
-   * The key bar's Paste: the clipboard is read from the user's tap and for this line alone, at the
-   * selection the tap found. What the paste is for is captured before the read (the PC, pane,
-   * connection, role and input lease; the draft as written; where the caret is; the compositions
-   * so far), since the browser may hold the read for a permission prompt: an answer that comes
-   * after any of them changed, even and back again (a selection moved, a composition begun and
-   * ended with nothing written, the pane's input lost and given again), or for a line no longer
-   * shown, is dropped with a note. A refused or missing clipboard says to use the keyboard's own
-   * paste; nothing is read in the background or retried.
+   * A paste into the line waits on something (the clipboard's answer, an upload), so what it is for
+   * is captured before it waits: the PC, pane, connection, role and input lease; the draft as
+   * written; where the caret is; the compositions so far. An answer that comes after any of them
+   * changed, even and back again (a selection moved, a composition begun and ended with nothing
+   * written, the pane's input lost and given again), or for a line no longer shown, is dropped with
+   * a note. Null, with the note said, when the pane cannot take a paste now. `native`: the keyboard's
+   * own Paste, whose selection the browser collapses to its end after the paste event (Chrome on
+   * Android, even with the paste prevented): that collapse is the paste's own, not a move.
    */
   const pasting = useRef(false);
-  const paste = useCallback(() => {
-    const element = box.current;
-    if (pasting.current || element === null) return;
-    if (composing.current) { setNote(t("Finish the word, then paste.")); return; }
-    const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
-    if (typeof clipboard?.readText !== "function") { setNote(t("Paste is not available here. Use the keyboard's own paste in the input line.")); return; }
+  const beginPaste = useCallback((element: HTMLTextAreaElement, waiting: string, native = false) => {
     const target = pasteTarget?.() ?? null;
-    if (target === null) { setNote(t("Not pasted: the terminal is not ready.")); return; }
+    if (target === null) { setNote(t("Not pasted: the terminal is not ready.")); return null; }
     const version = terminalDraftVersion(owner);
     const start = element.selectionStart;
     const end = element.selectionEnd;
     const composed = compositions.current;
     const selected = selections.current;
-    // a caret moved in the focused line, by touch or by script, while the read waits
-    const moved = (): void => { if (document.activeElement === element) selections.current += 1; };
+    /** where the paste found the selection, or where the keyboard's own Paste leaves it */
+    const atPaste = (from: number, to: number): boolean => (from === start && to === end) || (native && from === end && to === end);
+    // a caret moved in the focused line, by touch or by script, while the paste waits; each move
+    // reported counts, so a move and back reported on the way still drops the paste. Chrome on
+    // Android reports a selectionchange just after the keyboard's own Paste with the caret where it
+    // was, or a range collapsed to its end: neither is a move
+    let seen = [start, end];
+    let first = true;
+    const moved = (): void => {
+      if (document.activeElement !== element) return;
+      const from = element.selectionStart;
+      const to = element.selectionEnd;
+      if (from === seen[0] && to === seen[1]) return;
+      const own = first && atPaste(from, to);
+      first = false;
+      seen = [from, to];
+      if (!own) selections.current += 1;
+    };
     document.addEventListener("selectionchange", moved);
     pasting.current = true;
     onPasting?.(true);
     setNote(null);
-    setPending(t("Reading the clipboard…"));
-    clipboard.readText().then((clip) => {
-      if (!mounted.current || box.current !== element) return;
-      const stale = composing.current || compositions.current !== composed || selections.current !== selected
-        || element.selectionStart !== start || element.selectionEnd !== end
-        || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== version;
-      if (stale) {
-        setNote(t("Not pasted: the line or the terminal changed meanwhile. Paste again."));
+    setPending(waiting);
+    /** the line is still there to answer in */
+    const shown = (): boolean => mounted.current && box.current === element;
+    /** the line, its caret, a composition or the pane changed since the paste began, even and back again */
+    const stale = (): boolean => composing.current || compositions.current !== composed || selections.current !== selected
+      || !atPaste(element.selectionStart, element.selectionEnd)
+      || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== version;
+    const changed = t("Not pasted: the line or the terminal changed meanwhile. Paste again.");
+    return {
+      shown,
+      /** true, with the note said, when the paste no longer has its line as it found it */
+      dropped(): boolean {
+        if (!shown()) return true;
+        if (!stale()) return false;
+        setNote(changed);
+        return true;
+      },
+      /** says why the paste did not land, while the line is there to say it */
+      fail(note: string): void { if (shown()) setNote(note); },
+      /** the text at the selection the paste found, or a note why it was dropped; `whole` (file
+       * paths) goes in entire or not at all: a path cut at the line's limit names no file */
+      place(clip: string, whole = false): void {
+        if (!shown()) return;
+        if (stale()) { setNote(changed); return; }
+        const text = clip.replace(/\r\n?/g, "\n");
+        const current = readTerminalDraft(owner);
+        const next = current.slice(0, start) + text + current.slice(end);
+        if (whole && next.length > TERMINAL_LINE_LIMIT) { setNote(t("Not pasted: the line has no room for the file's path. Shorten it, then paste again.")); return; }
+        writeTerminalDraft(owner, next);
+        const written = readTerminalDraft(owner);
+        const cut = next.length - written.length;
+        setNote(cut > 0 ? t("Pasted up to the line's limit: {n} characters were left out.", { n: cut }) : null);
+        const caret = Math.min(start + text.length, written.length);
+        const pasted = terminalDraftVersion(owner);
+        requestAnimationFrame(() => {
+          // another pane picked, or the line written again, before the frame: its focus is not taken back
+          if (box.current !== element || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== pasted) return;
+          element.focus({ preventScroll: true });
+          element.setSelectionRange(caret, caret);
+        });
+      },
+      finish(): void {
+        document.removeEventListener("selectionchange", moved);
+        pasting.current = false;
+        // an unmounted line already gave the bar's Paste back (below): a later line may be pasting now
+        if (!mounted.current) return;
+        onPasting?.(false);
+        setPending(null);
+      },
+    };
+  }, [onPasting, owner, pasteTarget, t]);
+
+  /**
+   * Files pasted into the line (a screenshot from the keyboard's own Paste, an image the key bar
+   * read): uploaded beside the pane one after another, as a paste into the grid is
+   * (useTerminalMount.ts), and their quoted paths put in the line at the caret, to send or edit.
+   * One file over the limit and none is uploaded.
+   */
+  const uploadPaths = useCallback(async (files: Blob[]): Promise<string> => {
+    const paths: string[] = [];
+    for (const file of files) paths.push(await uploadFile!(file));
+    return paths.map((path) => `'${path.replaceAll("'", "'\\''")}'`).join(" ") + " ";
+  }, [uploadFile]);
+  const uploadFailed = useCallback((error: unknown): string => error instanceof AttachmentTooLargeError ? error.message : plainError(error), []);
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    // text, a copied path included, is the browser's own paste
+    if (event.clipboardData.getData("text/plain")) return;
+    const files = Array.from(event.clipboardData.files);
+    if (files.length === 0 || uploadFile === undefined) return;
+    event.preventDefault();
+    if (pasting.current) { setNote(t("Wait for the paste on its way, then paste again.")); return; }
+    if (composing.current) { setNote(t("Finish the word, then paste.")); return; }
+    try {
+      for (const file of files) assertAttachable(file);
+    } catch (error) {
+      setNote(uploadFailed(error));
+      return;
+    }
+    const waiting = beginPaste(event.currentTarget, t("Uploading file…"), true);
+    if (waiting === null) return;
+    uploadPaths(files).then((paths) => waiting.place(paths, true), (error: unknown) => waiting.fail(uploadFailed(error))).finally(waiting.finish);
+  };
+
+  /**
+   * The key bar's Paste: the clipboard is read from the user's tap and for this line alone, at the
+   * selection the tap found (beginPaste above), since the browser may hold the read for a permission
+   * prompt. Text goes in as written; an image on the clipboard, read where the browser has
+   * clipboard.read(), is uploaded and its path goes in, as the keyboard's own Paste does. A browser
+   * that reads only text says where an image can be pasted instead of calling the clipboard empty.
+   * A refused or missing clipboard says to use the keyboard's own paste; nothing is read in the
+   * background or retried.
+   */
+  const paste = useCallback(() => {
+    const element = box.current;
+    if (pasting.current || element === null) return;
+    if (composing.current) { setNote(t("Finish the word, then paste.")); return; }
+    const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+    const readsFiles = typeof clipboard?.read === "function" && uploadFile !== undefined;
+    if (!readsFiles && typeof clipboard?.readText !== "function") { setNote(t("Paste is not available here. Use the keyboard's own paste in the input line.")); return; }
+    const waiting = beginPaste(element, t("Reading the clipboard…"));
+    if (waiting === null) return;
+    const read: Promise<{ text: string } | { image: Blob }> = readsFiles
+      ? clipboard!.read().then(async (items) => {
+        // text first, as a paste into the grid: an image copied from a page often carries its address
+        // too. An empty text beside an image is no text
+        const texts = items.filter((item) => item.types.includes("text/plain"));
+        const text = (await Promise.all(texts.map(async (item) => (await item.getType("text/plain")).text()))).join("");
+        if (text.length > 0) return { text };
+        for (const item of items) {
+          const type = item.types.find((kind) => kind.startsWith("image/"));
+          if (type !== undefined) return { image: await item.getType(type) };
+        }
+        return { text };
+      })
+      : clipboard!.readText().then((text) => ({ text }));
+    read.then(async (clip) => {
+      if (!waiting.shown()) return;
+      if ("image" in clip) {
+        // nothing uploaded for a line that changed while the clipboard answered
+        if (waiting.dropped()) return;
+        try {
+          assertAttachable(clip.image);
+        } catch (error) {
+          waiting.fail(uploadFailed(error));
+          return;
+        }
+        setPending(t("Uploading file…"));
+        await uploadPaths([clip.image]).then((paths) => waiting.place(paths, true), (error: unknown) => waiting.fail(uploadFailed(error)));
         return;
       }
-      const text = clip.replace(/\r\n?/g, "\n");
-      if (text.length === 0) { setNote(t("Nothing to paste: the clipboard is empty.")); return; }
-      const current = readTerminalDraft(owner);
-      const next = current.slice(0, start) + text + current.slice(end);
-      writeTerminalDraft(owner, next);
-      const written = readTerminalDraft(owner);
-      const cut = next.length - written.length;
-      setNote(cut > 0 ? t("Pasted up to the line's limit: {n} characters were left out.", { n: cut }) : null);
-      const caret = Math.min(start + text.length, written.length);
-      const pasted = terminalDraftVersion(owner);
-      requestAnimationFrame(() => {
-        // another pane picked, or the line written again, before the frame: its focus is not taken back
-        if (box.current !== element || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== pasted) return;
-        element.focus({ preventScroll: true });
-        element.setSelectionRange(caret, caret);
-      });
+      if (clip.text.length === 0) {
+        waiting.fail(readsFiles ? t("Nothing to paste: the clipboard is empty.") : t("No text on the clipboard. To paste an image, press and hold the input line, then choose Paste."));
+        return;
+      }
+      waiting.place(clip.text);
     }, () => {
-      if (!mounted.current || box.current !== element) return;
-      setNote(t("The clipboard could not be read. Use the keyboard's own paste in the input line."));
-    }).finally(() => {
-      document.removeEventListener("selectionchange", moved);
-      pasting.current = false;
-      onPasting?.(false);
-      if (mounted.current) setPending(null);
-    });
-  }, [onPasting, owner, pasteTarget, t]);
-  useImperativeHandle(ref, () => ({ paste }), [paste]);
+      waiting.fail(t("The clipboard could not be read. Use the keyboard's own paste in the input line."));
+    }).finally(waiting.finish);
+  }, [beginPaste, uploadFailed, uploadFile, uploadPaths, t]);
+  // the mode switch's handoff (useTerminalSends): a focus alone, no selection reset, keyboard and caret where they were
+  const focus = useCallback((): boolean => {
+    const element = box.current;
+    if (element === null) return false;
+    element.focus({ preventScroll: true });
+    return true;
+  }, []);
+  useImperativeHandle(ref, () => ({ paste, focus }), [paste, focus]);
   // a paste that outlives the line (a pane switch, the masked input taking its place) is dropped above; the bar's Paste comes back
   const pastingCallback = useRef(onPasting);
   pastingCallback.current = onPasting;
@@ -362,6 +490,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
           if (event.target.value.length === 0) clearPendingSend();
         }}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         onFocus={onFocus}
       />
       {dictation.shown && <MicButton dictation={dictation} className="terminal-input-mic" />}

@@ -11,6 +11,7 @@ bun() {
     scripts/demo-build.ts) printf 'DEMO_DIR=%s\\n' "$HERDR_DEMO_BUILD";;
     scripts/*)
       [ "\${CHROME_PATH:-}" = /stub/chrome ] || return 91
+      [ "\${FFMPEG:-}" = /stub/ffmpeg ] || return 92
       printf 'PASS stubbed browser step\\nFAIL stubbed browser marker\\nSERVER listening on http://127.0.0.1:3000\\nSTEP=%s EVIDENCE=%s\\n' "$1" "\${UI_EVIDENCE_DIR:-}";;
   esac
   if [ "$1" = "\${FAIL_SCRIPT:-}" ]; then return 7; fi
@@ -19,6 +20,8 @@ sudo() { return 0; }
 bash() {
   if [ "$#" -eq 1 ] && [ "$1" = scripts/ci-chromium.sh ]; then
     printf '/stub/chrome\\n'
+  elif [ "$#" -eq 1 ] && [ "$1" = scripts/ci-ffmpeg.sh ]; then
+    printf '/stub/ffmpeg\\n'
   else
     command bash "$@"
   fi
@@ -38,6 +41,9 @@ source "$1"
  */
 const LANE_HANG_MS = 60_000;
 const LANE_TEST_MS = LANE_HANG_MS + 10_000;
+const inheritedEnv = () => Object.fromEntries(
+  ["HOME", "PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"].flatMap((key) => process.env[key] ? [[key, process.env[key]]] : []),
+);
 
 /** Ends `pid` and every process under it, read from the process table before any is ended. */
 async function endTree(pid: number): Promise<void> {
@@ -65,7 +71,7 @@ async function lane(fail = "", kept = false, ci = "") {
   try {
     const child = Bun.spawn(["bash", "-c", stub, "stub", join(import.meta.dir, "ci-browser.sh")], {
       cwd: dir,
-      env: { ...process.env, BROWSER_PARALLEL: "", CI: ci, CHECK_DIR: kept ? dir : "", UI_EVIDENCE_DIR: "", FAIL_SCRIPT: fail, TMPDIR: dir },
+      env: { ...inheritedEnv(), BROWSER_PARALLEL: "", CI: ci, CHECK_DIR: kept ? dir : "", UI_EVIDENCE_DIR: "", FAIL_SCRIPT: fail, TMPDIR: dir },
       stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
     // read as it comes, so what the lane printed is there even when the guard stops reading
@@ -105,6 +111,30 @@ const rows = (text: string) => [...text.matchAll(/^(scripts\/\S+)\s+(\d+)\s+(\d+
 }));
 
 describe("browser lane", () => {
+  it("fails each workflow ffmpeg step when the pinned binary cannot be fetched", async () => {
+    const workflow = Bun.YAML.parse(readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8")) as {
+      jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+    };
+    const steps = Object.values(workflow.jobs).flatMap((job) => job.steps)
+      .filter((step) => step.name === "Pinned ffmpeg for the relay media run");
+    // the browser lane's; the relay-skew job, which had the other, returns once a release holds server/relay/
+    expect(steps).toHaveLength(1);
+    for (const step of steps) {
+      const dir = mkdtempSync(join(tmpdir(), "hwc-ffmpeg-step-"));
+      try {
+        const githubEnv = join(dir, "env");
+        const child = Bun.spawn(["bash", "-e", "-c", `bash() { return 1; }\n${step.run}`], {
+          cwd: dir, env: { ...inheritedEnv(), GITHUB_ENV: githubEnv },
+          stdout: "ignore", stderr: "ignore",
+        });
+        expect(await child.exited).toBe(1);
+        expect(existsSync(githubEnv)).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("summarizes passing and failing scripts and stops at the original exit code", async () => {
     const { text, code } = await lane("scripts/sticky-modifiers-regression.ts");
     expect(code).toBe(7);
@@ -112,6 +142,7 @@ describe("browser lane", () => {
       { script: "scripts/demo-build.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/ui-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/ui-contexts-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/machine-events-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/workspace-rows-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/pending-pane-switch-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/lan-exposure-notice-regression.ts", seconds: expect.any(Number), code: 0 },
@@ -171,7 +202,6 @@ const MANUAL_BROWSER_SCRIPTS = [
   "scripts/keyboard-viewport-demo-regression.ts", // docs/development.md
   "scripts/machines-browser-qa.ts", // an SSH_TEST_KEEP=1 fixture (docs/remote-pcs.md)
   "scripts/output-browser-qa.ts", // docs/terminal-flow-control.md
-  "scripts/rewind-browser-qa.ts",
   "scripts/skill-activity-browser-qa.ts", // docs/chat-skill-activity.md
   "scripts/terminal-file-links-regression.ts",
   "scripts/update-browser-qa.ts", // a private Git remote and install (docs/app-updates.md)

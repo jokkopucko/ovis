@@ -355,6 +355,73 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.unsent().map(({ kind, text }) => `${kind}:${text}`)).toEqual(["line:typed here"]);
   });
 
+  it("follows a runtime switch back to a herdr the page left, and never shows one runtime's draft in the other's pane", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    lifetimes.observe([pc("local", "herdr-tui")], title);
+    lifetimes.runtimeSwitched("local");
+    lifetimes.observe([pc("local", "herdr-core")], title);
+    lifetimes.paneStorage.setItem(DRAFT, "typed on core p1");
+    // switched back in place: the TUI's snapshot is no stale read
+    lifetimes.runtimeSwitched("local");
+    lifetimes.observe([pc("local", "herdr-tui")], title);
+    expect(lifetimes.generation("local")).toBe("herdr-tui");
+    expect(lifetimes.stored("local")).toBe(true);
+    expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
+    lifetimes.paneStorage.setItem(DRAFT, "typed on herdr p1");
+    lifetimes.runtimeSwitched("local");
+    lifetimes.observe([pc("local", "herdr-core")], title);
+    expect(lifetimes.generation("local")).toBe("herdr-core");
+    expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
+    // neither text is lost: both wait in recovery
+    expect(lifetimes.unsent().map(({ text }) => text).sort()).toEqual(["typed on core p1", "typed on herdr p1"]);
+  });
+
+  it("lets another page follow a switch back too, once storage says the switching page cleared its history", () => {
+    const storage = new MemoryStorage();
+    const clicked = page(storage);
+    const other = page(storage);
+    for (const lifetimes of [clicked, other]) lifetimes.observe([pc("local", "herdr-tui")], title);
+    for (const lifetimes of [clicked, other]) lifetimes.observe([pc("local", "herdr-core")], title);
+    other.paneStorage.setItem(DRAFT, "core draft");
+    // the page that switched back clears the history; the other hears of it as a storage event
+    clicked.runtimeSwitched("local");
+    other.storageChanged("ovis:pane-lifetimes-retired:local");
+    for (const lifetimes of [clicked, other]) lifetimes.observe([pc("local", "herdr-tui")], title);
+    expect(other.generation("local")).toBe("herdr-tui");
+    expect(other.paneStorage.getItem(DRAFT)).toBeNull();
+    expect(other.unsent().map(({ text }) => text)).toEqual(["core draft"]);
+  });
+
+  it("lets a page on another device follow a switch back once its health names the runtime, in storage too", () => {
+    const storage = new MemoryStorage();
+    const device = page(storage);
+    device.observe([pc("local", "herdr-tui")], title);
+    device.observe([pc("local", "herdr-core")], title);
+    device.paneStorage.setItem(DRAFT, "for core");
+    // another device switched back: this one's health names herdr's TUI again before its roster does
+    device.runtimeChanged("local");
+    device.observe([pc("local", "herdr-tui")], title);
+    expect([device.generation("local"), device.stored("local"), device.paneStorage.getItem(DRAFT)]).toEqual(["herdr-tui", true, null]);
+    device.paneStorage.setItem(DRAFT, "for tui");
+    // kept in storage, so a reload still has it
+    expect(page(storage).paneStorage.getItem(DRAFT) ?? storage.getItem(DRAFT)).toBe("for tui");
+    expect(device.unsent().map(({ text }) => text)).toEqual(["for core"]);
+  });
+
+  it("follows a switch back on another device when its roster comes before its health", () => {
+    const storage = new MemoryStorage();
+    const device = page(storage);
+    device.observe([pc("local", "herdr-tui")], title);
+    device.observe([pc("local", "herdr-core")], title);
+    device.paneStorage.setItem(DRAFT, "core draft");
+    // the TUI's snapshot first, taken for a stale read; then the health read names the TUI
+    device.observe([pc("local", "herdr-tui")], title);
+    device.runtimeChanged("local");
+    expect([device.generation("local"), device.paneStorage.getItem(DRAFT)]).toEqual(["herdr-tui", null]);
+    expect(device.unsent().map(({ text }) => text)).toEqual(["core draft"]);
+  });
+
   it("takes a read from a herdr the page already moved on from as stale, not as a herdr to go back to", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);
@@ -386,4 +453,22 @@ describe("pane state per herdr lifetime", () => {
     lifetimes.discard(kept!.id);
     expect(lifetimes.unsent()).toEqual([]);
   });
+});
+
+// #511: a herdr restart keeps a message for an agent alone for recovery as one, edited or queued
+it("keeps the agent-only flag of a retired draft and of each retired queued message", () => {
+  const storage = new MemoryStorage();
+  const lifetimes = page(storage);
+  lifetimes.observe([pc("local", "herdr-a")], title);
+  lifetimes.paneStorage.setItem(DRAFT, "rm backup.txt");
+  lifetimes.paneStorage.setItem("ovis:composer-agent-only:w1:p1", "1");
+  lifetimes.paneStorage.setItem("ovis:pending:w1:p1", JSON.stringify({ version: 1, messages: [
+    { id: "1", text: "queued for the agent", agent_only: true, state: "held", request_id: 1, created_at: "now" },
+    { id: "2", text: "queued plainly", state: "held", request_id: 2, created_at: "now" },
+  ] }));
+  lifetimes.observe([pc("local", "herdr-b")], title);
+  const flag = (text: string) => lifetimes.unsent().find((item) => item.text === text)?.agent_only;
+  expect(flag("rm backup.txt")).toBe(true);
+  expect(flag("queued for the agent")).toBe(true);
+  expect(flag("queued plainly")).toBeUndefined();
 });

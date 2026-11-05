@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { forgetTranscriptState, paneTranscript, transcriptPage, transcriptToolOutput } from "./conversation.ts";
+import { forgetTranscriptState, paneConversation, paneTranscript, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
 import * as herdr from "./herdr/client.ts";
 import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
-import { isLettaProcess, type LettaProcess, lettaBinding, lettaInStartFolder, lettaLocalOwner, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron } from "./letta-store.ts";
+import * as lettaStore from "./letta-store.ts";
+import { isLettaProcess, type LettaProcess, lettaBinding, lettaInStartFolder, lettaLocalOwner, lettaLocalSettings, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron } from "./letta-store.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 // Recorded from letta-code 0.34.27 in an isolated herdr session (local backend, herdr's Letta
@@ -254,6 +256,151 @@ describe("Letta conversation binding", () => {
     expect(lettaLocalOwner(store, AGENT, "default")).toBe(true);
   });
 
+  test("a local conversation's model and effort are its own, else its agent's, as Letta runs the turn", () => {
+    const store = join(root, "store");
+    const record = (key: string, body: unknown): void => {
+      const folder = join(store, "conversations", Buffer.from(key).toString("base64url"));
+      mkdirSync(folder, { recursive: true });
+      writeFileSync(join(folder, "conversation.json"), JSON.stringify(body));
+    };
+    // the shapes letta-code 0.34.31's local backend writes: an agent record, and a conversation
+    // whose `model` / `model_settings` are set only once `/model` changes them in that conversation
+    mkdirSync(join(store, "agents"), { recursive: true });
+    writeFileSync(join(store, "agents", `${Buffer.from(AGENT).toString("base64url")}.json`), JSON.stringify({
+      id: AGENT, name: "Protos", model: "claude-mimosa/claude-opus-5-5",
+      model_settings: { provider_type: "claude-mimosa", reasoning: { reasoning_effort: "high" }, context_window_limit: 1000000 },
+    }));
+    expect(lettaLocalSettings(store, AGENT, "local-conv-1")).toBeNull();
+
+    // no override: the agent's model and effort
+    record("conversation:local-conv-1", JSON.parse(localConversation));
+    expect(lettaLocalSettings(store, AGENT, "local-conv-1")).toEqual({ model: "claude-mimosa/claude-opus-5-5", reasoning_effort: "high" });
+    // /model in this conversation: its own model and settings win
+    record("conversation:local-conv-1", { ...JSON.parse(localConversation), model: "claude-ing/claude-sonnet-5-5",
+      model_settings: { provider_type: "claude-ing", reasoning: { reasoning_effort: "medium" }, reasoning_effort: "medium" } });
+    expect(lettaLocalSettings(store, AGENT, "local-conv-1")).toEqual({ model: "claude-ing/claude-sonnet-5-5", reasoning_effort: "medium" });
+    // an effort set alone keeps the agent's model
+    record("conversation:local-conv-1", { ...JSON.parse(localConversation), model_settings: { reasoning: { reasoning_effort: "low" } } });
+    expect(lettaLocalSettings(store, AGENT, "local-conv-1")).toEqual({ model: "claude-mimosa/claude-opus-5-5", reasoning_effort: "low" });
+    // Letta reads the nested effort first (reasoningForSettings): a top-level one beside it changes nothing
+    record("conversation:local-conv-1", { ...JSON.parse(localConversation), model_settings: { reasoning_effort: "low" } });
+    expect(lettaLocalSettings(store, AGENT, "local-conv-1")).toEqual({ model: "claude-mimosa/claude-opus-5-5", reasoning_effort: "high" });
+    // the default conversation is keyed with its agent
+    record(`default:${AGENT}`, { id: "default", agent_id: AGENT });
+    expect(lettaLocalSettings(store, AGENT, "default")).toEqual({ model: "claude-mimosa/claude-opus-5-5", reasoning_effort: "high" });
+
+    // a cloud conversation's settings are on the server; a record of another agent or a broken one names nothing
+    expect(lettaLocalSettings(store, AGENT, "conv-0d9d5c5e-3c3a-4a51-9d0c-1f5f2c1b7a11")).toBeNull();
+    expect(lettaLocalSettings(store, "agent-local-b", "local-conv-1")).toBeNull();
+    writeFileSync(join(store, "conversations", Buffer.from("conversation:local-conv-1").toString("base64url"), "conversation.json"), "{");
+    expect(lettaLocalSettings(store, AGENT, "local-conv-1")).toBeNull();
+  });
+
+  /** Letta's local store under `root`: an agent record and conversation records, by the keys Letta derives. */
+  const store = () => join(root, "store");
+  const agentRecord = (body: unknown): string => {
+    mkdirSync(join(store(), "agents"), { recursive: true });
+    const path = join(store(), "agents", `${Buffer.from(AGENT).toString("base64url")}.json`);
+    if (body !== null) writeFileSync(path, JSON.stringify(body));
+    return path;
+  };
+  const conversationRecord = (key: string, body: unknown): string => {
+    const folder = join(store(), "conversations", Buffer.from(key).toString("base64url"));
+    mkdirSync(folder, { recursive: true });
+    if (body !== null) writeFileSync(join(folder, "conversation.json"), JSON.stringify(body));
+    return join(folder, "conversation.json");
+  };
+
+  test("an Anthropic or Bedrock agent's effort is read from `effort`, where Letta writes it, before `reasoning_effort`", () => {
+    // buildModelSettings in letta-code 0.34.23 for an anthropic/ handle
+    agentRecord({ id: AGENT, model: "anthropic/claude-sonnet-4-5", model_settings: { provider_type: "anthropic", effort: "high" } });
+    conversationRecord("conversation:local-conv-1", JSON.parse(localConversation));
+    expect(lettaLocalSettings(store(), AGENT, "local-conv-1")).toEqual({ model: "anthropic/claude-sonnet-4-5", reasoning_effort: "high" });
+    conversationRecord("conversation:local-conv-1", { ...JSON.parse(localConversation), model_settings: { reasoning_effort: "low" } });
+    expect(lettaLocalSettings(store(), AGENT, "local-conv-1")).toEqual({ model: "anthropic/claude-sonnet-4-5", reasoning_effort: "high" });
+  });
+
+  test("a local conversation's settings come only from the record whose own id it is", () => {
+    agentRecord({ id: AGENT, model: "base-model" });
+    conversationRecord("conversation:local-conv-1", { ...JSON.parse(localConversation), id: "local-conv-9", model: "other" });
+    expect(lettaLocalSettings(store(), AGENT, "local-conv-1")).toBeNull();
+    conversationRecord("conversation:local-conv-1", { ...JSON.parse(localConversation), model: "own" });
+    expect(lettaLocalSettings(store(), AGENT, "local-conv-1")).toEqual({ model: "own", reasoning_effort: null });
+  });
+
+  test("a store record reached through a link is not read", () => {
+    writeFileSync(join(root, "outside.json"), JSON.stringify({ id: AGENT, model: "from-outside" }));
+    symlinkSync(join(root, "outside.json"), agentRecord(null));
+    const own = conversationRecord("conversation:local-conv-1", JSON.parse(localConversation));
+    expect(lettaLocalSettings(store(), AGENT, "local-conv-1")).toBeNull();
+    rmSync(agentRecord(null));
+    agentRecord({ id: AGENT, model: "base-model" });
+    // the default conversation's record linked to another conversation's
+    symlinkSync(own, conversationRecord(`default:${AGENT}`, null));
+    expect(lettaLocalSettings(store(), AGENT, "default")).toBeNull();
+    writeFileSync(join(root, "conversation.json"), localConversation);
+    rmSync(own);
+    symlinkSync(join(root, "conversation.json"), own);
+    expect(lettaLocalOwner(store(), AGENT, "local-conv-1")).toBe(false);
+    expect(lettaLocalSettings(store(), AGENT, "local-conv-1")).toBeNull();
+  });
+
+  test.skipIf(process.platform === "win32")("a FIFO where Letta keeps a record is not waited on", () => {
+    const own = conversationRecord("conversation:local-conv-1", JSON.parse(localConversation));
+    const base = agentRecord(null);
+    // a FIFO with no writer blocks a plain open: the reads run in a child, so a hang fails this test, not the run
+    const probe = (): unknown => {
+      const module = JSON.stringify(join(import.meta.dir, "letta-store.ts"));
+      const child = spawnSync(process.execPath, ["-e", `import { lettaLocalOwner, lettaLocalSettings } from ${module};
+        console.log(JSON.stringify([lettaLocalOwner(${JSON.stringify(store())}, ${JSON.stringify(AGENT)}, "local-conv-1"), lettaLocalSettings(${JSON.stringify(store())}, ${JSON.stringify(AGENT)}, "local-conv-1")]));`],
+      { encoding: "utf8", timeout: 5000 });
+      expect(child.signal).toBeNull();
+      return JSON.parse(child.stdout);
+    };
+    expect(spawnSync("mkfifo", [base]).status).toBe(0);
+    expect(probe()).toEqual([true, null]);
+    rmSync(own);
+    expect(spawnSync("mkfifo", [own]).status).toBe(0);
+    expect(probe()).toEqual([false, null]);
+  }, 15_000);
+
+  test("a Letta pane's chat shows the store's model and effort, and its ETag follows them with no append", async () => {
+    const path = join(root, "transcript.jsonl");
+    writeFileSync(path, newLog);
+    agentRecord({ id: AGENT, model: "anthropic/claude-sonnet-4-5", model_settings: { provider_type: "anthropic", effort: "high" } });
+    const own = conversationRecord("conversation:local-conv-1", JSON.parse(localConversation));
+    const target = pane("w1:p1", "local-conv-1", root);
+    const resolution = spyOn(lettaStore, "resolveLettaTranscript").mockResolvedValue({ path, session: "local-conv-1", agent: AGENT, conversation: "local-conv-1", store: store() });
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [target], agents: [], workspaces: [], tabs: [], layouts: [], version: "fixture", protocol: 22 } as never);
+    const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({ pane_id: target.pane_id, foreground_processes: [] } as never);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async () => ({}) as never);
+    try {
+      const cached = transcriptPage("letta-transcript", path);
+      const first = await paneConversation(target.pane_id);
+      expect(first.metadata).toMatchObject({ model: "anthropic/claude-sonnet-4-5", reasoning_effort: "high" });
+      expect((await paneConversation(target.pane_id)).version).toBe(first.version);
+      // /model in the conversation writes its record, not the transcript
+      conversationRecord("conversation:local-conv-1", { ...JSON.parse(localConversation), model: "anthropic/claude-opus-4-5", model_settings: { effort: "low" } });
+      const second = await paneConversation(target.pane_id);
+      expect(second.metadata).toMatchObject({ model: "anthropic/claude-opus-4-5", reasoning_effort: "low" });
+      expect(second.version).not.toBe(first.version);
+      expect(first.metadata).toMatchObject({ model: "anthropic/claude-sonnet-4-5", reasoning_effort: "high" });
+      // the shared transcript page is never enriched
+      expect(cached.metadata).toMatchObject({ model: null, reasoning_effort: null });
+      expect(transcriptPage("letta-transcript", path)).toEqual(cached);
+      // a record that does not read leaves the transcript's own answer
+      writeFileSync(own, "{");
+      const third = await paneConversation(target.pane_id);
+      expect(third.metadata).toMatchObject({ model: null, reasoning_effort: null });
+      expect(new Set([first.version, second.version, third.version]).size).toBe(3);
+    } finally {
+      rpc.mockRestore();
+      info.mockRestore();
+      snapshot.mockRestore();
+      resolution.mockRestore();
+    }
+  });
+
   test("only a regular file at the path Letta derives is read, never one reached through a link", () => {
     const transcripts = join(root, "transcripts");
     const path = lettaTranscriptPath(transcripts, AGENT, "local-conv-1");
@@ -306,7 +453,8 @@ describe("Letta conversation binding", () => {
       const record = join(config, "lc-local-backend", "conversations", Buffer.from("conversation:local-conv-1").toString("base64url"));
       mkdirSync(record, { recursive: true });
       writeFileSync(join(record, "conversation.json"), localConversation);
-      expect(await resolve(bound)).toEqual({ source: "letta-transcript", path });
+      expect(await resolve(bound)).toEqual({ source: "letta-transcript", path,
+        letta: { store: join(config, "lc-local-backend"), agent: AGENT, conversation: "local-conv-1" } });
       await expect(resolve(pane("w1:p1", `default:${AGENT}`, project))).rejects.toThrow("no_session_path");
       await expect(resolve(pane("w1:p1", null, project))).rejects.toThrow("no_session_path");
       // another pane running Letta in the folder writes the same record
@@ -314,7 +462,8 @@ describe("Letta conversation binding", () => {
       foreground = movedIn.pid;
       await expect(resolve(bound)).rejects.toThrow("no_session_path");
       foreground = child.pid;
-      expect(await resolve(bound)).toEqual({ source: "letta-transcript", path });
+      expect(await resolve(bound)).toEqual({ source: "letta-transcript", path,
+        letta: { store: join(config, "lc-local-backend"), agent: AGENT, conversation: "local-conv-1" } });
       const peer = pane("w2:p1", "default:agent-local-b", project);
       await expect(paneTranscript(bound.pane_id, undefined, { panes: [bound, peer] } as SessionSnapshot)).rejects.toThrow("no_session_path");
     } finally {

@@ -10,7 +10,10 @@ export function useConnectionChip() {
   // the active slot's pane could not be drawn: no terminal is attached there to say so itself
   const paneLost = useCallback(() => setConnected(false), []);
   const [outputStopped, setOutputStopped] = useState(false);
-  return { connected, setConnected, connectedBefore, setConnectedBefore, paneLost, outputStopped, setOutputStopped };
+  /** the split half and PC (`slot:machineId`) whose terminal last reported the state above: the header's
+   *  connection line ignores state another half left behind (lib/headerConnection.ts) */
+  const [reportedBy, setReportedBy] = useState<string | null>(null);
+  return { connected, setConnected, connectedBefore, setConnectedBefore, paneLost, outputStopped, setOutputStopped, reportedBy, setReportedBy };
 }
 
 /** Creates the callback for server messages affecting the connection chip. */

@@ -1137,6 +1137,12 @@
     height: var(--touch-target);
   }
 
+  /* the text scrolls inside under a third of what the keyboard leaves (--app-height, or the
+     layout viewport Chrome shrinks), so a long draft never pushes the row with Send under a tall
+     keyboard; ten lines where there is room */
+  .composer-text {
+    max-height: min(10lh, max(2lh, calc(var(--app-height, 100dvh) * 0.3)));
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

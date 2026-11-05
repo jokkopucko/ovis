@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { architectures, crateTree, expectedArchitectures, install, type Manifest } from "./pty-sidecar.ts";
+import { architectures, crateTree, expectedArchitectures, install, TREE_RELEASE, type Manifest } from "./pty-sidecar.ts";
 
 const version = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
 const HOST = "#!/bin/sh\nprintf 'pty-sidecar: usage: fixture\\n' >&2\nexit 2\n";
@@ -110,6 +110,32 @@ describe("install", () => {
     const result = await install({ releases, target: join(blocked, "ovis-pty-sidecar"), platform: "linux-x64" });
     expect(result.ok).toBe(false);
     expect(result.message).toContain("could not install");
+  });
+
+  it("takes the host built from these sources from their crate tree's prerelease when the release's is from others", async () => {
+    files.clear();
+    publish(HOST, { crate: "0".repeat(40) });
+    const built = (binary: string, crate = tree) => {
+      files.set(`/${TREE_RELEASE}${tree}/ovis-pty-sidecar-linux-x64`, binary);
+      // a beta's manifest says main's version then, which need not be this checkout's
+      files.set(`/${TREE_RELEASE}${tree}/ovis-pty-sidecar.json`, JSON.stringify({
+        version: "0.0.1", crate, assets: { "linux-x64": { file: "ovis-pty-sidecar-linux-x64", sha256: sha256(HOST) } },
+      }));
+    };
+    built(HOST);
+    const path = target();
+    const result = await install({ releases, target: path, platform: "linux-x64" });
+    expect(result).toEqual({ ok: true, message: expect.stringContaining(`prerelease ${TREE_RELEASE}`) });
+    expect(readFileSync(path, "utf8")).toBe(HOST);
+    expect(JSON.parse(readFileSync(`${path}.json`, "utf8"))).toMatchObject({ crate: tree, version });
+
+    // checked the same way: other sources, or a binary that is not the manifest's, install nothing
+    built(HOST, "1".repeat(40));
+    expect((await install({ releases, target: target(), platform: "linux-x64" })).ok).toBe(false);
+    built(`${HOST}# tampered\n`);
+    const tampered = await install({ releases, target: target(), platform: "linux-x64" });
+    expect(tampered.ok).toBe(false);
+    expect(tampered.message).toContain("does not match its SHA-256");
   });
 
   it("says so when the release has no host, or the platform has none", async () => {

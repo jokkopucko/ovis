@@ -96,3 +96,58 @@ describe("AgentSidebar plugin tokens", () => {
     expect(lines[1]).toBe("checkout-api");
   });
 });
+
+describe("AgentSidebar, what herdr-core reports", () => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { matchMedia: () => ({ matches: false }) } });
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+  });
+  afterEach(() => {
+    if (saved) Object.defineProperty(globalThis, "window", saved);
+    else Reflect.deleteProperty(globalThis, "window");
+    if (savedLanguages) Object.defineProperty(navigator, "languages", savedLanguages);
+    else Reflect.deleteProperty(navigator, "languages");
+  });
+
+  test("a helper reads on one line under the agent that started it, a blocked agent says why in a few words, and progress is a percent", () => {
+    const html = render([machine([
+      pane("t1", { agent_status: "working", agent_progress: 40 }),
+      pane("t9", { agent_status: "blocked", agent_kind: "question", agent_message: "Which <branch>?" }),
+      pane("t2", { agent: "codex", agent_status: "blocked", parent_pane_id: "t1", agent_kind: "permission", agent_message: "Allow bash: rm -rf build?" }),
+      // a blocked agent that said nothing more draws no line; a kind outside the protocol is shown as written
+      pane("t3", { agent_status: "blocked" }),
+      pane("t4", { agent_status: "blocked", agent_kind: "payment" }),
+    ])]);
+    expect([...html.matchAll(/data-pane="([^"]+)"(?: data-pin-key="[^"]+")?(?: data-depth="(\d)")?/g)].map((match) => [match[1], match[2] ?? "0"]))
+      .toEqual([["t1", "0"], ["t2", "1"], ["t9", "0"], ["t3", "0"], ["t4", "0"]]);
+    expect([...html.matchAll(/<span class="agent-blocked"[^>]*>(.*?)<\/span>/g)].map((match) => match[1])).toEqual(["Needs permission", "Has a question", "payment"]);
+    // a screen reader hears the whole reason in the row, not the cut one
+    expect(html).toContain('<span class="agent-blocked" aria-hidden="true">Needs permission</span><span class="visually-hidden">Needs permission: Allow bash: rm -rf build?</span>');
+    expect(html).toContain('<span class="agent-blocked">payment</span>');
+    expect(html).not.toContain("<branch>");
+    // the whole reason is in the tooltip
+    expect(tooltips(html)[1]).toContain("Needs permission: Allow bash: rm -rf build?");
+    expect(tooltips(html)[2]).toContain("Has a question: Which <branch>?");
+    // the helper's row is one line: no place and no plugin values under its title
+    expect(texts(html, "agent-context")).toHaveLength(4);
+    // the percent is drawn for the eye; the words are what a screen reader reads, and the tooltip says it too
+    expect([...html.matchAll(/<span class="agent-progress" aria-hidden="true">(.*?)<\/span>/g)].map((match) => match[1])).toEqual(["40%"]);
+    expect(html).toContain('<span class="visually-hidden">Progress 40%</span>');
+    expect(tooltips(html)[0]).toContain("Progress 40%");
+    expect(tooltips(html)[1]).toContain("Started by t1");
+  });
+
+  test("a helper's tree line runs on past its own helper to its next sibling", () => {
+    const html = render([machine([
+      pane("t1", { agent_status: "working" }),
+      pane("t2", { agent_status: "working", parent_pane_id: "t1" }),
+      pane("t5", { agent_status: "working", parent_pane_id: "t2" }),
+      pane("t3", { agent_status: "working", parent_pane_id: "t1" }),
+      pane("t4", { agent_status: "working" }),
+    ])]);
+    const lines = [...html.matchAll(/<li [^>]*data-pane="([^"]+)"[^>]*>/g)].map((match) => [match[1], /data-more=""/.test(match[0]), /data-through=""/.test(match[0])]);
+    expect(lines).toEqual([["t1", false, false], ["t2", true, false], ["t5", false, true], ["t3", false, false], ["t4", false, false]]);
+  });
+});

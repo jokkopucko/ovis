@@ -303,12 +303,30 @@ export function claudeRestoredDraft(live: string, colors: string | null, sent: s
  */
 export function viewportShowsLive(scrollBefore: { offset_from_bottom: number } | null, scrollAfter: { offset_from_bottom: number } | null,
   colors: string, before: string, live: string): boolean {
-  const lines = (text: string): string => text.replace(ANSI_RE, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
-    .split(/\r?\n/).map((line) => line.trimEnd()).join("\n").trimEnd();
   const atBottom = scrollBefore !== null && scrollAfter !== null
     ? scrollBefore.offset_from_bottom === 0 && scrollAfter.offset_from_bottom === 0
-    : scrollBefore === null && scrollAfter === null && lines(colors) === lines(live);
+    : scrollBefore === null && scrollAfter === null && screenLines(colors) === screenLines(live);
   return atBottom && live === before;
+}
+
+/** A screen read's rows as plain text, each row's and the screen's right edge trimmed. */
+const screenLines = (text: string): string => text.replace(ANSI_RE, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+  .split(/\r?\n/).map((line) => line.trimEnd()).join("\n").trimEnd();
+
+/**
+ * Whether a colored read of the history's last rows (`recent`, as many as the viewport has) shows
+ * the live screen, so claudeInputDraft may take its colors while the viewport is scrolled into the
+ * history: herdr's history ends with the live screen whatever the viewport shows, so only a redraw
+ * between the reads can tell them apart. Its text equal to the live screen, every live read taken
+ * before and between the colored ones (`lives`) the same, and a second colored read, the last of all,
+ * identical to the first, colors included, rule one out: a suggestion accepted with Tab keeps its words
+ * and changes only its colors.
+ */
+export function historyEndShowsLive(colors: string, colorsAfter: string, lives: readonly string[]): boolean {
+  // a read without any color (NO_COLOR, a monochrome terminal) cannot tell Claude's tip from the same
+  // words typed: a scrolled box keeps refusing as a draft, as it did before it was read from the history
+  return colors === colorsAfter && !colorless(colors) && lives.length > 0 && lives.every((live) => live === lives[0])
+    && screenLines(colors) === screenLines(lives[0]!);
 }
 
 /** Whether a card is the one for a message Claude Code holds back (parseClaudeHeld). */

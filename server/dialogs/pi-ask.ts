@@ -118,7 +118,8 @@ function question(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
     ...(confirmed !== undefined ? { default_option_index: confirmed } : {}),
     ...(expected && other.label !== OTHER ? { default_custom_text: typing ? other.label : other.label.replace(/ ✔$/, "") } : {}),
     ...(tabs ? { steps: typing ? tabs.steps.map(step => ({ ...step, can_navigate: false })) : tabs.steps,
-      can_step_back: navigable && tabs.index! > 0 } : {}),
+      can_step_back: navigable && tabs.index! > 0,
+      can_step_next: navigable && tabs.steps[tabs.index! + 1]?.can_navigate === true } : {}),
   }, {
     ...(navigable ? { piAskForm: { identity: `${expected?.id ?? ""}\0${tabs!.identity}`, index: tabs!.index! } } : {}),
     ...(typing ? { piAskTyping: true as const } : {}),
@@ -138,7 +139,7 @@ function question(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
       keys.push(...navigationKeys(rows.length - cursor), KEY.enter);
       return keySteps(keys);
     } }),
-  }, { steps: undefined, can_step_back: undefined, default_custom_text: undefined,
+  }, { steps: undefined, can_step_back: undefined, can_step_next: undefined, default_custom_text: undefined,
     call: JSON.stringify({ source: expected?.id, tabBar, tab: tabs?.index ?? null, ...(multi ? { checked } : {}) }) });
 }
 

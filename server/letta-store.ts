@@ -19,7 +19,7 @@
  */
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, join, normalize } from "node:path";
-import type { HerdrPane } from "../shared/protocol.ts";
+import type { ConversationMetadata, HerdrPane } from "../shared/protocol.ts";
 import { darwinProcess } from "./claude-store.ts";
 import { paneProcessInfo, type ProcessInfo } from "./herdr/client.ts";
 import { processStartLowerBound } from "./process-start.ts";
@@ -78,12 +78,17 @@ export function parseEnviron(text: string): Env {
   return env;
 }
 
+/** O_NONBLOCK, so a FIFO put where a record was is not waited on; O_NOFOLLOW, so a link there is refused. */
+const RECORD_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
+
+/** The text of a regular file of at most `bytes`, opened through no final link; null otherwise. */
 function readBounded(path: string, bytes: number): string | null {
   let fd: number;
-  try { fd = openSync(path, "r"); } catch { return null; }
+  try { fd = openSync(path, RECORD_FLAGS); } catch { return null; }
   try {
-    const size = fstatSync(fd).size;
-    if (size > bytes) return null;
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > bytes) return null;
+    const size = stat.size;
     const buffer = Buffer.alloc(size);
     return buffer.subarray(0, readSync(fd, buffer, 0, size, 0)).toString("utf8");
   } catch { return null; } finally { closeSync(fd); }
@@ -282,13 +287,48 @@ export function lettaLocalOwner(store: string, agent: string, conversation: stri
   } catch { return false; }
 }
 
-/** The transcript a Letta pane shows, written and held as lettaTranscriptHeld says, or null. */
-export async function resolveLettaTranscript(pane: HerdrPane, panes: readonly HerdrPane[], known?: ProcessInfo | null): Promise<LettaTranscript | null> {
+const recordAt = (path: string): Record<string, unknown> | null => {
+  const text = readBounded(path, SETTINGS_BYTES);
+  if (text === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch { return null; }
+};
+const fields = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const word = (value: unknown): string | null => typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+
+/**
+ * The model and reasoning effort Letta runs a local conversation with, as its local backend resolves
+ * them for a turn: the conversation's own `model` (what `/model` sets in it), else its agent's, and the
+ * conversation's `model_settings` over the agent's, whose effort Letta reads (reasoningForSettings) as
+ * `reasoning.reasoning_effort`, else `effort` (what it writes for Anthropic and Bedrock), else
+ * `reasoning_effort`. Letta's transcript names neither, and `/model` writes no turn. Null for a cloud
+ * conversation, whose settings live on the server, and for records that do not read as Letta writes
+ * them, name another agent, or (a local conversation's) another conversation.
+ */
+export function lettaLocalSettings(store: string, agent: string, conversation: string): ConversationMetadata | null {
+  const key = conversation === "default" ? `default:${agent}` : conversation.startsWith("local-conv-") ? `conversation:${conversation}` : null;
+  if (key === null) return null;
+  const own = recordAt(join(store, "conversations", Buffer.from(key).toString("base64url"), "conversation.json"));
+  const base = recordAt(join(store, "agents", `${Buffer.from(agent).toString("base64url")}.json`));
+  if (own === null || base === null || own["agent_id"] !== agent || base["id"] !== agent) return null;
+  if (conversation !== "default" && own["id"] !== conversation) return null;
+  const settings = { ...fields(base["model_settings"]), ...fields(own["model_settings"]) };
+  return {
+    model: word(own["model"]) ?? word(base["model"]),
+    reasoning_effort: word(fields(settings["reasoning"])["reasoning_effort"] ?? settings["effort"] ?? settings["reasoning_effort"]),
+  };
+}
+
+/** The transcript a Letta pane shows, written and held as lettaTranscriptHeld says, and its process's local store; or null. */
+export async function resolveLettaTranscript(pane: HerdrPane, panes: readonly HerdrPane[], known?: ProcessInfo | null): Promise<(LettaTranscript & { store: string }) | null> {
   const owner = await paneLettaProcess(pane.pane_id, known);
   if (owner === null || !lettaInStartFolder(owner) || !lettaRecordOwned(pane, panes, owner)) return null;
   const found = lettaTranscriptFor(pane, panes, owner);
   const store = lettaLocalStore(owner.env);
   const root = lettaTranscriptRoot(owner.env);
   if (found === null || store === null || root === null || !lettaLocalOwner(store, found.agent, found.conversation)) return null;
-  return lettaTranscriptHeld(found.path, root) ? found : null;
+  return lettaTranscriptHeld(found.path, root) ? { ...found, store } : null;
 }

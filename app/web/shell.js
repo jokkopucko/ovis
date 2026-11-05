@@ -1,6 +1,12 @@
 // Shared by the app's own pages: the native plugin (ios/App/App/HerdrShellPlugin.swift) and
 // what an address typed or scanned becomes.
 
+/**
+ * The hosted shell's origin (app.ovis.sh), where a PC paired over the Ovis relay opens, at its scope
+ * `/s/<server_id>/`. app/scripts/build-web.ts puts in another for a test build (OVIS_APP_URL).
+ */
+export const APP_ORIGIN = "https://app.ovis.sh";
+
 /** Whether the phone's first language is Korean, the one language the app's own pages have besides English. */
 export const korean = /^ko\b/i.test(navigator.language ?? "");
 
@@ -54,4 +60,41 @@ export function parseAddress(text) {
   try { url = new URL(value); } catch { return null; }
   if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hostname === "") return null;
   return url;
+}
+
+const OFFER = "#offer=";
+const SCOPE = /^\/s\/([0-9a-f]{32})\/?$/;
+
+/**
+ * What `url` (from parseAddress) opens through the Ovis relay, or null for a PC's own address.
+ * A PC's page on the app's origin, `/s/<server_id>/`, with its pairing offer (`#offer=`, the QR code
+ * the PC shows for the relay) or without (a PC saved before), is `{ url, scope, name }`: the address
+ * to open, the fragment kept, the scope the app saves the PC under, and its label from the offer.
+ * Anything else is `{ error }`: "foreign-offer" for an offer on another origin, which only the app's
+ * origin may take, "bad-offer" for an offer that does not name this scope's PC, and "not-a-pc" for
+ * another page of the app's origin. The hosted shell checks the offer in full before it pairs.
+ */
+export function relayLink(url, appOrigin = APP_ORIGIN) {
+  if (url.origin !== new URL(appOrigin).origin) return url.hash.startsWith(OFFER) ? { error: "foreign-offer" } : null;
+  const serverId = SCOPE.exec(url.pathname)?.[1];
+  if (serverId === undefined) return { error: "not-a-pc" };
+  const scope = `${url.origin}/s/${serverId}/`;
+  if (url.hash === "") return { url: scope, scope, name: undefined };
+  if (!url.hash.startsWith(OFFER)) return { error: "not-a-pc" };
+  const offer = offerOf(url.hash.slice(OFFER.length));
+  if (offer === null || offer.server_id !== serverId) return { error: "bad-offer" };
+  return { url: scope + url.hash, scope, name: offer.name };
+}
+
+/** The offer's `server_id` and `name` from its base64url JSON, or null when it is none. */
+function offerOf(payload) {
+  if (!/^[A-Za-z0-9_-]{1,2048}$/.test(payload) || payload.length % 4 === 1) return null;
+  let offer;
+  try {
+    const binary = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    offer = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(binary, (c) => c.charCodeAt(0))));
+  } catch { return null; }
+  if (typeof offer !== "object" || offer === null || offer.v !== 1 || typeof offer.server_id !== "string") return null;
+  if (offer.name !== undefined && (typeof offer.name !== "string" || offer.name.length > 64)) return null;
+  return { server_id: offer.server_id, name: offer.name === "" ? undefined : offer.name };
 }

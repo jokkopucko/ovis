@@ -875,6 +875,36 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       console.log("PASS a tab moved to another workspace keeps its half of the split, active or not");
     }
 
+    // A move made outside this browser (herdr's own window, another browser) reaches it as the server's
+    // pane-moved: the half showing the pane follows it to its new ID, and what was typed there and the
+    // lens picked for it go with it, sent nowhere (#1503).
+    {
+      const [left, right, , ] = await panesFor("tui-left", "tui-right", "tui-target") as [string, string, string];
+      const target = workspaces.at(-1)!;
+      const { page, errors } = await open([left, right], "chat");
+      await splitRight(page, right);
+      const shows = (side: string, pane: string) => page.waitForFunction(([which, id]) =>
+        document.querySelector(`.pane-slot[data-side="${which}"] [data-layout-pane="${id}"]:not([inert])`) !== null, [side, pane] as const);
+      await shows("left", left);
+      const composer = half(page, "left").getByRole("textbox", { name: "Message", exact: true });
+      await composer.fill("held across the move");
+      await page.waitForFunction((id) => (localStorage.getItem(`ovis:composer-draft:${id}`) ?? "").includes("held across the move"), left);
+      // the RPC behind `herdr pane move <pane> --new-tab --workspace <id>` in herdr's own window
+      const { move_result } = await herdrRpc<{ move_result: { pane: { pane_id: string } } }>("pane.move", {
+        pane_id: left, destination: { type: "new_tab", workspace_id: target }, focus: false,
+      });
+      const moved = move_result.pane.pane_id;
+      assert.notEqual(moved, left, "herdr gives the moved pane a new ID");
+      await shows("left", moved);
+      await shows("right", right);
+      assert.equal(await page.locator(".pane-slot").count(), 2, "the split stays when a pane moves elsewhere");
+      assert.equal(await half(page, "left").getByRole("textbox", { name: "Message", exact: true }).inputValue(), "held across the move");
+      assert.deepEqual(await page.evaluate((ids) => ids.map((id) => localStorage.getItem(`ovis:view:${id}`)), [left, moved]), [null, "chat"]);
+      assert.equal(await page.evaluate((id) => localStorage.getItem(`ovis:composer-draft:${id}`), left), null);
+      assert.deepEqual(errors, []);
+      console.log("PASS a pane moved outside this browser keeps its half, its draft and its lens under the new ID");
+    }
+
     // A saved partner on a removed PC is discarded only after the roster arrives.
     {
       const [pane] = await panesFor("removed-machine") as [string];

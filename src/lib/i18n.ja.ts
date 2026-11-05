@@ -8,8 +8,11 @@ import { WORKSPACE_JA } from "./i18n/workspace.ja.ts";
 import { FILES_JA } from "./i18n/files.ja.ts";
 import { DEVICES_JA } from "./i18n/devices.ja.ts";
 import { USAGE_JA } from "./i18n/usage.ja.ts";
+import { SETUP_JA } from "./i18n/setup.ja.ts";
+import { GUIDE_JA } from "./i18n/guide.ja.ts";
 import { UPDATES_JA } from "./i18n/updates.ja.ts";
 import { PALETTE_JA } from "./i18n/palette.ja.ts";
+import { RELAY_JA } from "./i18n/relay.ja.ts";
 
 /**
  * Japanese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -23,6 +26,9 @@ import { PALETTE_JA } from "./i18n/palette.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Remove": "削除",
+  "Remove {name}": "{name} を削除",
+  "Save": "保存",
   "Goal": "目標",
   "Waiting for your answer": "回答待ち",
   "Back": "戻る",
@@ -43,7 +49,6 @@ const BASE: Record<string, string> = {
   "Agent default": "エージェントの既定",
   "Phone & devices": "スマートフォンとデバイス",
   "Access token": "アクセストークン",
-  "Install app": "アプリをインストール",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
   "Command palette": "コマンドパレット",
@@ -53,6 +58,10 @@ const BASE: Record<string, string> = {
   "New workspace": "新しいワークスペース",
   "Previous pane": "前のペイン",
   "Next pane": "次のペイン",
+  "Previous tab": "前のタブ",
+  "Next tab": "次のタブ",
+  "Previous workspace": "前のワークスペース",
+  "Next workspace": "次のワークスペース",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "待機",
@@ -80,6 +89,7 @@ const BASE: Record<string, string> = {
   "soon": "近日",
   "Terminal": "ターミナル",
   "herdr {version} · protocol {protocol}": "herdr {version} · プロトコル {protocol}",
+  "herdr-core {version} · protocol {protocol}": "herdr-core {version} · プロトコル {protocol}",
   "live": "接続中",
   "disconnected": "切断",
   "reconnecting": "再接続中",
@@ -87,13 +97,18 @@ const BASE: Record<string, string> = {
   "herdr offline": "herdr オフライン",
   "Status unknown": "状態不明",
   "herdr unavailable": "herdr 応答なし",
+  "Open the Herdr app on this PC, or check HC_SESSION and HC_SOCKET.": "この PC で Herdr アプリを開くか、HC_SESSION と HC_SOCKET を確認してください。",
+  "herdr-core unavailable": "herdr-core を利用できません",
   "The last health check failed. Last seen: herdr {version} · protocol {protocol}": "直近の状態確認に失敗しました。最後に確認した状態: herdr {version} · プロトコル {protocol}",
+  "The last health check failed. Last seen: herdr-core {version} · protocol {protocol}": "直近の状態確認に失敗しました。最後に確認した状態: herdr-core {version} · プロトコル {protocol}",
   "The health check failed": "状態確認に失敗しました",
   "Start herdr on this PC, or check HERDR_SOCKET.": "この PC で herdr を起動するか、HERDR_SOCKET を確認してください。",
   "The other PC's answer was larger than this app accepts": "別の PC の応答が、このアプリで受け取れるサイズを超えています",
   "The other PC's answer could not be read": "別の PC の応答を読み取れませんでした",
   "Browse files": "ファイルを参照",
   "Copy link": "リンクをコピー",
+  "Share link": "リンクを共有",
+  "Copy address": "アドレスをコピー",
   "Link copied": "リンクをコピーしました",
   "That agent has closed: its workspace is open": "そのエージェントは閉じられました。代わりにワークスペースを開きました",
   "That link's workspace is closed": "そのリンクのワークスペースは閉じられています",
@@ -128,6 +143,16 @@ const BASE: Record<string, string> = {
   "Filter workspaces and agents": "ワークスペースとエージェントを絞り込む",
   "Connecting…": "接続しています…",
   "Connected": "接続済み",
+  "relay": "リレー",
+  "direct": "直接",
+  "local": "ローカル",
+  "Via a loopback address: this PC, or a tunnel to it": "ループバックアドレス経由: このPC、またはそこへのトンネル",
+  "Via the Ovis relay": "Ovis リレー経由",
+  "Via the Portal relay": "Portal リレー経由",
+  "Via Tailscale": "Tailscale 経由",
+  "Via Tailscale, or Funnel from the internet": "Tailscale 経由、またはインターネットから Funnel 経由",
+  "Via the local network": "ローカルネットワーク経由",
+  "Straight to this address": "このアドレスへ直接",
   "Reconnecting…": "再接続しています…",
   "Add PC": "PC を追加",
   "Connect": "接続",
@@ -141,6 +166,10 @@ const BASE: Record<string, string> = {
   // ---- new workspace ----
   "Browse": "参照",
   "Cancel": "キャンセル",
+  "Install": "インストール",
+  "Installed": "インストール済み",
+  "Not installed": "未インストール",
+  "Sign in": "ログイン",
   "Starting…": "起動しています…",
   "Start": "開始",
   // the launch's model, effort, first message and skills (lib/agentLaunchMode.ts, lib/newSession.ts)
@@ -167,6 +196,17 @@ const BASE: Record<string, string> = {
   // ---- prompt card ----
   "Submit": "送信",
   "Recommended": "推奨",
+  "Agents": "エージェント",
+  "Check again": "再確認",
+  "Setup guide": "セットアップガイド",
+  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "このブラウザーがペアリング済みであることを確認できませんでした。Cookie が有効か確認して、もう一度お試しください。",
+  "New code": "新しいコード",
+  "Paired: {name}.": "ペアリングしました: {name}。",
+  "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",
+  "Connect a phone": "スマートフォンを接続",
+  "Pairing code": "ペアリングコード",
+  "Open this address on your phone": "スマートフォンでこのアドレスを開いてください",
+  "{agent} is ready": "{agent} の準備ができました",
 
 
   // ---- composer ----
@@ -256,6 +296,8 @@ const BASE: Record<string, string> = {
   "{n} background task": "バックグラウンドタスク {n} 件",
   "{n} background tasks": "バックグラウンドタスク {n} 件",
   "Try again": "再試行",
+  "The relay did not start: {message}": "リレーを開始できませんでした: {message}",
+  "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "リレーをオンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新しいタブ",
   "Rename tab": "タブの名前を変更",
@@ -283,6 +325,7 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "PCを切り替え",
+  "Forget this PC": "このPCを削除",
   "Selected": "選択中",
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text": "未送信のテキスト",
@@ -293,6 +336,22 @@ const BASE: Record<string, string> = {
   "Terminal line": "ターミナルの入力行",
   "Held message": "保留中のメッセージ",
   "Held input": "保持した入力",
+  "Other accounts": "その他のアカウント",
+  "Plan limits": "プランの上限",
+  "Auto": "自動",
+  "Hub request failed": "ハブのリクエストに失敗しました",
+  "On this PC": "このPC",
+  "Hub": "ハブ",
+  "Add account": "アカウントを追加",
+  "Check the hub connection": "ハブの接続を確認してください",
+  "Meters show": "メーターの表示",
+  "Limit shown": "表示する上限",
+  "Show plan limits": "プランの上限を表示",
+  "Session": "セッション",
+  "Weekly": "週次",
+  "Open terminal": "ターミナルを開く",
+  "Sign in to {agent}": "{agent} にサインイン",
+  "differs": "不一致",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
@@ -308,8 +367,11 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   files: FILES_JA,
   devices: DEVICES_JA,
   usage: USAGE_JA,
+  setup: SETUP_JA,
+  guide: GUIDE_JA,
   updates: UPDATES_JA,
   palette: PALETTE_JA,
+  relay: RELAY_JA,
 };
 
 export const JA: Record<string, string> = Object.assign({}, ...Object.values(JA_PARTS));

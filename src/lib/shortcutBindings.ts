@@ -4,7 +4,7 @@
  * null returns a key to the terminal.
  */
 export type ShortcutOverrides = Record<string, string | null>;
-export const CUSTOM_SHORTCUT_IDS = ["palette", "find", "toggle-view", "focus-input", "scroll-up", "scroll-down", "toggle-sidebar", "new-session", "new-tab", "rename-tab", "split-right", "split-down", "previous-pane", "next-pane", "settings"];
+export const CUSTOM_SHORTCUT_IDS = ["palette", "find", "toggle-view", "focus-input", "scroll-up", "scroll-down", "toggle-sidebar", "new-session", "new-tab", "rename-tab", "split-right", "split-down", "previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace", "settings"];
 
 /** A chord with its exact modifiers; key as overrides store it (letters lowercase). */
 export interface ExactChord {

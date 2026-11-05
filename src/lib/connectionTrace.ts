@@ -1,3 +1,4 @@
+import { getTransport } from "./transport.ts";
 import type { ClientConnectionEvent, ClientConnectionEventKind, ClientConnectionTrace } from "../../shared/protocol.ts";
 
 type Context = Pick<ClientConnectionEvent, "connection" | "socket_state" | "visibility" | "online">;
@@ -7,7 +8,7 @@ type Post = (trace: ClientConnectionTrace) => Promise<number>;
 function browserPost(): Post | null {
   // Unit/SSR code has no browser transport. In particular, never use Bun's global fetch here.
   if (typeof window === "undefined" || typeof document === "undefined" || typeof document.createElement !== "function" || typeof window.fetch !== "function") return null;
-  return async (trace) => (await window.fetch("/api/connection-diagnostics", {
+  return async (trace) => (await getTransport().fetch("/api/connection-diagnostics", {
     method: "POST", credentials: "same-origin", mode: "same-origin", redirect: "error", cache: "no-store",
     headers: { "content-type": "application/json" }, body: JSON.stringify(trace), keepalive: true, signal: AbortSignal.timeout(5000),
   })).status;

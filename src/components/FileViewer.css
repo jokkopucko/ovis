@@ -215,6 +215,15 @@
   background: var(--pdf-page);
 }
 
+.web-panel-popup .web-panel-body { padding: 0; }
+
+.web-panel-popup .web-panel-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  border-radius: 0;
+}
+
 /* Page | Source above an HTML file */
 .file-viewer-modes {
   flex: none;
@@ -552,6 +561,8 @@
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   text-align: left;
+  /* a long path wraps on a phone (`.btn` keeps one line): its end tells the choices apart */
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 

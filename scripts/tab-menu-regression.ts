@@ -690,7 +690,9 @@ export async function checkTabMenu(browser: Browser, origin: string): Promise<vo
     await paneRename(first, "canvas-first");
     await paneRename(second, "canvas-second");
     await checkDesktop(browser, origin, first, second, created.root_pane.tab_id);
-    for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 640 }]) await checkPhone(browser, origin, first, second, viewport);
+    // Both sizes keep a lone tab's row: compact-height phones exercise its replacement pane menu
+    // in phone-glass-header-demo-regression.ts instead.
+    for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 720 }]) await checkPhone(browser, origin, first, second, viewport);
     await checkTouchTablet(browser, origin, first);
     console.log("PASS native tab drag/keyboard/touch reorder, cancellation and failure handling, desktop context and keyboard tab menus, touch menu buttons, inactive-tab close, simultaneous split terminals, focus and input isolation, swap, split, divider drag, zoom and phone sheets");
   } finally {

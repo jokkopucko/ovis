@@ -1,0 +1,159 @@
+/*
+ * The hosted shell's screens (RelayShell.tsx): the token gate's frame (AccessGate.css), one card
+ * centered on the base surface, one sidebar wide, no entrance animation. Only tokens from the
+ * styles.css :root block; the buttons are the system's .btn family.
+ */
+
+.relay-shell-screen {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  min-height: 100dvh;
+  min-height: var(--app-height, 100dvh);
+  padding: calc(var(--space-4) + env(safe-area-inset-top, 0px)) calc(var(--space-4) + env(safe-area-inset-right, 0px))
+    calc(var(--space-4) + env(safe-area-inset-bottom, 0px)) calc(var(--space-4) + env(safe-area-inset-left, 0px));
+  background: var(--bg);
+}
+
+.relay-shell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: min(100%, calc(var(--sidebar-w) + 2 * var(--space-6)));
+  padding: var(--space-6);
+  background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.relay-shell-mark {
+  display: block;
+  width: calc(var(--mark-size) * 2);
+  height: calc(var(--mark-size) * 2);
+  margin-bottom: var(--space-4);
+}
+
+.relay-shell-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--lh-tight);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.relay-shell-copy {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-base);
+  color: var(--text-dim);
+}
+
+/* the saved PCs: one row each, the whole row the link, a hairline between rows */
+.relay-shell-pcs {
+  margin: var(--space-2) 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+  border-top: var(--hairline) solid var(--border);
+}
+
+.relay-shell-pc {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--touch-target);
+  padding: var(--space-2) 0;
+  border-bottom: var(--hairline) solid var(--border);
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+}
+
+.relay-shell-pc:hover {
+  color: var(--accent);
+}
+
+.relay-shell-pc-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.relay-shell-pc-glyph {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--text-dim);
+}
+
+.relay-shell-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+
+.relay-shell-actions .btn {
+  width: 100%;
+}
+
+.relay-shell-wait {
+  display: grid;
+  place-items: center;
+  margin: var(--space-4) 0 0;
+}
+
+/* a PC below the shell's minimum version: its steps to update, each command copyable whole */
+.relay-shell-more {
+  margin-top: var(--space-3);
+}
+
+.relay-shell-command {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-input);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.relay-shell-detail {
+  margin: var(--space-3) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.relay-shell-hint {
+  margin: var(--space-5) 0 0;
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+  color: var(--text-dim);
+}
+
+/* a key that is not the PC's: the two ids, one above the other, the PC's first */
+.relay-shell-keys {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3);
+  background: var(--bg-input);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.relay-shell-keys dt {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.relay-shell-keys dd {
+  margin: var(--space-1) 0 var(--space-3);
+}

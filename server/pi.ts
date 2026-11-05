@@ -44,7 +44,7 @@ type PiTranscriptOptions = {
 };
 
 /** True for Pi's binary/script launch forms and the official npm bundle entry. */
-function isPiProcess(argv: readonly string[]): boolean {
+export function isPiProcess(argv: readonly string[]): boolean {
   return runsAgent(argv, PI_EXECUTABLE)
     || /(^|[\\/])(?:bun|node)(?:\.exe)?$/i.test(argv[0] ?? "") && PI_NPM_ENTRY.test(argv[1] ?? "");
 }

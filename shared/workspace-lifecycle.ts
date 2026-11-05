@@ -25,6 +25,8 @@ export interface CreateWorkspaceRequest {
    * closes before the message went, the message is held for an explicit Send now or Discard.
    */
   first_message_connection?: string;
+  /** environment variables for the new pane's shell (and an agent it starts); see POST /api/workspace/create in shared/protocol.ts */
+  env?: Record<string, string> | null;
 }
 
 /** POST /api/tab/move: the boundary is counted BEFORE removing the source tab. */
@@ -122,9 +124,11 @@ export interface WorkspaceCreated {
   /**
    * with `first_message` in the request: the pending message it was queued as; null when the agent did
    * not start; `error` when the agent started but the message could not be queued (the page keeps its
-   * text). Absent from a bridge that predates `first_message`.
+   * text). Absent from a bridge that predates `first_message`. `held`: the message is held from the
+   * start rather than queued, with its pending code (`first_message_unattended` when the request named
+   * no page connection that could type it); it waits for Send now or Discard. Absent when queued.
    */
-  first_message?: { id: string } | { error: { code: string; message: string } } | null;
+  first_message?: { id: string; held?: string } | { error: { code: string; message: string } } | null;
 }
 
 /**

@@ -20,7 +20,7 @@ const HERDR_ESC_HOLD_MS = 150;
  */
 function lane() {
   const events: Array<{ what: string; at: number }> = [];
-  const socket = { data: connectionData({ deviceId: undefined, readOnly: false }), send: () => 1, getBufferedAmount: () => 0, close: () => {} } as unknown as Client;
+  const socket: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, send: () => 1, getBufferedAmount: () => 0, close: () => {} };
   const facts = { attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true, ready: true, held: false, currentHeld: false, mirror: false, cols: 80 };
   const sighting = { origin: "attach", pty: "pty", claim: "claim", facts: () => facts, write: (data: string) => { events.push({ what: `pty ${JSON.stringify(data)}`, at: Date.now() }); return true; } };
   spyOn(client, "paneSendKeys").mockImplementation(async (_pane, keys, _socketPath, guard) => {

@@ -5,19 +5,22 @@ import { foldCode, mathNestsTooDeep, parseInline, parseMarkdown, type InlineNode
 import { codeIsFilePath, OpenFileContext, splitFilePaths } from "../lib/filePaths.ts";
 import { FilePathLink } from "./FilePathLink.tsx";
 import { fileUriPath } from "../../shared/fileUri.ts";
-import { WebPanelContext } from "../lib/webPanel.ts";
+import { shouldOpenWebPage, WebPanelContext } from "../lib/webPanel.ts";
 import { MachineContext } from "../lib/machineContext.tsx";
 import { CHAT_HIGHLIGHT_LIMIT, languageForFence } from "../lib/highlight.ts";
 import { HighlightedCode } from "./HighlightedCode.tsx";
 import { useT } from "../lib/i18n.ts";
+import { useResourceUrlState } from "../lib/useResourceUrl.ts";
 import { type MarkdownImagePreview } from "../lib/markdownImages.ts";
 import { imageSlotStyle, standaloneImage } from "../lib/imageBox.ts";
 import { formatBytes } from "../lib/bridgeProgress.ts";
 import { MermaidLightbox } from "./MermaidLightbox.tsx";
+import { svgFigurePalette, svgFigureUrl } from "../lib/svgFigure.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { lazyChunk } from "../lib/lazyChunk.ts";
 import type { SkillMatcher } from "../lib/skillMentions.ts";
 import { previewChunks } from "../lib/textPreview.ts";
+import type { GalleryImage } from "../lib/imageViewer.ts";
 import { useSettings } from "../lib/settings.ts";
 import { isWebLink, openWebLink } from "../lib/terminalFileLinks.ts";
 
@@ -46,10 +49,17 @@ function useKatex(): Katex | null {
   return katex;
 }
 
-function MathExpression({ value, displayMode = false }: { value: string; displayMode?: boolean }) {
+/**
+ * A formula drawn by KaTeX. Until KaTeX loads, or when it cannot draw the formula, `fallback`
+ * shows instead: by default the formula as the agent wrote it (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`).
+ */
+function MathExpression({ value, displayMode = false, dollar = false, oneLine = false, fallback }: { value: string; displayMode?: boolean; dollar?: boolean; oneLine?: boolean; fallback?: ReactNode }) {
   const katex = useKatex();
-  const source = displayMode ? `\\[${value}\\]` : `\\(${value}\\)`;
-  if (!katex || mathNestsTooDeep(value)) return <span>{source}</span>;
+  // a $$ formula keeps its own lines, as written
+  const source = fallback ?? (dollar && displayMode
+    ? <span className="markdown-math-source">{oneLine ? `$$${value}$$` : `$$\n${value}\n$$`}</span>
+    : <span>{dollar ? `$${value}$` : displayMode ? `\\[${value}\\]` : `\\(${value}\\)`}</span>);
+  if (!katex || mathNestsTooDeep(value)) return source;
   try {
     // KaTeX escapes text and rejects untrusted commands by default, and an unknown command
     // throws - the catch below then draws the source form. `trust` stays at its default, which
@@ -59,7 +69,7 @@ function MathExpression({ value, displayMode = false }: { value: string; display
     const html = katex.renderToString(value, { displayMode, strict: "ignore" });
     return <span className={displayMode ? "markdown-math-display" : "markdown-math"} dangerouslySetInnerHTML={{ __html: html }} />;
   } catch {
-    return <span>{source}</span>;
+    return source;
   }
 }
 
@@ -109,64 +119,178 @@ function MermaidDiagram({ value }: { value: string }) {
   );
 }
 
-/** Stats an image before it can load; null context keeps chat images as links. */
-type MarkdownImageResolver = (src: string) => Promise<MarkdownImagePreview | null>;
+/** Counts changes to <html>'s theme attributes (`data-theme`, `data-palette`, inline colors), so a figure redraws in the new colors. */
+function useThemeRevision(): number {
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const observer = new MutationObserver(() => setRevision((value) => value + 1));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-palette", "style", "class"] });
+    return () => observer.disconnect();
+  }, []);
+  return revision;
+}
+
+/**
+ * A ```svg fence drawn as the figure it is (lib/svgFigure.ts), as an image so its markup never
+ * joins the page. Until it is a whole figure (a reply still streaming) or when it does not draw,
+ * it shows as the code block it is.
+ */
+function SvgFigure({ value }: { value: string }) {
+  const t = useT();
+  const revision = useThemeRevision();
+  const [zoomed, setZoomed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  // `revision` is not read: a change to it may be a new theme, whose colors the palette reads again.
+  // The viewport also writes <html>'s style (lib/viewport.ts): the figure is drawn again only when
+  // a color it reads changed, so a keyboard or resize does not reparse every figure.
+  const paletteKey = useMemo(() => JSON.stringify(svgFigurePalette((property) => getComputedStyle(document.documentElement).getPropertyValue(property))), [revision]);
+  const palette = useMemo(() => JSON.parse(paletteKey) as ReturnType<typeof svgFigurePalette>, [paletteKey]);
+  const src = useMemo(() => svgFigureUrl(value, palette), [value, palette]);
+  if (src === null || failed === src) return <CodeBlock language="svg" value={value} />;
+  return (
+    <div className="markdown-mermaid-frame">
+      <div className="markdown-mermaid" onClick={() => setZoomed(true)}>
+        <img src={src} alt={t("Diagram")} draggable={false} onError={() => setFailed(src)} />
+      </div>
+      <button type="button" className="icon-button markdown-mermaid-zoom" onClick={() => setZoomed(true)} aria-label={t("Enlarge diagram")} title={t("Enlarge diagram")}>
+        <Maximize2 aria-hidden="true" />
+      </button>
+      {zoomed && <MermaidLightbox src={src} onClose={() => setZoomed(false)} />}
+    </div>
+  );
+}
+
+/** An image's natural size, once it decoded. */
+export type ImageSize = { width: number; height: number };
+/**
+ * Stats an image before it can load; null context keeps image references as links. `size` gives
+ * the size an image of this source decoded at before, and `remember` keeps it, so a reopened image
+ * holds that box, not 16:9, while it is stat'ed and loaded again. Nothing else is reused: its
+ * bytes wait for the new stat.
+ */
+export type MarkdownImageResolver = ((src: string) => Promise<MarkdownImagePreview | null>) & {
+  size?: (src: string) => ImageSize | undefined; remember?: (src: string, size: ImageSize) => void;
+};
 export const MarkdownImageContext = createContext<MarkdownImageResolver | null>(null);
+/** Chat holds its viewer above virtualized rows; file previews keep their own image behavior. */
+export const MarkdownImageOpenContext = createContext<((image: GalleryImage) => void) | null>(null);
+/** A reconnect retries only failed images; decoded images and pending stats stay as they are. */
+export const MarkdownImageRetryContext = createContext(0);
 
 /**
  * An image that holds its box until it decodes (lib/imageBox.ts). With `slot`, the wrapper is the
  * box while the bytes arrive and after a failure, where a note stands in for the picture, so the
  * row around it moves at most once, when the natural size is in; ChatView.css draws a standalone
- * Markdown image's 16:9 frame and a chat thumbnail's fixed box. Decoded, the wrapper gives its box
+ * Markdown image's 16:9 frame and a chat picture's lane-wide 16:9 slot. Decoded, the wrapper gives its box
  * up (`display: contents`) and the one image renders bare, nothing remounted: its box, hit area
  * and alignment are its own. Without `slot` (a badge in a sentence) nothing is held and a failure
  * shows `fallback`. `src` is null while an address is still being resolved: the slot stands from
- * the first paint.
+ * the first paint. With `size` (what this image decoded at before), the loading slot is the box
+ * `.markdown-image` will take, not 16:9; `onDecoded` reports the natural size to keep.
  */
-export function ReservedImage({ src, alt, width, className, slot, slotStyle, fallback }: {
-  src: string | null; alt: string; width?: number; className?: string; slot: boolean; slotStyle?: CSSProperties; fallback?: ReactNode;
+export function ReservedImage({ src: address, alt, width, className, slot, slotStyle, fallback, onError, retry = 0, renderImage, size, onDecoded }: {
+  src: string | null; alt: string; width?: number; className?: string; slot: boolean; slotStyle?: CSSProperties; fallback?: ReactNode; onError?: () => void; retry?: number;
+  renderImage?: (image: ReactNode) => ReactNode; size?: ImageSize; onDecoded?: (size: ImageSize) => void;
 }) {
   const t = useT();
+  const resource = useResourceUrlState(address, retry);
+  const src = resource.url;
+  // Transport failures happen before an <img> exists, but must reach the same parent failure path.
+  useEffect(() => { if (resource.error !== null) onError?.(); }, [resource.error, onError]);
   // keyed by address: another one starts from the slot again and never takes the old one's answer
-  const [settled, setSettled] = useState<{ src: string; failed: boolean } | null>(null);
-  const phase = src !== null && settled?.src === src ? (settled.failed ? "failed" : "decoded") : "loading";
+  const [settled, setSettled] = useState<{ src: string; failed: boolean; attempt?: number } | null>(null);
+  // an address the transport refused fails like an image that would not decode
+  const phase = resource.error !== null ? "failed" : src !== null && settled?.src === src && (!settled.failed || settled.attempt === retry) ? (settled.failed ? "failed" : "decoded") : "loading";
   // a cached image is complete before `onLoad` can fire
+  const element = useRef<HTMLImageElement | null>(null);
+  const decoded = useRef(onDecoded);
+  decoded.current = onDecoded;
+  const report = (image: HTMLImageElement | null) => {
+    if (image !== null && image.naturalWidth > 0 && image.naturalHeight > 0) decoded.current?.({ width: image.naturalWidth, height: image.naturalHeight });
+  };
   const complete = useCallback((image: HTMLImageElement | null) => {
-    if (image !== null && src !== null && image.complete && image.naturalWidth > 0) setSettled({ src, failed: false });
+    element.current = image;
+    if (image === null || src === null || !image.complete || image.naturalWidth <= 0) return;
+    report(image);
+    setSettled({ src, failed: false });
   }, [src]);
   if (phase === "failed" && !slot) return <>{fallback}</>;
   const image = src === null ? null : <img ref={complete} className={className} src={src} alt={alt} width={width} loading="lazy"
-    onLoad={() => setSettled({ src, failed: false })} onError={() => setSettled({ src, failed: true })} />;
-  if (!slot) return image;
-  if (phase === "failed") {
-    return <span className="image-slot is-failed" style={slotStyle}>
+    onLoad={() => { report(element.current); setSettled({ src, failed: false }); }}
+    onError={() => { setSettled({ src, failed: true, attempt: retry }); onError?.(); }} />;
+  // the decoded image is as wide as its authored or natural width allows, its height from its ratio
+  const sized = size === undefined ? slotStyle : {
+    "--image-width": `${width !== undefined && Number.isFinite(width) && width > 0 ? Math.round(width) : size.width}px`,
+    "--image-ratio": `${size.width} / ${size.height}`,
+    "--image-aspect": String(size.width / size.height),
+  } as CSSProperties;
+  // Only the image or its reserved slot can be wrapped in a viewer control, never the fallback.
+  const content = !slot ? image : phase === "failed"
+    ? <span className="image-slot is-failed" style={slotStyle}>
       <span className="image-slot-note"><ImageOff aria-hidden="true" /><span>{t("Image unavailable")}</span>{alt !== "" && <span>{alt}</span>}</span>
-    </span>;
-  }
-  if (phase === "loading") return <span className="image-slot is-loading" style={slotStyle} role="status" aria-label={t("Loading image")}>{image}</span>;
-  return <span className="image-slot">{image}</span>;
+    </span>
+    : phase === "loading"
+      ? <span className={`image-slot is-loading${size === undefined ? "" : " is-sized"}`} style={sized} role="status" aria-label={t("Loading image")}>{image}</span>
+      : <span className="image-slot">{image}</span>;
+  return content !== null && renderImage ? renderImage(content) : content;
 }
 
 function MarkdownImage({ src, alt, width, fallback, resolve, interactive, standalone }: { src: string; alt: string; width?: number; fallback: ReactNode; resolve: MarkdownImageResolver; interactive: boolean; standalone: boolean }) {
   const t = useT();
-  const [loaded, setLoaded] = useState<{ src: string; resolve: MarkdownImageResolver; preview: MarkdownImagePreview | null } | null>(null);
+  const openImage = useContext(MarkdownImageOpenContext);
+  const retry = useContext(MarkdownImageRetryContext);
+  const [attempt, setAttempt] = useState(0);
+  const [pending, setPending] = useState(false);
+  const [loaded, setLoaded] = useState<{ src: string; resolve: MarkdownImageResolver; preview: MarkdownImagePreview | null; retry: number } | null>(null);
+  const request = useRef<{ src: string; resolve: MarkdownImageResolver; failed: boolean; pending: boolean } | null>(null);
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  useEffect(() => () => { request.current = null; }, [src, resolve]);
   useEffect(() => {
-    let live = true;
+    // Reconnects and manual retries never multiply a pending lookup or reload a healthy image.
+    if (request.current?.src === src && request.current.resolve === resolve && (request.current.pending || !request.current.failed)) return;
+    const current = { src, resolve, failed: false, pending: true };
+    request.current = current;
+    setPending(true);
+    const finish = (preview: MarkdownImagePreview | null, failed = preview?.kind === "unavailable") => {
+      if (request.current !== current) return;
+      current.pending = false;
+      current.failed = failed;
+      setPending(false);
+      setFailedUrl(null);
+      setLoaded({ src, resolve, preview, retry: retry + attempt });
+    };
     resolve(src).then(
-      (preview) => { if (live) setLoaded({ src, resolve, preview }); },
-      () => { if (live) setLoaded({ src, resolve, preview: null }); },
+      (preview) => finish(preview),
+      () => finish(null, true),
     );
-    return () => { live = false; };
-  }, [src, resolve]);
+  }, [src, resolve, retry, attempt]);
   const preview = loaded?.src === src && loaded.resolve === resolve ? loaded.preview : undefined;
   if (preview === null) return <>{fallback}</>;
+  if (preview?.kind === "unavailable") return <span className="markdown-image-unavailable" role="group" aria-label={alt || src}>
+    {fallback}
+    {interactive && <button type="button" className="btn markdown-image-retry" disabled={pending} onClick={() => {
+      if (request.current?.pending || !request.current?.failed) return;
+      setPending(true);
+      setAttempt((value) => value + 1);
+    }}>{t("Try again")}</button>}
+  </span>;
   if (preview?.kind === "too-large") {
     const message = t("This image is {size}; download it to view.", { size: formatBytes(preview.size) });
     return interactive ? <a href={preview.downloadUrl} download>{message}</a> : <span>{message}</span>;
   }
   // still being stat'ed: a standalone image's slot stands from the first paint, a badge shows its alt
   if (preview === undefined && !standalone) return <span>{alt}</span>;
-  return <ReservedImage src={preview?.url ?? null} alt={alt} width={width} className="markdown-image" slot={standalone} slotStyle={standalone ? imageSlotStyle(width) : undefined} fallback={fallback} />;
+  if (!standalone && preview?.url === failedUrl) return <>{fallback}</>;
+  // A failed byte load retries only after the new stat has passed the same size/type checks.
+  return <ReservedImage src={preview?.url ?? null} alt={alt} width={width} className="markdown-image" slot={standalone} size={standalone ? resolve.size?.(src) : undefined} onDecoded={standalone ? (size) => resolve.remember?.(src, size) : undefined} slotStyle={standalone ? imageSlotStyle(width) : undefined} fallback={fallback} retry={loaded?.retry ?? 0} renderImage={preview === undefined || !interactive || openImage === null ? undefined : (image) =>
+    <button type="button" className={`markdown-image-open${standalone ? " is-standalone" : ""}`} aria-label={alt || preview.name} title={t("Open image")} onClick={(event) => {
+      event.currentTarget.focus({ preventScroll: true });
+      openImage({ src: preview.url, name: alt || preview.name, file: preview.name });
+    }}>{image}</button>
+  } onError={() => {
+    if (request.current?.src === src && request.current.resolve === resolve && !request.current.pending) request.current.failed = true;
+    setFailedUrl(preview?.url ?? null);
+  }} />;
 }
 
 /**
@@ -184,9 +308,8 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
   const { settings } = useSettings();
   // a plain or Shift click may open the address beside the pane; Ctrl, Cmd and Alt keep the browser's own meaning
   const webClick = (href: string) => (event: MouseEvent<HTMLAnchorElement>): void => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (openWebPage?.(href, event.shiftKey, machineId)) event.preventDefault();
-    else if (settings.reuseExternalLinkTab && isWebLink(href)) {
+    if (shouldOpenWebPage(event, href, openWebPage, machineId)) event.preventDefault();
+    else if (settings.reuseExternalLinkTab && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.altKey && isWebLink(href)) {
       event.preventDefault();
       openWebLink(href, true);
     }
@@ -208,7 +331,7 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
         if (interactive && /^https?:\/\/\S+$/i.test(node.value)) return <a key={key} className="markdown-code-link" href={node.value} target="_blank" rel="noopener noreferrer" onClick={webClick(node.value)}><code>{node.value}</code></a>;
         return open !== null && codeIsFilePath(node.value) ? <FilePathLink key={key} path={node.value} code open={open} /> : <code key={key}>{node.value}</code>;
       }
-      case "math": return <MathExpression key={key} value={node.value} />;
+      case "math": return <MathExpression key={key} value={node.value} dollar={node.dollar} />;
       case "image": {
         return <span key={key}>{imageResolver === null
           ? <Inline key={key} nodes={node.fallback} interactive={interactive} />
@@ -325,8 +448,13 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
       case "blockquote": return <blockquote key={key}><Blocks blocks={block.blocks} /></blockquote>;
       case "code": return block.language === "mermaid"
         ? <MermaidDiagram key={key} value={block.value} />
-        : <CodeBlock key={key} language={block.language} value={block.value} />;
-      case "math": return <MathExpression key={key} value={block.value} displayMode />;
+        : block.language.toLowerCase() === "svg"
+          ? <SvgFigure key={key} value={block.value} />
+          // a ```math fence (GitHub's form) is display math; one KaTeX cannot draw stays the code block it is
+          : block.language === "math"
+            ? <MathExpression key={key} value={block.value} displayMode fallback={<CodeBlock language="math" value={block.value} />} />
+            : <CodeBlock key={key} language={block.language} value={block.value} />;
+      case "math": return <MathExpression key={key} value={block.value} displayMode dollar={block.dollar} oneLine={block.oneLine} />;
       case "hr": return <hr key={key} />;
       case "table": return (
         <div className="markdown-table-wrap" key={key}>
@@ -345,8 +473,11 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
  */
 export const Markdown = memo(function Markdown({ children, className, html = false, skills = null }: { children: string; className?: string; html?: boolean; skills?: SkillMatcher | null }) {
   const blocks = useMemo(() => parseMarkdown(children, 0, html), [children, html]);
-  const parsed = <ParsedMarkdown blocks={blocks} className={className} />;
-  return skills === null ? parsed : <SkillMatcherContext.Provider value={skills}>{parsed}</SkillMatcherContext.Provider>;
+  // always a provider, which passes on the names around it when it has none of its own: the pane's skill names
+  // load after its text, and a tree that changed shape then would mount every message again, a decoded image
+  // dropping back to its loading slot
+  const around = useContext(SkillMatcherContext);
+  return <SkillMatcherContext.Provider value={skills ?? around}><ParsedMarkdown blocks={blocks} className={className} /></SkillMatcherContext.Provider>;
 });
 
 /** `nodes` with each link, file link and picture as its words: text in a control that answers when clicked opens nothing itself. */

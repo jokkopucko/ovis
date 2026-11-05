@@ -1,3 +1,5 @@
+import { getTransport, type EventSourceLike } from "./transport.ts";
+
 /**
  * App's one event stream (/api/machines/events), kept open while the app is in. The browser
  * reconnects a lost EventSource by itself, but a non-200 answer to a reconnect (a proxy's 502 while
@@ -20,8 +22,8 @@ export interface EventStreamHandlers {
 }
 
 /** Opens the stream and keeps one open until the returned stop is called. */
-export function keepEventStream(url: string, handlers: EventStreamHandlers, open: (url: string) => EventSource = (target) => new EventSource(target)): () => void {
-  let current: EventSource | null = null;
+export function keepEventStream(url: string, handlers: EventStreamHandlers, open: (url: string) => EventSourceLike = (target) => getTransport().openEventSource(target)): () => void {
+  let current: EventSourceLike | null = null;
   let reopen: ReturnType<typeof setTimeout> | undefined;
   let wait = STREAM_REOPEN_MS;
   const subscribe = () => {

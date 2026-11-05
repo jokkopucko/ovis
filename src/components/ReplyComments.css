@@ -1,0 +1,293 @@
+/* The selection's actions (Quote, then Comment) and the comment form float over the transcript (ChatView's frame body): they take no
+   room, so a selection in progress never moves the text under it (#1922). */
+.reply-comment-layer {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-popover);
+  pointer-events: none;
+}
+
+.reply-comment-layer > * {
+  pointer-events: auto;
+}
+
+.selection-offer {
+  position: absolute;
+  display: inline-flex;
+  align-items: stretch;
+  min-height: var(--control-h);
+  overflow: hidden;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-pop);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.selection-quote,
+.reply-comment-offer {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.selection-quote {
+  padding: 0 var(--space-3);
+  color: var(--text-strong);
+}
+
+/* Comment is the second action: an icon after a divider, dimmer than Quote (alone under a secret prompt) */
+.reply-comment-offer {
+  justify-content: center;
+  min-width: var(--control-h);
+  padding: 0 var(--space-2);
+  color: var(--text-dim);
+}
+
+.selection-quote + .reply-comment-offer {
+  border-left: var(--hairline) solid var(--border);
+}
+
+.selection-quote:hover,
+.reply-comment-offer:hover {
+  background: var(--bg-hover);
+  color: var(--text-strong);
+}
+
+.reply-comment-layer > .selection-note {
+  position: absolute;
+  right: var(--space-2);
+  top: var(--space-2);
+  left: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-pop);
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* the pill stands in the upper half: the note goes to the foot, above the jump control's room */
+.reply-comment-layer > .selection-note.is-below {
+  top: auto;
+  bottom: calc(var(--composer-over, 0px) + var(--touch-target) + 2 * var(--space-2));
+}
+
+.selection-quote[aria-disabled="true"] {
+  background: transparent;
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.selection-quote:focus-visible,
+.reply-comment-offer:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.selection-quote svg,
+.reply-comment-offer svg,
+.reply-comments-open svg,
+.reply-comments-clear svg,
+.reply-comments-remove svg {
+  flex: 0 0 auto;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.reply-comment-form {
+  position: absolute;
+  display: grid;
+  gap: var(--space-2);
+  width: min(360px, calc(100% - 2 * var(--space-2)));
+  padding: var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-pop);
+}
+
+.reply-comment-form.is-docked {
+  right: var(--space-2);
+  bottom: calc(var(--space-2) + var(--composer-over, 0px));
+  left: var(--space-2);
+  width: auto;
+}
+
+.reply-comment-quote {
+  display: -webkit-box;
+  margin: 0;
+  padding-left: var(--space-2);
+  overflow: hidden;
+  border-left: 2px solid var(--accent);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.reply-comment-field {
+  min-height: calc(var(--control-h) * 2);
+  padding: var(--space-2);
+  resize: vertical;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-input);
+}
+
+.reply-comment-field:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.reply-comment-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* The waiting comments: one chip on the row over the input card, its list opening upwards. */
+.composer-quick.reply-comments {
+  position: relative;
+  overflow: visible;
+}
+
+.reply-comments-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: var(--control-h);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--accent-tint);
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+}
+
+.reply-comments-chip.is-waiting {
+  border-style: dashed;
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+}
+
+.reply-comments-open,
+.reply-comments-clear,
+.reply-comments-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.reply-comments-open {
+  min-width: 0;
+  min-height: var(--control-h);
+  padding: 0 var(--space-1) 0 var(--space-3);
+}
+
+.reply-comments-open span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-comments-clear,
+.reply-comments-remove {
+  justify-content: center;
+  min-width: var(--control-h);
+  min-height: var(--control-h);
+  color: var(--text-dim);
+}
+
+.reply-comments-clear:hover,
+.reply-comments-remove:hover {
+  color: var(--text-strong);
+}
+
+.reply-comments-list {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: var(--z-popover);
+  width: min(420px, calc(100vw - 2 * var(--space-3)));
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-pop);
+}
+
+.reply-comments-list ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reply-comments-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-3);
+}
+
+.reply-comments-list li + li {
+  border-top: var(--hairline) solid var(--border);
+}
+
+.reply-comments-list li > .reply-comment-quote,
+.reply-comments-list li > p {
+  grid-column: 1;
+}
+
+.reply-comments-list li > p {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.reply-comments-remove {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: start;
+}
+
+@media (pointer: coarse) {
+  .reply-comment-offer,
+  .reply-comments-chip,
+  .reply-comments-open,
+  .reply-comments-clear,
+  .reply-comments-remove {
+    min-height: var(--touch-target);
+  }
+
+  .reply-comment-offer,
+  .reply-comments-clear,
+  .reply-comments-remove {
+    min-width: var(--touch-target);
+  }
+}

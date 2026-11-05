@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PortalStatus } from "../../shared/protocol.ts";
+import type { PortalAuth, PortalStatus } from "../../shared/protocol.ts";
 import { fetchPortal, requestPortal } from "./api.ts";
 import { usePageVisible } from "./visibility.ts";
 
@@ -39,13 +39,13 @@ export function usePortal() {
     return () => { stopped = true; clearTimeout(timer); };
   }, [refresh, visible]);
 
-  const request = useCallback(async (action: "start" | "stop", relay?: string) => {
+  const request = useCallback(async (action: "start" | "stop", relay?: string, auth?: PortalAuth) => {
     setPending(true); setError(null);
     try {
-      await requestPortal(action, relay);
+      await requestPortal(action, relay, auth);
       if (mounted.current) {
         // the server is already on it: the controls follow at once, not at the next answer
-        setStatus((previous) => previous ? { ...previous, phase: action === "start" ? "starting" : "stopping", error: null, ...(action === "stop" ? { url: null } : {}) } : previous);
+        setStatus((previous) => previous ? { ...previous, phase: action === "start" ? "starting" : "stopping", error: null, ...(action === "stop" ? { url: null } : { auth: auth ?? previous.auth }) } : previous);
         setRefresh((value) => value + 1);
       }
     } catch (err) {

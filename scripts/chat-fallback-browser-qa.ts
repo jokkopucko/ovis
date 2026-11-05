@@ -1,6 +1,6 @@
 /** Real ChatView with an unavailable conversation and a stalled optional terminal. */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
@@ -210,18 +210,22 @@ try {
     assert.deepEqual(piRows, ["I read this as: bring the test server up to date.", "work Worked \u00b7 3 commands", "The test server runs the latest main."], "words before the tool calls stay above their one work block");
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "pi-words-before-tools.png") });
     source = "claude-transcript";
-    turns = parseClaudeTranscript(jsonl(
+    // the turn, ended (Claude's end_turn makes its last words the final answer) or still at work on them
+    const catalog = (stop: "end_turn" | null): ConversationTurn[] => parseClaudeTranscript(jsonl(
       { type: "user", message: { content: "Check the catalog." } },
       { type: "assistant", message: { content: [{ type: "text", text: "Checking the catalog first." }, { type: "tool_use", id: "a", name: "Bash", input: { command: "ls" } }], stop_reason: "tool_use" } },
       { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "a", content: "books" }] } },
       { type: "assistant", message: { content: [{ type: "text", text: "Three books. Now the loans." }, { type: "tool_use", id: "b", name: "Bash", input: { command: "cat loans" } }], stop_reason: "tool_use" } },
       { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b", content: "none" }] } },
-      { type: "assistant", message: { content: [{ type: "text", text: "No book is on loan." }], stop_reason: "end_turn" } },
+      { type: "assistant", message: { content: [{ type: "text", text: "No book is on loan." }], stop_reason: stop } },
     ));
+    turns = catalog("end_turn");
     await page.evaluate(() => { window.chatFallbackQA.agent("claude"); window.chatFallbackQA.refresh(); });
     await page.getByText("No book is on loan.", { exact: true }).waitFor();
     assert.deepEqual(await rows(), ["Checking the catalog first.", "work Worked \u00b7 1 command", "Three books. Now the loans.", "work Worked \u00b7 1 command", "No book is on loan."], "each run of work stays between the words around it");
-    await page.evaluate(() => window.chatFallbackQA.status("working"));
+    // the turn still at work: one that ended on its final answer stays finished while the agent works again
+    turns = catalog(null);
+    await page.evaluate(() => { window.chatFallbackQA.status("working"); window.chatFallbackQA.refresh(); });
     const live = page.locator(".chat-turn-agent").last().locator(".work-block.is-live");
     await live.waitFor();
     assert.deepEqual(await rows(), ["Checking the catalog first.", "work Worked \u00b7 1 command", "Three books. Now the loans.", "work Working\u2026 \u00b7 1 command", "No book is on loan."], "while the turn runs, only its last run of work reads Working");
@@ -279,6 +283,44 @@ try {
     await live.waitFor({ state: "detached" });
     console.log("PASS words and runs of work keep the agent's order, settled and live");
   }
+  for (const viewport of [{ width: 390, height: 844 }, { width: 390, height: 420 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    prompt = parseInteractivePrompt("claude", readFileSync(join(repo, "server/fixtures/claude-question-words-2.1.311-40.txt"), "utf8"))!;
+    assert.ok(prompt.screen_words, "the recorded question includes Claude's preceding words");
+    await page.evaluate(() => { window.chatFallbackQA.agent("claude"); window.chatFallbackQA.refresh(); });
+    const card = page.locator(".prompt-card");
+    await card.locator(".prompt-card-words").waitFor({ state: "attached" });
+    // the context, its caption and the question in the card's order, each box whole, and the
+    // context at eight lines at rest (its content, when shorter) and two when the card is short
+    const layout = await card.evaluate(node => {
+      const text = node.querySelector(".prompt-card-words-text")!;
+      const caption = node.querySelector(".prompt-card-words .prompt-card-hint")!.getBoundingClientRect();
+      const question = node.querySelector(".prompt-card-question")!.getBoundingClientRect();
+      const bounds = text.getBoundingClientRect();
+      return { textBottom: bounds.bottom, textHeight: bounds.height, textScroll: text.scrollHeight, lineHeight: parseFloat(getComputedStyle(text).lineHeight), captionTop: caption.top, captionBottom: caption.bottom, questionTop: question.top, questionBottom: question.bottom, cardBottom: node.getBoundingClientRect().bottom };
+    });
+    assert.ok(layout.textBottom <= layout.captionTop, "terminal context and its caption do not overlap");
+    assert.ok(layout.captionBottom <= layout.questionTop, "the caption stays above the question");
+    if (viewport.height < 600) {
+      assert.ok(layout.textHeight <= 2 * layout.lineHeight + 1, `a short card's context gives way down to two lines (${layout.textHeight}px of ${layout.lineHeight}px lines)`);
+      assert.ok(layout.textScroll > layout.textHeight + 1, "and scrolls the rest in itself");
+      assert.ok(layout.questionBottom <= layout.cardBottom, "so the question is in view without scrolling the card");
+    } else {
+      assert.ok(layout.textHeight >= Math.min(layout.textScroll, 8 * layout.lineHeight) - 1, `at rest the context shows its lines, up to eight (${layout.textHeight}px of ${layout.textScroll}px)`);
+    }
+    if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `claude-question-context-${viewport.width}-${viewport.height}.png`) });
+    await card.locator("input.input").scrollIntoViewIfNeeded();
+    const answerInView = await card.evaluate(node => {
+      const bounds = node.getBoundingClientRect();
+      const input = node.querySelector("input.input")!.getBoundingClientRect();
+      return input.top >= bounds.top && input.bottom <= bounds.bottom;
+    });
+    assert.equal(answerInView, true, "the custom answer remains reachable by scrolling the card");
+    prompt = null;
+    await page.evaluate(() => window.chatFallbackQA.refresh());
+    await card.waitFor({ state: "detached" });
+  }
+  console.log("PASS Claude's recorded terminal context, caption and question do not overlap at desktop, mobile and short mobile sizes");
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
     prompt = parseInteractivePrompt("pi", piNavigation["custom-empty"])!;

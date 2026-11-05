@@ -1,0 +1,62 @@
+[
+ {
+  "id": 46,
+  "role": "user",
+  "content": "Reply with one word: what color is the attached image? Then use your vision tool to look at ./blue.png and reply with its color in one word.\n\n[Image attached at: /tmp/hermes-proj/red.png]\n[screenshot]",
+  "tool_call_id": null,
+  "tool_calls": null,
+  "tool_name": null,
+  "reasoning": null,
+  "timestamp": 1793437342.1375377
+ },
+ {
+  "id": 47,
+  "role": "assistant",
+  "content": "",
+  "tool_call_id": null,
+  "tool_calls": "[{\"id\": \"call_ZphjBHYbbk4ivLLjEDbfir6S\", \"call_id\": \"call_ZphjBHYbbk4ivLLjEDbfir6S\", \"response_item_id\": \"fc_047598cb494873d2016ae5ae9fd92887d0987cec28e2208220\", \"type\": \"function\", \"function\": {\"name\": \"vision_analyze\", \"arguments\": \"{\\\"image_url\\\":\\\"/tmp/hermes-proj/red.png\\\",\\\"question\\\":\\\"What color is this image? Answer with one word.\\\"}\"}}]",
+  "tool_name": null,
+  "reasoning": null,
+  "timestamp": 1793437345.0145888
+ },
+ {
+  "id": 48,
+  "role": "tool",
+  "content": "{\"success\": true, \"already_in_context\": true, \"message\": \"This image is already attached natively to the current user message \\u2014 you can see it now. Answer with your built-in vision; pass a `region` to zoom into part of it.\"}",
+  "tool_call_id": "call_ZphjBHYbbk4ivLLjEDbfir6S",
+  "tool_calls": null,
+  "tool_name": "vision_analyze",
+  "reasoning": null,
+  "timestamp": 1793437345.0768046
+ },
+ {
+  "id": 49,
+  "role": "assistant",
+  "content": "",
+  "tool_call_id": null,
+  "tool_calls": "[{\"id\": \"call_OYP6xpYmbhRCG8TnnIetUPKO\", \"call_id\": \"call_OYP6xpYmbhRCG8TnnIetUPKO\", \"response_item_id\": \"fc_0bc5176b44258261016ae5aea27e4087d0a57e8a05f67530d3\", \"type\": \"function\", \"function\": {\"name\": \"vision_analyze\", \"arguments\": \"{\\\"image_url\\\":\\\"/tmp/hermes-proj/blue.png\\\",\\\"question\\\":\\\"What color is this image? Answer with one word.\\\"}\"}}]",
+  "tool_name": null,
+  "reasoning": null,
+  "timestamp": 1793437347.5312264
+ },
+ {
+  "id": 50,
+  "role": "tool",
+  "content": "Image loaded into your context \u2014 you can see it natively now. Use your built-in vision to answer the user.\n\nQuestion: What color is this image? Answer with one word.\n[screenshot]",
+  "tool_call_id": "call_OYP6xpYmbhRCG8TnnIetUPKO",
+  "tool_calls": null,
+  "tool_name": "vision_analyze",
+  "reasoning": null,
+  "timestamp": 1793437347.6880884
+ },
+ {
+  "id": 51,
+  "role": "assistant",
+  "content": "Red\nBlue",
+  "tool_call_id": null,
+  "tool_calls": null,
+  "tool_name": null,
+  "reasoning": null,
+  "timestamp": 1793437349.6042578
+ }
+]

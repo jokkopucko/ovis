@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import type { ConversationTurn } from "../../shared/protocol.ts";
-import { chatRestoreIndex, chatTurnAnchor, forgetChatPositions, readChatPosition, rememberChatPosition } from "./chatScrollMemory.ts";
+import { chatRestoreIndex, chatTurnAnchor, forgetChatPositions, moveChatPosition, readChatPosition, rememberChatPosition } from "./chatScrollMemory.ts";
 
 const turn = (role: "user" | "assistant", ts: string | null, text = "hi"): ConversationTurn => ({ role, ts, parts: [{ kind: "text", text }] });
 
@@ -41,5 +41,21 @@ describe("chatScrollMemory", () => {
     expect(chatRestoreIndex(saved, "other", anchors)).toBeNull();
     expect(chatRestoreIndex({ ...saved, turn: "gone" }, "h", anchors)).toBeNull();
     expect(chatRestoreIndex(undefined, "h", anchors)).toBeNull();
+  });
+});
+
+describe("a pane moved under a new ID (#1503)", () => {
+  beforeEach(() => forgetChatPositions());
+  test("reads on where the reader left the pane, and keeps what the new ID has already", () => {
+    const left = { historyId: "h", turn: "t", offset: -4, atEnd: false };
+    rememberChatPosition("w1:p1", left);
+    moveChatPosition("w1:p1", "w2:p1");
+    expect(readChatPosition("w2:p1")).toEqual(left);
+    expect(readChatPosition("w1:p1")).toBeUndefined();
+    const own = { historyId: "h2", turn: "u", offset: 0, atEnd: true };
+    rememberChatPosition("w1:p3", left);
+    rememberChatPosition("w2:p3", own);
+    moveChatPosition("w1:p3", "w2:p3");
+    expect(readChatPosition("w2:p3")).toEqual(own);
   });
 });

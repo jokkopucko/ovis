@@ -1,4 +1,5 @@
-import type { ConversationResponse } from "../../shared/protocol.ts";
+import type { ConversationResponse, ConversationTurn } from "../../shared/protocol.ts";
+import { chatTurnAnchor } from "./chatScrollMemory.ts";
 
 /**
  * One browser-local identity for one native conversation lifetime. `incarnation`
@@ -54,6 +55,45 @@ export function prependChatRowSlots(slots: ChatRowSlots, count: number): ChatRow
 
 export function appendChatRowSlots(slots: ChatRowSlots, count: number): ChatRowSlots {
   return insertChatRowSlots(slots, slots.rows.length, count);
+}
+
+/**
+ * Where turns were written between turns already shown, by their index in `after`: a notice or a
+ * subagent's result Claude Code records while a turn is at work goes before that turn
+ * (server/claude-transcript.ts noticeAt), and the turns after it must keep their rows. Each list
+ * names its turns (rowAnchor); a turn shown before that is not found later stays where it is
+ * (a turn rewritten in place), and turns past the last one shown are appended, not inserted.
+ */
+export function insertedTurns(before: readonly string[], after: readonly string[]): number[] {
+  const inserted: number[] = [];
+  let shown = 0;
+  for (let index = 0; index < after.length && shown < before.length; index++) {
+    if (after[index] === before[shown]) shown++;
+    else if (after.indexOf(before[shown]!, index + 1) !== -1) inserted.push(index);
+    else shown++;
+  }
+  return inserted;
+}
+
+/** An agent's turn by when it started: its first words and its first tool's result change while it runs. */
+function rowAnchor(turn: ConversationTurn): string {
+  return turn.role === "assistant" && turn.ts !== null ? `assistant|${turn.ts}` : chatTurnAnchor(turn);
+}
+
+/**
+ * The slots once the turns from row `start` on went from `shown` (the last answer's newest page) to
+ * `moved` (the turns that left the newest page since) and `newest` (the new newest page). A turn
+ * written between turns shown, among the moved ones too, takes a new slot at its place, so the turns
+ * after it keep theirs; the rest are appended.
+ */
+export function growChatRowSlots(slots: ChatRowSlots, start: number, shown: readonly ConversationTurn[], moved: readonly ConversationTurn[], newest: readonly ConversationTurn[]): ChatRowSlots {
+  const now = [...moved, ...newest];
+  const count = start + now.length;
+  let grown = slots;
+  for (const at of insertedTurns(shown.map(rowAnchor), now.map(rowAnchor))) {
+    if (grown.rows.length < count) grown = insertChatRowSlots(grown, start + at, 1);
+  }
+  return grown.rows.length < count ? appendChatRowSlots(grown, count - grown.rows.length) : grown;
 }
 
 /**

@@ -3,7 +3,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rename
 import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
-import { AmbiguousClaudeStore, claudeAttachArgs, claudeAttachedJob, claudeAttachSession, claudeForegroundSession, claudeJobSession, claudeProcessSession, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, procArgsEnvironment } from "./claude-store.ts";
+import { AmbiguousClaudeStore, claudeAttachArgs, claudeAttachedJob, claudeAttachSession, claudeForegroundSession, claudeJobSession, claudeProcessSession, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, processLaunchSource, procArgsEnvironment } from "./claude-store.ts";
 import { procStartTime } from "./darwin-process.ts";
 import type { ProcessRow } from "./windows-processes.ts";
 
@@ -1010,6 +1010,26 @@ describe("a Claude process's store source", () => {
     expect(await herdrLaunchSource(join(root, "none.sock"))).toEqual({ state: "absent" });
     // no server on the socket: no proof
     expect(await herdrLaunchSource(join(root, "nobody.sock"))).toEqual({ state: "unreadable" });
+  });
+
+  it("herdr-core's launch source is its core process's environment, not this server's", async () => {
+    // a stand-in /proc: the core's environment exports a store, this server's does not
+    const proc = tempDir();
+    const store = tempDir();
+    mkdirSync(join(proc, "41"));
+    writeFileSync(join(proc, "41", "environ"), `PATH=/usr/bin\0CLAUDE_CONFIG_DIR=${store}\0`);
+    mkdirSync(join(proc, "42"));
+    writeFileSync(join(proc, "42", "environ"), "PATH=/usr/bin\0");
+    expect(await processLaunchSource(41, "linux", proc, {})).toEqual({ state: "override", dir: store });
+    expect(await processLaunchSource(42, "linux", proc, { CLAUDE_CONFIG_DIR: store })).toEqual({ state: "absent" });
+    // the core gone: no proof
+    expect(await processLaunchSource(43, "linux", proc, {})).toEqual({ state: "unreadable" });
+    // macOS reads the core's own environment too, not this server's
+    const environment = spyOn(darwinProcess, "environment").mockImplementation((pid: number) => pid === 41 ? `CLAUDE_CONFIG_DIR=${store}\0` : null);
+    try {
+      expect(await processLaunchSource(41, "darwin", proc, {})).toEqual({ state: "override", dir: store });
+      expect(await processLaunchSource(43, "darwin", proc, { CLAUDE_CONFIG_DIR: store })).toEqual({ state: "unreadable" });
+    } finally { environment.mockRestore(); }
   });
 
   it("macOS and Windows take the bridge server's own environment for the one a new tab inherits", async () => {

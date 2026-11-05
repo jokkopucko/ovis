@@ -29,6 +29,8 @@ export interface FocusTrapOptions {
   initialFocus?: RefObject<HTMLElement | null>;
   /** the focus returns to the opener unless this says otherwise when the surface goes */
   shouldRestore?: () => boolean;
+  /** suspend keyboard ownership while another surface covers this one */
+  paused?: boolean;
 }
 
 /** The tab stops a user can actually land on, in order: rendered, and not disabled or skipped. */
@@ -72,6 +74,14 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
   useLayoutEffect(() => {
     if (!open) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => {
+      // a covering dialog owns focus; otherwise return it only when this surface closes
+      if (!latest.current.paused && latest.current.shouldRestore?.() !== false && opener?.isConnected && !nativeModalOver(surface.current)) opener.focus({ preventScroll: true });
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || options.paused) return;
     const node = surface.current;
     if (node && !nativeModalOver(node) && !node.contains(document.activeElement)) {
       // AutoFocus or a child's layout effect may already have placed focus inside the surface.
@@ -82,14 +92,10 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
       if (!node.contains(document.activeElement)) tabStops(node)[0]?.focus({ preventScroll: true });
       if (!node.contains(document.activeElement)) node.focus({ preventScroll: true });
     }
-    return () => {
-      // a dialog the owner unmounts on its own deed (ConfirmDialog's "done") has nowhere to go back to
-      if (latest.current.shouldRestore?.() !== false && opener?.isConnected && !nativeModalOver(surface.current)) opener.focus({ preventScroll: true });
-    };
-  }, [open]);
+  }, [open, options.paused]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || options.paused) return;
     const trap = {};
     openTraps.push(trap);
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -114,7 +120,7 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
       window.removeEventListener("keydown", onKeyDown, true);
       openTraps.splice(openTraps.indexOf(trap), 1);
     };
-  }, [open]);
+  }, [open, options.paused]);
 
   return surface;
 }

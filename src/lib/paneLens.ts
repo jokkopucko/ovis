@@ -32,6 +32,11 @@ export class PaneLenses {
     return lens;
   }
 
+  /** The lens `of` gives, without keeping it: a press that may not become a pick settles nothing. */
+  peek(key: string, hasAgent: boolean | null, coarse: boolean): PaneView {
+    return this.settled.get(key) ?? defaultLens(hasAgent, this.defaultView, coarse);
+  }
+
   /** A pane this page started an agent in: its lens is an agent's, whatever the first snapshot says. */
   startedAgent(key: string, coarse: boolean): void {
     this.settled.set(key, defaultLens(true, this.defaultView, coarse));

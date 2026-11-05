@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { LOCAL_MACHINE } from "../../shared/machines.ts";
 import { openPresentation, type FilePresentation } from "./filePresentation.ts";
+import { backUnderCurrentEntry } from "./historyNavigation.ts";
 import { useFocusReturn } from "./useFocusTrap.ts";
 import { useFileViewer } from "./useFileViewer.ts";
 import { useRepoDiffViewer } from "./useRepoDiffViewer.ts";
-import { panelUrl, wantsPanel } from "./webPanel.ts";
+import { useWebPanel } from "./useWebPanel.ts";
 import type { Settings } from "./settings.ts";
 
 export interface FilePanelsParams {
@@ -18,7 +18,7 @@ export interface FilePanelsParams {
 export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId }: FilePanelsParams) {
   // the Files dialog, and the file open in the viewer (a path as the chat or the dialog gave it)
   const [filesOpen, setFilesOpen] = useState(false);
-  const { viewing, openFile, closeFile, setPresentation, releaseFile } = useFileViewer();
+  const { viewing, openFile: openPreview, closeFile, setPresentation, releaseFile } = useFileViewer();
   // a repository diff from the Files dialog's Changes tab, an entry of its own like a file
   const { viewing: diffViewing, openDiff, closeDiff, releaseDiff } = useRepoDiffViewer();
   const presentation = viewing?.presentation ?? openPresentation(viewing?.path ?? "", settings.fileOpen);
@@ -26,19 +26,19 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
   useEffect(() => {
     if (viewing !== null && fileDocked) setFilesOpen(false);
   }, [viewing, fileDocked]);
-  // a page this PC serves, beside the pane in the file panel's place: a file docked there replaces it
-  const [webPage, setWebPage] = useState<string | null>(null);
+  // a same-host web page shares the docked file's place on wide windows and opens as a popup on narrow ones.
+  // Either replacing the other takes over its history entry in place: no push over it, no Back to wait on.
+  const { webPage, openWebPage: openWebPanel, closeWebPage, yieldEntry, holdsEntry } = useWebPanel({ settings, filePanelAvailable });
+  const openWebPage = useCallback((uri: string, shiftKey: boolean, machineId: string) =>
+    openWebPanel(uri, shiftKey, machineId, viewing !== null && fileDocked ? releaseFile : undefined),
+  [openWebPanel, viewing, fileDocked, releaseFile]);
+  const openFile = useCallback((preview: Parameters<typeof openPreview>[0], replace = false) => {
+    const docks = filePanelAvailable && (preview.presentation ?? openPresentation(preview.path, settings.fileOpen)) === "panel";
+    openPreview(preview, (docks && webPage !== null && yieldEntry()) || replace);
+  }, [openPreview, filePanelAvailable, settings.fileOpen, webPage, yieldEntry]);
   useEffect(() => {
-    if (viewing !== null && fileDocked) setWebPage(null);
-  }, [viewing, fileDocked]);
-  const openWebPage = useCallback((uri: string, shiftKey: boolean, machineId: string) => {
-    if (machineId !== LOCAL_MACHINE || !wantsPanel(settings.webLinks, shiftKey)) return false;
-    const url = panelUrl(uri, window.location);
-    if (url === null) return false;
-    if (viewing !== null && fileDocked) closeFile();
-    setWebPage(url);
-    return true;
-  }, [settings.webLinks, viewing, fileDocked, closeFile]);
+    if (viewing !== null && fileDocked && webPage !== null) closeWebPage(true);
+  }, [viewing, fileDocked, webPage, closeWebPage]);
   // the panel is no dialog, so no trap gives the focus back when it closes: what opened the file
   // (a link in the chat, a row of Files) gets it, as it does from the popup
   useFocusReturn(viewing !== null && fileDocked);
@@ -60,8 +60,43 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
         openFile(preview);
       }, { once: true });
       window.history.go(-2);
+    } else if (next === "panel" && filePanelAvailable && viewing !== null && webPage !== null && holdsEntry()) {
+      // A popup file over the report's entry docks in the report's place: like the collapse above,
+      // step back past both entries (the Back closes the report) and push the docked file from their
+      // opener, so the two panels leave one entry and Forward cannot bring the popup back.
+      const preview = { ...viewing, presentation: next };
+      collapsing.current = true;
+      const land = (): void => {
+        collapsing.current = false;
+        openFile(preview);
+      };
+      window.addEventListener("popstate", land, { once: true });
+      // a step back the browser refuses lands nowhere: the file stays a popup and the toggle is free again
+      backUnderCurrentEntry(2)?.catch(() => { window.removeEventListener("popstate", land); collapsing.current = false; });
     } else setPresentation(next);
-  }, [filePanelAvailable, diffViewing, viewing, releaseDiff, openFile, setPresentation]);
+  }, [filePanelAvailable, diffViewing, viewing, releaseDiff, openFile, setPresentation, webPage, holdsEntry]);
+  // A diff's file docking in the place of a docked report that holds the entry under the diff: like the
+  // popup collapse above, step back past the diff and the report's entry and push the file from their
+  // opener, so Back closes the file and then leaves, as when the report held no entry.
+  const openDiffFile = useCallback(async (preview: Parameters<typeof openPreview>[0]) => {
+    const docks = filePanelAvailable && openPresentation(preview.path, settings.fileOpen) === "panel";
+    if (!docks || webPage === null || !holdsEntry()) return false;
+    if (collapsing.current) return true;
+    collapsing.current = true;
+    const land = (): void => {
+      collapsing.current = false;
+      openFile(preview);
+    };
+    window.addEventListener("popstate", land, { once: true });
+    try {
+      await backUnderCurrentEntry(2);
+    } catch (error) {
+      window.removeEventListener("popstate", land);
+      collapsing.current = false;
+      throw error;
+    }
+    return true;
+  }, [filePanelAvailable, settings.fileOpen, webPage, holdsEntry, openFile]);
   // the kind corrects a guess from the extension; with files set to open in the popup there is no guess to correct
   const reportFileKind = useCallback((kind: FilePresentation) => {
     const wanted = settings.fileOpen === "panel" ? kind : "popup";
@@ -75,5 +110,5 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
     if (filePanelAvailable && openPresentation(path, settings.fileOpen) === "panel") setFilesOpen(false);
     openFile({ path, paneId: selectedPaneId, machineId: selectedMachineId });
   }, [openFile, selectedPaneId, selectedMachineId, filePanelAvailable, settings.fileOpen]);
-  return { filesOpen, setFilesOpen, viewing, openFile, closeFile, setPresentation, releaseFile, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, setWebPage, openWebPage, collapsing, presentFile, reportFileKind, toggleFilePresentation, viewFile };
+  return { filesOpen, setFilesOpen, viewing, openFile, closeFile, setPresentation, releaseFile, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, collapsing, presentFile, openDiffFile, reportFileKind, toggleFilePresentation, viewFile };
 }

@@ -34,6 +34,8 @@ export function pendingStatus(message: Pick<PendingMessageView, "state" | "error
   if (message.error?.code === "transcript_unconfirmed" || message.error?.code === "pi_transcript_target_changed") return t("Sent to Pi · transcript confirmation unavailable");
   if (message.state === "held" && !message.error && message.serverOwned) return t("Waits for Send now");
   if (message.state === "uncertain") {
+    // #511: a paste left in the terminal's input line says where it is
+    if (message.error?.code === "pasted_not_sent") return submitNote(message.error.code, message.error.message);
     return (message.error ? openCodeRefusalNote(message.error.code, message.error.message, t) : null)
       ?? t("Not confirmed. Check the terminal before sending again.");
   }

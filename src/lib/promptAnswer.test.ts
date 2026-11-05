@@ -27,6 +27,8 @@ describe("a multi-select's checks and typed answer", () => {
     // pi's own tabs drop edits that were not sent, so the button waits for them
     expect(blocksStepNavigation(card, new Set(), "typed")).toBe(true);
     expect(blocksStepNavigation({ ...card, drafts_saved: true }, new Set(), "typed")).toBe(false);
+    // so do Claude Code's question tabs: a move with ←/→ leaves what the card alone holds
+    expect(blocksStepNavigation({ ...card, agent: "claude" }, new Set(), "typed")).toBe(true);
   });
 });
 
@@ -363,4 +365,21 @@ describe("focusFollowsAnswer", () => {
       expect(focusFollowsAnswer({ ...still, origin, coarse: true })).toBe(expected.coarse);
     });
   }
+});
+
+describe("moving between questions with the agent's own keys", () => {
+  it("waits for the card's unsent edits on omo, omp, Codex and Hermes, whose keys carry none of them over", () => {
+    const steps = [{ label: "One", answered: false, current: true }, { label: "Two", answered: false, current: false, can_navigate: true }];
+    for (const agent of ["omo", "omp", "hermes"]) {
+      const card = { ...prompt(["A", "B"], 2), agent, steps };
+      expect(blocksStepNavigation(card, new Set(), "typed")).toBe(true);
+      expect(blocksStepNavigation(card, new Set(), "")).toBe(false);
+    }
+    // Codex has Back and Next, no steps to tap
+    const codex = { ...prompt(["A", "B"], 2), agent: "codex", can_step_next: true };
+    expect(blocksStepNavigation(codex, new Set(), "typed")).toBe(true);
+    // its last question has only Back, which drops them too
+    expect(blocksStepNavigation({ ...codex, can_step_next: false, can_step_back: true }, new Set(), "typed")).toBe(true);
+    expect(blocksStepNavigation({ ...codex, can_step_next: false }, new Set(), "typed")).toBe(false);
+  });
 });

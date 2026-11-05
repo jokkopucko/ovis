@@ -10,6 +10,8 @@ import * as pi from "../pi.ts";
 import type { SightingFacts } from "../input-guard.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
+import { isDshProcess } from "../dsh.ts";
+import { SHELL_AGENTS } from "../shell-agent.ts";
 import type { TerminalSighting } from "./terminals.ts";
 
 const roots: string[] = [];
@@ -18,7 +20,7 @@ const originalProcessInfo = herdr.paneProcessInfo;
 const { paneSendText, paneSendKeys, paneRead } = herdr;
 const originalTranscriptPath = pi.piTranscriptPath;
 let lookup: { at: "identity" | "transcript"; entered: () => void; release: Promise<void> } | null = null;
-type Processes = { shell_pid: number; foreground_processes: { pid: number; name: string; argv?: string[] }[] };
+type Processes = { shell_pid: number; foreground_processes: { pid: number; name: string; argv0?: string; argv?: string[] }[] };
 /** what herdr's process read answers for a pane a case sets up */
 const processes = new Map<string, Processes>();
 /** each text, key, screen read or pty write the bridge asks for in such a pane, where no herdr answers */
@@ -127,6 +129,50 @@ it.each(["delivery first", "withdrawal first", "ambiguous delivery first", "ambi
     if (ambiguous) expect(removals).toEqual([{ id: item.message.id, outcome: "dismissed" }]);
   }
 });
+
+it.each(["same browser", "no device", "wrong browser", "wrong device", "read-only", "revoked", "no resume id", "expired", "uncertain",
+  "settled after reattach", "late wrong browser", "late wrong device", "late read-only", "late revoked"] as const)(
+  "replays a follow-up's exact receipt only to the browser that sent it (#2421): %s", (name) => {
+    // "late": the reload attaches before the Enter's reply settles the send, so the receipt is pushed to it
+    const late = name === "settled after reattach" || name.startsWith("late ");
+    const scenario = name.replace(/^late /, "");
+    let now = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>(), revoked = new Set<Client>();
+      const client = (deviceId: string | undefined, receiptResumeId: string | undefined, readOnly = false): Client => {
+        const output: ServerMessage[] = [];
+        const owner = { data: connectionData({ deviceId, readOnly }), getBufferedAmount: () => 0,
+          send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+        owner.data.attached.set("p", { keepSize: false, receiptResumeId });
+        clients.add(owner); frames.set(owner, output); return owner;
+      };
+      const device = scenario === "no device" ? undefined : "device";
+      const first = client(device, scenario === "no resume id" ? undefined : token);
+      const delivery = createPendingDelivery({
+        options: {}, clients, attachments: new Map(), serialize: async (_pane, task) => task(), lastTyped: new Map(),
+        sight: () => { throw new Error("a receipt replay takes no input lease"); },
+        submitText: async () => { throw new Error("a receipt replay never types"); },
+        authorizeSocket: (owner) => { if (revoked.has(owner)) throw new Error("revoked"); },
+        clientSnapshot: async () => ({ panes: [] }) as unknown as SessionSnapshot,
+        omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+      });
+      const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, { agent: "codex", terminalId: "p", session: null });
+      expect(delivery.pending.claim(item, false)).toBe(true);
+      // an Enter nobody confirmed leaves an uncertain copy, which only ever ages out as dismissed
+      if (scenario === "uncertain") delivery.pending.settle(item, { code: "submit_changed", message: "Enter was not confirmed" }, true);
+      else if (!late) delivery.pending.settle(item);
+      clients.delete(first); delivery.closeConnection(first);
+      if (scenario === "uncertain") { now += 60_001; delivery.pending.expire(); }
+      if (scenario === "expired") now += 10 * 60 * 1000 + 1;
+      const resumed = client(scenario === "wrong device" ? "other" : device, scenario === "wrong browser" ? crypto.randomUUID() : token, scenario === "read-only");
+      if (scenario === "revoked") revoked.add(resumed);
+      delivery.attached(resumed, "p");
+      if (late) delivery.pending.settle(item);
+      const removed = frames.get(resumed)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []);
+      expect(removed).toEqual(["same browser", "no device", "settled after reattach"].includes(scenario) ? [{ id: item.message.id, outcome: "sent", resumed: true }] : []);
+    } finally { clock.mockRestore(); }
+  });
 
 it.each(["before close", "after close", "overlapping reload", "same live browser", "no device", "read-only", "detach", "wrong browser", "wrong device", "revoked", "expired", "pending cap", "completed cap", "confirmation budget"] as const)(
   "resumes only exact, authorized Pi presentation receipts: %s", async (when) => {
@@ -384,6 +430,92 @@ it.each([
   await serialize("L", () => {});
   expect(reasons().at(-1)).toBe(code);
   expect(calls).toEqual([]);
+});
+
+// a child the agent runs as it starts (Claude Code's git, gh): herdr lists it in front before it names the agent
+const CHILD = 4_194_003, REPLACEMENT = 4_194_004;
+it.each([
+  ["a child it runs as it starts, binds the agent herdr names next", [{ pid: CHILD, name: "git" }, { pid: AGENT, name: "codex" }], AGENT, "codex", "first_message_unattended"],
+  ["a child it runs as it starts, still waits once that child ends before herdr names the agent", [{ pid: CHILD, name: "git" }, { pid: AGENT, name: "codex" }], AGENT, null, "first_message_unattended"],
+  ["its agent, stays bound to it: a replacement of its kind gets it held", [{ pid: AGENT, name: "codex" }], REPLACEMENT, "codex", "pending_target_changed"],
+] as const)("a first message queued before herdr names its agent, with in front %s", async (_case, front, next, later, code) => {
+  let named: string | null = null;
+  const frames: ServerMessage[] = [];
+  const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0,
+    send: (value: string) => { frames.push(JSON.parse(value)); return 1; } } as Client;
+  owner.data.attached.set("L", { keepSize: false });
+  let queue = Promise.resolve<unknown>(undefined);
+  const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => { const run = queue.catch(() => {}).then(task); queue = run; return run; };
+  const delivery = createPendingDelivery({
+    options: {}, clients: new Set([owner]), attachments: new Map(), serialize, lastTyped: new Map(),
+    sight: (): TerminalSighting => ({ origin: null, pty: null, claim: null, facts: () => READY, write: () => {} }),
+    submitText: async (pane) => { calls.push(`submit ${pane}`); },
+    authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: [{ pane_id: "L", terminal_id: "L", agent: named, agent_status: "working" }] }) as SessionSnapshot,
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  });
+  // queued with no page, so held as unattended from the start: only a later reason can replace that one
+  processes.set("L", { shell_pid: SHELL, foreground_processes: [...front] });
+  await delivery.queueFirstMessage("L", "FIRST", "codex");
+  // the child has ended, and herdr names the agent (or not yet)
+  processes.set("L", { shell_pid: SHELL, foreground_processes: [{ pid: next, name: "codex" }] }); named = later;
+  delivery.drainPending("L");
+  await serialize("L", () => {});
+  expect(frames.flatMap((frame) => frame.type === "pending-messages" && frame.pane_id === "L" ? frame.messages.map((item) => item.error?.code) : []).at(-1)).toBe(code);
+});
+
+// the launched agent wherever it is listed in front, by its own program: a child it runs as it starts may be listed
+// first (#2525), so the message is bound to the agent, typed into it, and held from a later agent of its kind (#2222)
+const MAC_CLAUDE = (pid: number) => ({ pid, name: "2.1.3", argv0: "Claude", argv: ["Claude"] });
+const DSH_HOST = { pid: AGENT, name: "node", argv: ["/usr/bin/node", "/home/u/.dsh/profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui/lib/types/dsh-adapter/host-entry.js"] };
+it.each([
+  ["codex behind a child, unnamed, stays in front", "codex", null, [{ pid: CHILD, name: "git" }, { pid: AGENT, name: "codex" }], { pid: AGENT, name: "codex" }, "sent"],
+  ["codex behind a child, unnamed, then replaced", "codex", null, [{ pid: CHILD, name: "git" }, { pid: AGENT, name: "codex" }], { pid: REPLACEMENT, name: "codex" }, "pending_target_changed"],
+  ["macOS native Claude behind a child, named, then replaced", "claude", "claude", [{ pid: CHILD, name: "security" }, MAC_CLAUDE(AGENT)], MAC_CLAUDE(REPLACEMENT), "pending_target_changed"],
+  ["dsh-tui's host, unnamed, then replaced", "dsh-tui", null, [DSH_HOST], { pid: REPLACEMENT, name: "dsh-tui" }, "pending_target_changed"],
+  // herdr names the agent, whose listing has no argv to show its program, beside a child: the pick is still the agent
+  ["codex named, listed without argv beside a child, stays in front", "codex", "codex", [{ pid: AGENT, name: "node" }, { pid: CHILD, name: "git" }], { pid: AGENT, name: "node" }, "sent"],
+  ["codex named, listed without argv beside a child, then replaced", "codex", "codex", [{ pid: AGENT, name: "node" }, { pid: CHILD, name: "git" }], { pid: REPLACEMENT, name: "codex" }, "pending_target_changed"],
+] as const)("a first message queued with in front %s: %s", async (_case, kind, namedAtQueue, front, next, outcome) => {
+  // dsh-tui is a shell-started agent once DeepSeek Harness can be started (#2524); its own test is what knows its host
+  const registered = Object.hasOwn(SHELL_AGENTS, "dsh-tui");
+  if (!registered) SHELL_AGENTS["dsh-tui"] = isDshProcess;
+  try {
+    let named: string | null = namedAtQueue;
+    const frames: ServerMessage[] = [];
+    const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0,
+      send: (value: string) => { frames.push(JSON.parse(value)); return 1; } } as Client;
+    owner.data.attached.set("L", { keepSize: false });
+    let queue = Promise.resolve<unknown>(undefined);
+    const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => { const run = queue.catch(() => {}).then(task); queue = run; return run; };
+    const delivery = createPendingDelivery({
+      options: {}, clients: new Set([owner]), attachments: new Map(), serialize, lastTyped: new Map(),
+      sight: (): TerminalSighting => ({ origin: null, pty: null, claim: null, facts: () => READY, write: () => {} }),
+      submitText: async (pane) => { calls.push(`submit ${pane}`); }, authorizeSocket: () => {},
+      clientSnapshot: async () => ({ panes: [{ pane_id: "L", terminal_id: "L", agent: named, agent_status: "idle" }] }) as SessionSnapshot,
+      omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+    });
+    // queued by the page that launched it, which stays to type it
+    processes.set("L", { shell_pid: SHELL, foreground_processes: [...front] });
+    const message = await delivery.queueFirstMessage("L", "FIRST", kind, owner.data.connectionId);
+    // bound at its queueing to the launched agent, not the child listed before it
+    delivery.pending.status("L", "idle");
+    expect(delivery.pending.next("L")).toMatchObject({ message: { id: message.id }, identity: { processPid: AGENT } });
+    // the child has ended, and herdr names the agent: the launched one, or a later one of its kind
+    processes.set("L", { shell_pid: SHELL, foreground_processes: [next] }); named = kind;
+    delivery.drainPending("L");
+    await serialize("L", () => {});
+    const codes = frames.flatMap((frame) => frame.type === "pending-messages" && frame.pane_id === "L" ? frame.messages.filter((item) => item.id === message.id).map((item) => item.error?.code) : []);
+    if (outcome === "sent") {
+      // every check passed and it went on to the pane: the screen read before typing (which no herdr answers here)
+      expect(calls).toEqual(["read L"]);
+      expect(codes).not.toContain("pending_target_changed");
+    } else {
+      // a later agent of its kind: held with that reason, and nothing reaches the pane
+      expect(calls).toEqual([]);
+      expect(codes.at(-1)).toBe(outcome);
+    }
+  } finally { if (!registered) delete SHELL_AGENTS["dsh-tui"]; }
 });
 
 it("keeps the owner's held row sendable when its own Send now fails before anything is typed", async () => {

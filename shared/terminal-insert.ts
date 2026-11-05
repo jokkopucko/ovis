@@ -23,7 +23,8 @@ export interface InsertRefusal { code: string; message: string }
 /** Every control is refused, Tab included: a shell takes Tab as completion, so the prompt would not show the line as written; ESC is a paste marker or a key sequence. A lone surrogate would reach the pty as U+FFFD. */
 const CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const LINE_BREAK = /[\r\n]/;
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+// no lookbehind (shared/lookbehind.ts): a low half after anything but a high half
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 /** The refusal `text` earns before any pane is looked at, or null when it may be typed as it is. */
 export function insertTextProblem(text: unknown): InsertRefusal | null {

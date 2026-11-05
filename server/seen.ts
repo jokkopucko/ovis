@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { MAX_SEEN, MAX_SEEN_BYTES, mergeSeen, seenFinishBody, seenFinishKey, type SeenFinish } from "../shared/seen.ts";
+import { MAX_SEEN, MAX_SEEN_BYTES, mergeSeen, seenFinishBody, seenFinishKey, seenPresentationOf, type SeenFinish, type SeenPresentation } from "../shared/seen.ts";
 import { badRequest, jsonResponse } from "./http.ts";
 import { damagedCopy, readStateDocument, writeStateDocument } from "./state-document.ts";
 
@@ -13,7 +13,8 @@ export class SeenStore {
   /** insertion order is write order: the first entries are the oldest */
   private readonly finishes = new Map<string, SeenFinish>();
   private readonly path: string;
-  private readonly listeners = new Set<(finish: SeenFinish) => void>();
+  private readonly listeners = new Set<(finish: SeenFinish, presented?: SeenPresentation) => void>();
+  private readonly presentations = new Set<(finish: SeenFinish) => void>();
   /** Until this store has replaced the file, a write reads it again first: it may have been damaged or repaired since. */
   private unsettled = true;
 
@@ -56,9 +57,17 @@ export class SeenStore {
     return [...this.finishes.values()].filter((finish) => !this.over(finish));
   }
 
-  record(finish: SeenFinish): SeenFinish {
+  /** `presented`: how the browser presented it (shared/seen.ts SeenPresentation), told with a change and not stored */
+  record(finish: SeenFinish, presented?: SeenPresentation): SeenFinish {
     // answered as sent: a browser that still shows the run that ended has nothing to keep
     if (this.over(finish)) return finish;
+    const kept = this.keep(finish, presented);
+    // a pane brought into view is told even when its finish was already read: someone looked again
+    if (presented === "new") for (const listener of [...this.presentations]) listener(finish);
+    return kept;
+  }
+
+  private keep(finish: SeenFinish, presented: SeenPresentation | undefined): SeenFinish {
     let base = this.finishes;
     let keepDamaged = false;
     if (this.unsettled) {
@@ -84,13 +93,32 @@ export class SeenStore {
     this.unsettled = false;
     this.finishes.clear();
     for (const [k, v] of finishes) this.finishes.set(k, v);
-    for (const listener of [...this.listeners]) listener(next);
+    for (const listener of [...this.listeners]) listener(next, presented);
     return next;
   }
 
-  subscribe(listener: (finish: SeenFinish) => void): () => void {
+  /**
+   * herdr moved a pane of `pc` under a new ID (#1503): what was read under the old ID is read under the new one,
+   * each finish under the number the server counts it by there (`renumber`, server/finishes.ts moved), and every
+   * browser is told. The old ID's records stay, as an ended pane's do.
+   */
+  moved(pc: string, from: string, to: string, renumber: (id: number) => number = (id) => id): void {
+    if (from === to) return;
+    for (const finish of this.list()) {
+      if (finish.pc !== pc || finish.pane !== from) continue;
+      this.keep({ ...finish, pane: to, id: renumber(finish.id) }, undefined);
+    }
+  }
+
+  subscribe(listener: (finish: SeenFinish, presented?: SeenPresentation) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
+  }
+
+  /** Every finish a browser presented as `new`, changed or not, after the change listeners. */
+  onPresented(listener: (finish: SeenFinish) => void): () => void {
+    this.presentations.add(listener);
+    return () => { this.presentations.delete(listener); };
   }
 
   private over(finish: SeenFinish): boolean {
@@ -127,6 +155,6 @@ export async function handleSeenRequest(request: Request, store: SeenStore): Pro
   try { raw = JSON.parse(text); } catch { return badRequest("invalid_json", "The body is not JSON"); }
   const finish = seenFinishBody(raw);
   if (finish === null) return badRequest("invalid_body", "Send { pc, epoch, pane: string, id: positive integer, answer?: string }");
-  try { return reply(store.record(finish)); }
+  try { return reply(store.record(finish, seenPresentationOf(raw))); }
   catch (error) { return reply({ error: { code: "seen_unwritable", message: error instanceof Error ? error.message : String(error) } }, 500); }
 }

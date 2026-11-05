@@ -10,7 +10,7 @@ import * as omo from "./omo.ts";
 import { omoSessionFolder } from "./omo.ts";
 import * as processStart from "./process-start.ts";
 import { paneProcessRoots } from "./conversation.ts";
-import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, openCodeSkillsToType, releaseOpenCodePane, skillsNotAttached, startOpenCodeWatch, trackVerifiedOpenCodePanes } from "./opencode-native.ts";
+import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, openCodeSkillsToType, openCodeVerificationCheckpoint, releaseOpenCodePane, skillsNotAttached, startOpenCodeWatch, trackVerifiedOpenCodePanes } from "./opencode-native.ts";
 import { commandOutcome } from "./outcome.ts";
 import * as service from "./opencode-service.ts";
 import * as commands from "./commands.ts";
@@ -179,6 +179,8 @@ function gatedService(dir: string) {
   const streamOpened = Promise.withResolvers<void>();
   const streamClosed = Promise.withResolvers<void>();
   let holdLookups = false;
+  /** a session lookup held since the last hold() */
+  let heldSeen = Promise.withResolvers<void>();
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 0, fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/api/info") return Response.json({ version: "2.0.32", pid: process.pid, urls: [], paths: { tmp: dir } });
@@ -186,6 +188,7 @@ function gatedService(dir: string) {
       const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
       const answer = () => Response.json({ data: { id } });
       lookupSeen.resolve();
+      if (holdLookups) heldSeen.resolve();
       return holdLookups ? new Promise<Response>((resolve) => lookups.push(() => resolve(answer()))) : answer();
     }
     if (url.pathname === "/api/event") {
@@ -200,7 +203,8 @@ function gatedService(dir: string) {
   writeFileSync(join(dir, "service.json"), JSON.stringify({ url: server.url.origin, pid: process.pid, password: "x", version: "2.0.32" }));
   return {
     server, lookupSeen: lookupSeen.promise, streamOpened: streamOpened.promise, streamClosed: streamClosed.promise,
-    hold() { holdLookups = true; }, release() { holdLookups = false; for (const answer of lookups.splice(0)) answer(); },
+    hold() { holdLookups = true; heldSeen = Promise.withResolvers<void>(); }, release() { holdLookups = false; for (const answer of lookups.splice(0)) answer(); },
+    heldLookup: () => heldSeen.promise,
   };
 }
 const opencodePane = (paneId: string, session: string) => ({ pane_id: paneId, agent: "opencode", agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value: session } }) as unknown as HerdrPane;
@@ -283,6 +287,31 @@ describe("a verification still in flight is cancelled by a reset or by its pane'
       } finally { closeOpenCodeNative(); fake.release(); fake.server.stop(true); }
     });
   }
+});
+
+describe("a re-verification begun after a snapshot was read", () => {
+  it("is newer evidence: that older snapshot's release keeps it, the pane and the stream", async () => {
+    const fake = gatedService(join(root, "reverify-newer"));
+    openCodeServiceOptions.stateDir = join(root, "reverify-newer");
+    forgetOpenCodeService();
+    closeOpenCodeNative();
+    try {
+      // Given a pane verified before a snapshot's read began.
+      expect(await openCodePaneService(opencodePane("p_re", "ses_re"))).not.toBeNull();
+      await within(fake.streamOpened, "the stream opening");
+      const checkpoint = openCodeVerificationCheckpoint();
+      // And its re-verification, begun after that read, held at its session lookup.
+      fake.hold();
+      const reverifying = openCodePaneService(opencodePane("p_re", "ses_re"));
+      await within(fake.heldLookup(), "the re-verification's session lookup");
+      // When the older snapshot releases the pane, then the lookup answers.
+      releaseOpenCodePane("p_re", checkpoint);
+      fake.release();
+      // Then the re-verification stands, and the pane keeps the stream.
+      expect(await reverifying).not.toBeNull();
+      expect(openCodeNativeState()).toEqual({ stream: true, panes: ["p_re"] });
+    } finally { closeOpenCodeNative(); fake.release(); fake.server.stop(true); }
+  });
 });
 
 describe("collectors track the verified panes", () => {

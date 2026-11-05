@@ -187,9 +187,10 @@
   visibility: hidden;
 }
 
-/* no scrollback (PaneTerminal.tsx), so the viewport never scrolls: hide the track that would
-   otherwise sit over the last columns on platforms with classic scrollbars */
+/* the native viewport never scrolls (xterm draws its own scrollbar for a herdr-core pane's history):
+   hide the track that would otherwise sit over the last columns on platforms with classic scrollbars */
 .pane-terminal .xterm-viewport {
+  background-color: var(--term-bg);
   scrollbar-width: none;
 }
 
@@ -370,23 +371,6 @@
   border-radius: var(--radius-md);
   max-width: 100%;
   pointer-events: auto;
-}
-
-/* the hint a message's "Rewind in terminal" leaves (Claude Code, grok, agy): a sentence and its dismiss control,
-   so a control-bearing box like the held-input row; the sentence takes what the pane has and wraps,
-   the button stays beside it */
-.terminal-banner-rewind {
-  height: auto;
-  flex-wrap: nowrap;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
-  border-radius: var(--radius-md);
-  pointer-events: auto;
-}
-
-.terminal-banner-rewind > span {
-  flex: 1 1 auto;
-  min-width: 0;
 }
 
 /* a terminal command's peek head (PaneTerminal.tsx): what ran, whether the chat comes back by itself,

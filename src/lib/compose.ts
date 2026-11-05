@@ -9,12 +9,12 @@
  * Pure logic, DOM-free, so the policy is unit-testable (see compose.test.ts).
  */
 
-import type { AgentStatus, CommandForm, SlashCommand } from "../../shared/protocol.ts";
+import type { AgentStatus, CommandForm, ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { knownStatus, STATUS_WORD } from "./status.ts";
 import { t, type Vars } from "./i18n.ts";
 import type { ActiveTrigger } from "./mentions.ts";
-import { submitNotTyped } from "../../shared/submit-outcome.ts";
+import { NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
 export { submitNotTyped } from "../../shared/submit-outcome.ts";
 
 /** This cap keeps one composer message inside a single WS frame. */
@@ -108,6 +108,29 @@ export function sameMessage(a: string, b: string): boolean {
   return bare(a) !== "" && bare(a) === bare(b);
 }
 
+/** A user turn told apart from a later one with the same words: when it was written, and what it said. */
+export type TurnIdentity = { ts: string | null; text: string };
+
+const userText = (turn: ConversationTurn): string => turn.parts
+  .filter((part): part is Extract<ConversationTurn["parts"][number], { kind: "text" }> => part.kind === "text").map((part) => part.text).join("\n");
+
+/**
+ * The trailing user turn of a send the agent put back in its input box (`restored`, from a prompt
+ * read): the chat keeps it out of view while it is the last turn. null: none.
+ */
+export function stoppedTurn(turns: readonly ConversationTurn[], restored: string | null): TurnIdentity | null {
+  const last = turns.at(-1);
+  if (restored === null || last?.role !== "user") return null;
+  const text = userText(last);
+  return sameMessage(text, restored) ? { ts: last.ts, text } : null;
+}
+
+/** Whether the last turn is still `turn` itself, however the turns before it changed: a newer turn is not. */
+export function endsWithTurn(turns: readonly ConversationTurn[], turn: TurnIdentity | null): boolean {
+  const last = turns.at(-1);
+  return turn !== null && last?.role === "user" && last.ts === turn.ts && userText(last) === turn.text;
+}
+
 /** Agent names in this server refusal are JSON strings, so custom names cannot confuse the fields. */
 export function openCodeAgentChange(message: string): { from: string; to: string } | null {
   const match = /^Tab switched OpenCode's agent from ("(?:[^"\\]|\\.)*") to ("(?:[^"\\]|\\.)*")\. Nothing more was typed\.$/u.exec(message);
@@ -135,6 +158,8 @@ export function submitNote(code: string, message: string, agent?: string | null)
   const opencode = openCodeRefusalNote(code, message);
   if (opencode !== null) return opencode;
   if (code === "submit_partial") return t("Not confirmed: the terminal draft was cleared or may have changed. Your message stayed here. Check the terminal before sending again.");
+  // #511: pasted for an agent that left before its Enter: the text may sit in the input line
+  if (code === "pasted_not_sent") return t("Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.");
   if (code === "agent_blocked") return t("Not sent: the agent is waiting for an answer in the terminal. Answer it first.");
   if (code === "read_only") return t("Not sent: this view only watches the pane.");
   if (code === "held_input") return t("Not sent: send or discard the held input first.");
@@ -142,6 +167,10 @@ export function submitNote(code: string, message: string, agent?: string | null)
   if (code === "input_draft") return t("Not sent: Claude Code's input box in the terminal is not empty. Send or clear it there, then send this message.");
   if (code === "rewind_dialog_open") return t("Not sent: Claude Code's rewind dialog is open in the terminal. Finish or close it there (Esc), then send this message.");
   if (code === "pending_input_unsupported") return t("Update this PC to send messages in the next turn. Your draft stayed here.");
+  // #511: a message with comments on a reply goes only to an agent
+  if (code === "agent_only_unsupported") return t("Update this PC to send comments on a reply. Your message and comments stayed here.");
+  // the same code also says an agent's input state is unknown: that keeps the bridge's own words
+  if (code === "agent_not_ready" && message === NO_AGENT_MESSAGE) return t("Not sent: no agent is running in this pane. Your message stayed here.");
   if (code === "submit_timeout") return t("Not sent: it waited too long behind an earlier message, and nothing was typed. Send it again.");
   if (code === "not_transmitted") return t("Not sent: the connection dropped before this message left. Send it again.");
   if (code === "capabilities_unknown") return t("Not sent: this PC has not said yet what it supports. Send it again.");
@@ -352,6 +381,7 @@ export function composerModelDraw(state: { modelClipped: boolean; effortClipped:
 /** Herdr agent ids are machine-friendly; the composer presents a short human label. */
 export function agentDisplayLabel(agent: string | null): string {
   if (!agent) return "Shell";
+  if (agent === "dsh" || agent === "dsh-tui") return "DeepSeek Harness";
   return agent
     .split(/[-_]/u)
     .filter(Boolean)
@@ -411,7 +441,9 @@ export function commandsForTrigger(commands: readonly SlashCommand[], agent: str
 export function briefDescription(description: string): string {
   const text = description.trim();
   const end = /[.!?](?=\s+[\p{Lu}\p{Lo}"'(])|\u3002/u.exec(text);
-  return (end ? text.slice(0, end.index) : text).replace(/(?<!\.)[.\u3002]$/u, "");
+  const brief = end ? text.slice(0, end.index) : text;
+  // a last full stop goes, not an ellipsis's (no lookbehind: shared/lookbehind.ts)
+  return /[.\u3002]$/.test(brief) && brief[brief.length - 2] !== "." ? brief.slice(0, -1) : brief;
 }
 
 /**

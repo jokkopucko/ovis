@@ -20,7 +20,9 @@ const FILE_NAME = `[${NAME}@+-][${NAME}@.+-]*${EXTENSION}`;
 // otherwise tried as a path from every one of them, to its end. `~/` still starts one after a
 // plus sign (`+~/notes/a.md`, a line of a diff). It ends at an ASCII word character only, so a
 // particle written onto it in Korean or Japanese prose is not taken as part of the name.
-const BARE_PATH = new RegExp(`(?<![${NAME}/.@~-])(?<!\\+(?!~))(${ROOT}?(?:${SEGMENT}\\/)+${FILE_NAME}${LINE})(?![\\w/])`, "gu");
+// What comes before it is matched too, not looked behind at (shared/lookbehind.ts): that
+// character is never the end of the path before, which ends in a name's own character.
+const BARE_PATH = new RegExp(`(?:^|[^${NAME}/.@~+-]|\\+(?=~))(${ROOT}?(?:${SEGMENT}\\/)+${FILE_NAME}${LINE})(?![\\w/])`, "gu");
 // A code span is delimited, so a path in it may hold single spaces (`.senpi/pages/a b.html`):
 // after a root (`~/My Docs/a.md`) or past a first folder, never in a bare name or a first word,
 // so a command (`bun scripts/check.ts`) or a phrase (`run a.ts`) is not one
@@ -35,7 +37,7 @@ const CODE_PATH = new RegExp(`^(?:${ROOT}(?:${SPACED}\\/)*${SPACED_NAME}|${SEGME
  * so is anything else with an extension, as a list of extensions always misses some.
  */
 const CODE_NAME = /^(?:process\.(?:env|argv|cwd|exit|platform|stdout|stderr|stdin)(?:\.\w+)?|Math\.(?:random|floor|ceil|round|max|min|abs|pow|sqrt|trunc|sign)|JSON\.(?:parse|stringify)|console\.(?:log|error|warn|info|debug)|Object\.(?:keys|values|entries|assign|freeze)|Array\.(?:from|isArray)|Promise\.(?:all|race|any|allSettled|resolve|reject)|Number\.(?:isFinite|isInteger|parseInt|parseFloat)|tool\.(?:monitor|read|bash|grep|write|edit)|os\.(?:path|environ|getcwd|getenv)|sys\.(?:argv|path|exit|stdout|stderr)|window\.(?:location|history|open)|document\.(?:body|title|cookie))$/;
-function isCodeName(name: string): boolean {
+export function isCodeName(name: string): boolean {
   return !name.includes("/") && CODE_NAME.test(name);
 }
 
@@ -43,12 +45,34 @@ function isCodeName(name: string): boolean {
 // with no spaces): where CJK letters and ASCII letters meet with nothing between them, a name
 // ends or starts, so each run between such seams is matched on its own
 const CJK = "\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}";
-const SCRIPT_SEAM = new RegExp(`(?<=[${CJK}])(?=[A-Za-z])|(?<=[A-Za-z])(?=[${CJK}])`, "u");
+const CJK_CHAR = new RegExp(`^[${CJK}]$`, "u");
+const latin = (char: string): boolean => /^[A-Za-z]$/.test(char);
+
+/** The text cut at each seam between a CJK letter and an ASCII letter, either way round. */
+function scriptRuns(text: string): string[] {
+  const runs: string[] = [];
+  let start = 0;
+  let index = 0;
+  let previous = "";
+  for (const char of text) {
+    if ((latin(char) && CJK_CHAR.test(previous)) || (latin(previous) && CJK_CHAR.test(char))) {
+      runs.push(text.slice(start, index));
+      start = index;
+    }
+    previous = char;
+    index += char.length;
+  }
+  runs.push(text.slice(start));
+  return runs;
+}
 
 function* pathMatches(text: string): Generator<{ index: number; 0: string; 1: string }> {
   let start = 0;
-  for (const run of text.split(SCRIPT_SEAM)) {
-    for (const match of run.matchAll(BARE_PATH)) yield { index: start + (match.index ?? 0), 0: match[0], 1: match[1]! };
+  for (const run of scriptRuns(text)) {
+    for (const match of run.matchAll(BARE_PATH)) {
+      const path = match[1]!;
+      yield { index: start + match.index! + match[0].length - path.length, 0: path, 1: path };
+    }
     start += run.length;
   }
 }

@@ -41,8 +41,10 @@ describe("agent catalog", () => {
         if (!source.url.startsWith("https://")) at(`source ${source.url} over HTTPS`);
         if (!DATE.test(source.checked) || Number.isNaN(Date.parse(source.checked))) at(`source date ${source.checked}`);
       }
-      if (entry.detect.binaries.length === 0 || entry.detect.binaries.some((binary) => !/^[a-z0-9][a-z0-9._-]*$/.test(binary))) at("plain binary names");
+      if (entry.detect.binaries.length === 0 || [...entry.detect.binaries, ...entry.detect.needs ?? []].some((binary) => !/^[a-z0-9][a-z0-9._-]*$/.test(binary))) at("plain binary names");
       if (entry.detect.version_args.length === 0) at("a version flag");
+      const limit = entry.detect.version_timeout_ms;
+      if (limit !== undefined && !(Number.isInteger(limit) && limit > 5_000 && limit <= 30_000)) at(`a version-flag limit above the 5 s default and at most 30 s, not ${limit}`);
       if (entry.sign_in !== null && entry.sign_in.provider !== null && !PROVIDERS[entry.sign_in.provider]) at(`sign-in provider ${entry.sign_in.provider}`);
       if (entry.min_version !== null && (!/^\d+\.\d+(?:\.\d+)?$/.test(entry.min_version.version) || entry.min_version.reason === "")) at("a dotted minimum version and the feature that needs it");
     }
@@ -142,6 +144,14 @@ describe("agent catalog commands", () => {
     expect(problems(codex, "npm install -g @openai/codex-helper")).not.toEqual([]);
     expect(problems(codex, "npm i -g openai-codex@latest")).not.toEqual([]);
     expect(problems(codex, "echo installed")).not.toEqual([]);
+    // a command that installs several packages has each of them checked, not only the first
+    expect(problems(codex, "npm install -g @openai/codex left-pad").filter((problem) => problem.includes("installs npm:left-pad"))).toHaveLength(1);
+    expect(problems(codex, "npm i -g left-pad @openai/codex").filter((problem) => problem.includes("installs npm:left-pad"))).toHaveLength(1);
+    expect(problems(codex, "npm install -g @openai/codex @openai/codex").filter((problem) => problem.includes("installs npm:"))).toEqual([]);
+    // a flag between or after the packages neither hides a package nor passes unremarked
+    const flagged = problems(codex, "npm install -g @openai/codex --ignore-scripts left-pad");
+    expect(flagged.filter((problem) => problem.includes("installs npm:left-pad"))).toHaveLength(1);
+    expect(flagged.filter((problem) => problem.includes("passes npm --ignore-scripts"))).toHaveLength(1);
     // anything after an approved command, in any shell's syntax, is not the vendor's command
     for (const extra of [" && touch /tmp/unapproved", "; touch /tmp/unapproved", " | tee /tmp/x", " $(touch /tmp/x)", "\ntouch /tmp/x"]) {
       expect(problems(claude, `curl -fsSL https://claude.ai/install.sh | bash${extra}`)).not.toEqual([]);

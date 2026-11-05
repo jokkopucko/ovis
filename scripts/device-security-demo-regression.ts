@@ -277,6 +277,8 @@ try {
           await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), settingsOf(language, theme));
           const press = async (target: Locator): Promise<void> => { if (phone) await target.tap(); else await target.click(); };
           const closeSettings = async (page: Page): Promise<void> => {
+            // Pair a device's code is in the Connect a phone dialog, which closes by itself once the device is in
+            await page.locator(".connect-phone-dialog").waitFor({ state: "detached", timeout: PAIRS_WITHIN_MS });
             await page.keyboard.press("Escape");
             await page.locator(".settings-dialog").waitFor({ state: "detached" });
             await settled(page);
@@ -587,11 +589,14 @@ try {
             // at 390 split it between its two words): one box each time, on the name's line or the next, and one
             // line high, as beside a one-letter name (a box of its own could still wrap its words inside it).
             // The name is set in place and put back, so React's own text stays what it rendered
-            const split = await page.locator(".devices-current").evaluate((badge) => {
+            const split = await page.locator(".devices-current").evaluate(async (badge) => {
               const name = badge.parentElement!.firstChild as Text;
               const rendered = name.data;
               const long = "iPhone · Safari on the long-named phone";
               const broken: string[] = [];
+              // every glyph the long name needs is loaded first: a font arriving mid-loop changes the pill's height
+              name.data = long;
+              await document.fonts.ready;
               name.data = long.slice(0, 1);
               const oneLine = badge.getBoundingClientRect().height;
               for (let n = 1; n <= long.length; n++) {

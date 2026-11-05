@@ -16,6 +16,7 @@ reviews:
     auto_incremental_review: false
   path_filters:
     - '!shared/herdr-api.generated.ts'
+    - '!server/herdr-core/hc-api.generated.ts'
     - '!docs/screenshots/**'
     - '!evidence/**'
     - '!dist/**'

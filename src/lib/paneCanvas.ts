@@ -4,8 +4,8 @@ type PaneLayoutSplit = PaneLayoutSnapshot["splits"][number];
 /** Where a split has no room: a tab's panes are shown one at a time (PaneCanvas) and picked from the tab's menu (TabStrip). */
 export const SOLO_PANE_QUERY = "(max-width: 768px)";
 
-/** A short phone screen (landscape, a small phone): a lone tab is not drawn there (TabStrip). */
-export const CRAMPED_QUERY = "(max-width: 768px) and (max-height: 600px)";
+/** A compact-height phone screen (a foldable's outer display, landscape or the keyboard): a lone tab is not drawn there (TabStrip). */
+export const CRAMPED_QUERY = "(max-width: 768px) and (max-height: 700px)";
 /** Whether the tab strip is left out of a workspace's view: a lone tab on a cramped screen. */
 export const loneTabHidden = (cramped: boolean, tabCount: number): boolean => cramped && tabCount === 1;
 

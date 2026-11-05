@@ -111,6 +111,18 @@ export function applyToDraft(draft: InputDraft, data: string): InputDraft {
   return append(next, text);
 }
 
+/**
+ * Typing a connection ended with before the server confirmed it (#2587), held ahead of `draft`, which
+ * holds only what was typed after it: each chunk is folded as it was typed, so what is held reads in
+ * the order it was typed.
+ */
+export function holdBefore(chunks: readonly string[], draft: InputDraft): InputDraft {
+  const lost = chunks.reduce((held, chunk) => applyToDraft(held, chunk), EMPTY_DRAFT);
+  if (draftIsEmpty(lost)) return draft;
+  if (draftIsEmpty(draft)) return lost;
+  return append({ text: lost.text, truncated: lost.truncated || draft.truncated, leftOut: lost.leftOut || draft.leftOut }, draft.text);
+}
+
 function append(draft: InputDraft, text: string): InputDraft {
   if (draft.text.length + text.length > MAX_DRAFT_CHARS) return draft.truncated ? draft : { ...draft, truncated: true };
   return { ...draft, text: draft.text + text };

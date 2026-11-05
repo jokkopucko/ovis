@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { layoutTopology, paneContextPress, soloPane, splitPath, splitRatioAt } from "./paneCanvas.ts";
+import { CRAMPED_QUERY, layoutTopology, loneTabHidden, paneContextPress, soloPane, splitPath, splitRatioAt } from "./paneCanvas.ts";
 import type { PaneLayoutSnapshot } from "../../shared/protocol.ts";
 
 const layout: PaneLayoutSnapshot = {
@@ -53,5 +53,14 @@ describe("the pane a tab shows alone", () => {
     const zoomed = { ...layout, zoomed: true, focused_pane_id: "w1:p2" };
     expect(soloPane(zoomed, panes, "w1:p1", false)).toBe("w1:p2");
     expect(soloPane(zoomed, panes, "w1:p1", true)).toBe("w1:p2");
+  });
+});
+
+describe("the compact-height tab strip", () => {
+  it("leaves out only a lone tab through the 700px phone-height ceiling", () => {
+    expect(CRAMPED_QUERY).toBe("(max-width: 768px) and (max-height: 700px)");
+    expect(loneTabHidden(true, 1)).toBe(true);
+    expect(loneTabHidden(true, 2)).toBe(false);
+    expect(loneTabHidden(false, 1)).toBe(false);
   });
 });

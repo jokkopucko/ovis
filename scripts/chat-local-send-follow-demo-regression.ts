@@ -90,11 +90,14 @@ const wheelUp = async (page: Page, by = 900): Promise<void> => {
   assert.ok(view !== null);
   await page.mouse.move(view.x + view.width / 2, view.y + view.height / 2);
   for (let moved = 0; moved < by; moved += 120) {
-    const before = (await geometry(page)).scrollTop;
+    // Measured as the distance from the end: rows above the view that the list measures meanwhile
+    // raise scrollTop by their growth to keep the reader's rows in place, which can undo a notch's
+    // move in scrollTop but never in that distance.
+    const before = (await geometry(page)).gap;
     await page.mouse.wheel(0, -120);
-    await page.waitForFunction((top) => {
+    await page.waitForFunction((gap) => {
       const node = document.querySelector<HTMLElement>(".chat-view");
-      return node !== null && node.scrollTop < top - 20;
+      return node !== null && node.scrollHeight - node.clientHeight - node.scrollTop > gap + 20;
     }, before, WAIT);
   }
   await frames(page);
@@ -237,6 +240,51 @@ try {
         };
         // gates are always released, so a failed assertion never leaves a held read behind it
         const releaseAll = (): Promise<unknown> => lab(page, (l) => { l.holdReceipts = false; l.refuse = null; l.uncertain = null; return [l.releaseReceipts(), l.releaseReads()]; });
+
+        // 0. a reader at the end sends: the faded bubble is painted at the end, wholly above the
+        // composer, until its turn is read. The bubble is the chat's footer, no row, and the list's
+        // scroll to the end is aimed at the footer it measured before the bubble came.
+        try {
+          step = "a sent message's bubble is painted at the end: the reader follows the end";
+          await settled(page);
+          await lab(page, (l) => { l.holdReads = true; });
+          // Each painted frame as its requestAnimationFrame saw it, or as a ResizeObserver callback
+          // of that frame left it (rAF, layout, ResizeObserver, paint). This observer is made after
+          // the chat's own, so it runs after them.
+          await page.evaluate(() => {
+            const view = document.querySelector<HTMLElement>(".chat-view")!;
+            const look = () => {
+              const bubble = view.querySelector(".chat-sent-waiting-list");
+              return { gap: Math.round(view.scrollHeight - view.clientHeight - view.scrollTop), below: bubble === null ? null : Math.round(bubble.getBoundingClientRect().bottom - view.getBoundingClientRect().bottom) };
+            };
+            const painted: { gap: number; below: number | null }[] = [];
+            let frame = look();
+            const observer = new ResizeObserver(() => { frame = look(); });
+            observer.observe(view.querySelector(".chat-virtual-footer")!);
+            let id = 0;
+            const tick = () => { painted.push(frame); frame = look(); id = requestAnimationFrame(tick); };
+            id = requestAnimationFrame(tick);
+            Object.assign(window, { paintedFrames: painted, stopPainted: () => { cancelAnimationFrame(id); observer.disconnect(); painted.push(frame); } });
+          });
+          const text = "Local follow: the bubble at the end";
+          await send(text);
+          await page.locator(".chat-sent-waiting-list").waitFor(WAIT);
+          await page.waitForFunction(() => (window as unknown as { paintedFrames: { below: number | null }[] }).paintedFrames.filter((frame) => frame.below !== null).length >= 10, undefined, WAIT);
+          const painted = await page.evaluate(() => {
+            const w = window as unknown as { paintedFrames: { gap: number; below: number | null }[]; stopPainted: () => void };
+            w.stopPainted();
+            return w.paintedFrames.filter((frame) => frame.below !== null);
+          });
+          const short = painted.filter((frame) => frame.gap > 1 || frame.below! > 1);
+          assert.deepEqual(short, [], `no frame paints the bubble short of the end or under the composer (${JSON.stringify(painted)})`);
+          await shot(page, "local-follow-1280-dark-bubble");
+          step = "a sent message's bubble is painted at the end: its turn takes its place";
+          await lab(page, (l) => l.releaseReads());
+          await latestShows(page, text);
+          await latestShows(page, REPLY);
+          record("a sent message's bubble is painted at the end, wholly above the composer", { frames: painted.length, gaps: [...new Set(painted.map((frame) => frame.gap))] });
+        } finally { await releaseAll(); }
+        await idle(page);
 
         // 1. accepted immediate local send resumes follow
         try {

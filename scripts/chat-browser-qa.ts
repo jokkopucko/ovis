@@ -40,7 +40,7 @@ try {
   add({ type: "function_call_output", call_id: "c1", output: "clean" }, 3);
   add({ type: "function_call", name: "exec_command", call_id: "c2", arguments: '{"cmd":"bun test"}' }, 4);
   add({ type: "function_call_output", call_id: "c2", output: "Process exited with code 1\n1 fail" }, 5);
-  add(message("assistant", answer, "final_answer"), 8);
+  // the turn is at work: its answer comes later
   persist();
   // A detected fixture process keeps native descriptor evidence for the rollout;
   // the ignored path field of a manual lifecycle report is not a session binding.
@@ -76,7 +76,7 @@ try {
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(paneId)}`);
   await page.locator(".conn-live").waitFor();
   const log = page.locator(`.pane-frame[data-layout-pane="${paneId}"]`).getByRole("log");
-  await log.getByText(answer, { exact: true }).waitFor();
+  await log.getByText("I am checking the transcript.", { exact: true }).waitFor();
   assert.equal(await log.locator(".chat-turn-user").count(), 1);
   assert.equal((await log.innerText()).includes("PRIVATE"), false);
   const modelInfo = page.getByLabel("Model and reasoning");
@@ -103,26 +103,34 @@ try {
   const work = log.locator(".work-block-head");
   const report = (state: "working" | "idle") => herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state });
   const head = (expanded: boolean, title: string) => log.locator(`.work-block-head[aria-expanded="${expanded}"]`).filter({ hasText: title });
-  await head(false, "Worked for 7s").waitFor();
   await report("working");
   await head(true, "Working…").waitFor();
   assert.equal(await log.locator(".work-block.is-folded").count(), 0, "the running turn's work is open");
-  await report("idle");
-  await head(false, "Worked for 7s").waitFor();
   // working inside the block is a choice to keep it: the fold must not take a focused row away
-  await report("working");
-  await head(true, "Working…").waitFor();
   // the row reads as verb + object (#457); its tool id is the title
   const toolRow = log.getByRole("button", { name: "Ran git status", exact: true });
   await toolRow.click();
   await log.getByText("git status", { exact: true }).last().waitFor();
+  // the answer ends the turn, then the pane rests
+  add(message("assistant", answer, "final_answer"), 8); persist();
+  await log.getByText(answer, { exact: true }).waitFor();
   await report("idle");
   await head(true, "Worked for 7s").waitFor();
   assert.equal(await toolRow.evaluate((node) => node === document.activeElement), true, "the row the reader opened keeps focus when the turn settles");
   await log.getByText("git status", { exact: true }).last().waitFor();
+  // the answer landed while the pane still worked: the head held for the next turn (seen or not)
+  // stays until the idle status arrives, and it is a work-block head too
+  await log.locator(".chat-activity, .chat-activity-reserved").waitFor({ state: "detached" });
   await work.click();
   await head(false, "Worked for 7s").waitFor();
-  console.log("PASS the running turn's work is open, folds when it settles, and stays open under a reader working inside it");
+  // the agent works again with no new row yet (a turn it began by itself): the turn that ended on its
+  // answer stays finished, and the Working head under it stands for the new one
+  await report("working");
+  await log.locator(".chat-activity .work-block-title", { hasText: "Working…" }).waitFor();
+  assert.equal(await head(false, "Worked for 7s").count(), 1, "the finished turn is not opened again");
+  await report("idle");
+  await log.locator(".chat-activity").waitFor({ state: "detached" });
+  console.log("PASS the running turn's work is open, stays open under a reader working inside it, and is not opened again once it ended on its answer");
   assert.equal(await work.getAttribute("aria-expanded"), "false", "a settled turn folds its work: only a running turn is open");
   assert.equal(await log.locator(".work-block.is-folded").count(), 1);
   assert.match(await work.innerText(), /Worked for 7s/);

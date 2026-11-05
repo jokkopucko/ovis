@@ -12,6 +12,16 @@ export function sidebarPinKey(machineId: string, paneId: string): string {
   return `${machineId}:${paneId}`;
 }
 
+/**
+ * The pins after herdr moved a pane under a new ID (#1503): its pin keeps its place under the new ID. The
+ * list itself when the pane had none.
+ */
+export function movedSidebarPins(keys: readonly string[], machineId: string, from: string, to: string): readonly string[] {
+  const before = sidebarPinKey(machineId, from), after = sidebarPinKey(machineId, to);
+  if (!keys.includes(before)) return keys;
+  return [...new Set(keys.map((key) => key === before ? after : key))];
+}
+
 /** what follows the PC in a workspace's key: herdr's pane ids never start with it */
 const WORKSPACE_MARK = "workspace:";
 
@@ -60,6 +70,35 @@ export function loadSidebarPins(): string[] {
     const parsed: unknown = JSON.parse(value);
     return Array.isArray(parsed) ? [...new Set(parsed.filter((key): key is string => typeof key === "string" && key.length > 0))] : [];
   } catch { return []; }
+}
+
+const SHARED_KEY = "ovis:sidebar-pins-shared";
+
+/**
+ * The pins this browser last knew the server to hold (lib/preferencesSync.ts), with the revision of
+ * the document that held them; null while it has known none. Kept with the pins, so a page opened
+ * again tells its own pins from ones removed elsewhere meanwhile, instead of sending them back as new.
+ * `stateId` is the server's state folder (absent from a server too old to name it): a folder that
+ * started over is another server, whatever revision it has reached.
+ */
+export interface SharedPins { pins: string[]; revision: number; stateId?: string }
+
+export function loadSharedPins(): SharedPins | null {
+  try {
+    const value = storage()?.getItem(SHARED_KEY);
+    if (value === undefined || value === null) return null;
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== "object" || parsed === null || !("pins" in parsed) || !("revision" in parsed) || !Array.isArray(parsed.pins) || typeof parsed.revision !== "number") return null;
+    const stateId = "stateId" in parsed && typeof parsed.stateId === "string" ? parsed.stateId : undefined;
+    return { pins: parsed.pins.filter((key): key is string => typeof key === "string" && key.length > 0), revision: parsed.revision, ...(stateId === undefined ? {} : { stateId }) };
+  } catch { return null; }
+}
+
+export function saveSharedPins(shared: SharedPins | null): void {
+  try {
+    if (shared === null) storage()?.removeItem(SHARED_KEY);
+    else storage()?.setItem(SHARED_KEY, JSON.stringify(shared));
+  } catch { /* storage denied: the next page starts as one that has known none */ }
 }
 
 export function saveSidebarPins(keys: readonly string[]): void {

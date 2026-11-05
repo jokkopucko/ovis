@@ -17,8 +17,10 @@
   overflow-anchor: none;
 }
 
+/* the view's padding, drawn inside the transcript: --chat-edge (ChatView.css) keeps the page's
+   spacing where the transcript's own follows the chat's text size */
 .chat-transcript.chat-transcript-virtual {
-  width: min(calc(100% - 2 * var(--space-4)), var(--chat-w));
+  width: min(calc(100% - 2 * var(--chat-edge)), var(--chat-w));
   display: block;
   min-height: 100%;
   gap: 0;
@@ -33,11 +35,11 @@
 }
 
 .chat-virtual-header {
-  padding-top: calc(var(--space-4) + var(--header-over, 0px));
+  padding-top: calc(var(--chat-edge) + var(--header-over, 0px));
 }
 
 .chat-virtual-footer {
-  padding-bottom: calc(var(--space-5) + var(--composer-over, 0px));
+  padding-bottom: calc(var(--chat-edge-end) + var(--composer-over, 0px));
 }
 
 .chat-new-messages.chat-virtual-jump {

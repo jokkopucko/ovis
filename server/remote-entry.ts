@@ -93,6 +93,7 @@ try {
     server.stop();
     throw new Error(`This bridge stopped because it was not registered (descriptor ${descriptor})`);
   }
+  server.warmAgentCatalog();
   const close = () => { registration.close(); server.stop(); setTimeout(() => process.exit(0), 2000); };
   process.on("SIGTERM", close);
   process.on("SIGINT", close);

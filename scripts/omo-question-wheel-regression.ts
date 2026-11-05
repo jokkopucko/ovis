@@ -228,6 +228,23 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       }
       assert.equal(reports() - reportsBefore, 6, "a trackpad's small steps report one wheel per row");
       console.log("PASS trackpad-sized pixel wheels report one wheel per row of travel");
+      // Holding Ctrl does not speed an application's wheel up, as in xterm.js 5.5, where only Alt
+      // did: 6.0 multiplies by fastScrollSensitivity under Alt or Ctrl (#2336). Each event sends at
+      // most one report, once the travel adds up to a row: the same 12 steps travel 6.6 rows, plus
+      // under one row the earlier steps left, so 6 or 7 reports; five times faster, all 12 report.
+      // A later wheel down marks the end, since the reports reach the program in order. Ctrl adds
+      // 16 to the button.
+      const ctrlReports = () => (readFileSync(log, "utf8").match(/\x1b\[<80;/g) ?? []).length;
+      const fastBefore = ctrlReports();
+      for (let sent = 0; sent < 12; sent += 1) await screen.dispatchEvent("wheel", { deltaY: -rowPx * 0.55, deltaMode: 0, ctrlKey: true, bubbles: true, cancelable: true });
+      await screen.dispatchEvent("wheel", { deltaY: rowPx * 3, deltaMode: 0, bubbles: true, cancelable: true });
+      for (const deadline = Date.now() + 10_000; !/\x1b\[<65;/.test(readFileSync(log, "utf8"));) {
+        if (Date.now() > deadline) throw new Error("the closing wheel down never reached the program");
+        await Bun.sleep(25);
+      }
+      const ctrlSent = ctrlReports() - fastBefore;
+      assert.ok(ctrlSent >= 6 && ctrlSent <= 7, `12 Ctrl-held steps of 0.55 rows report one wheel per row, 6 or 7, not ${ctrlSent}`);
+      console.log("PASS Ctrl-held wheels report at the normal speed");
     }
   }
   assert.deepEqual(errors, []);

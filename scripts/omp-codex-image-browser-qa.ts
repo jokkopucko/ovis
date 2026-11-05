@@ -45,6 +45,8 @@ const page = (source: "omp-transcript" | "codex-transcript", path: string): Conv
   return { source, history_id: "fixture", cursor: null, turns, metadata };
 };
 const served: string[] = [];
+const mentionedPath = "/Users/fixture/Library/Mobile Documents/notes/.ovis/paste-20261103-065352-8f69b25b.png";
+const mentionedReads: URL[] = [];
 
 /**
  * The size of every picture `selector` matches, once Chrome has decoded each one: loading="lazy"
@@ -83,6 +85,12 @@ try {
   assert.ok(build.success, String(build.logs));
   server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/fs/file") {
+      mentionedReads.push(url);
+      assert.equal(url.searchParams.get("path"), mentionedPath);
+      assert.equal(url.searchParams.get("pane_id"), "a");
+      return new Response(Buffer.from(attached, "base64"), { headers: { "content-type": "image/png" } });
+    }
     if (url.pathname === "/api/pane/conversation/image") {
       // answered by the endpoint's own readers, from the files as the agents wrote them
       const ref = url.searchParams.get("ref") ?? "";
@@ -149,6 +157,27 @@ try {
   if (evidence) await codexView.screenshot({ path: join(evidence, "codex-tool-picture-desktop.png"), fullPage: true });
   await close(codexView);
   console.log("PASS a Codex tool's picture loads once its row is opened, decoded from the endpoint's bytes");
+
+  // Composer uploads are plain @paths in the transcript, including spaces in an iCloud cwd.
+  const mentioned: ConversationResponse = { source: "codex-transcript", history_id: "fixture", cursor: null, turns: [
+    { role: "user", ts: null, parts: [{ kind: "text", text: `@${mentionedPath} Can you check this image?` }] },
+    { role: "assistant", ts: null, parts: [{ kind: "text", text: "A blue square." }] },
+  ] };
+  for (const width of [1200, 390]) {
+    const view = await open(mentioned, { width, height: 844 }, width === 390);
+    assert.deepEqual(await decoded(view, ".chat-turn-user .chat-user-images img"), [[32, 32]]);
+    await view.locator(".chat-user-image").click();
+    const dialog = view.getByRole("dialog", { name: "Image viewer" });
+    await dialog.waitFor();
+    assert.equal(await dialog.getByRole("link", { name: "Download", exact: true }).getAttribute("download"), "paste-20261103-065352-8f69b25b.png");
+    await view.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+    assert.ok(await view.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    if (evidence) await view.screenshot({ path: join(evidence, `spaced-image-mention-${width}.png`), fullPage: true });
+    await close(view);
+  }
+  assert.ok(mentionedReads.length >= 2);
+  console.log("PASS spaced attachment paths decode and open the image viewer at desktop and phone widths");
 
   // a phone: the same prompts and line fit the screen
   const phone = await open(omp, { width: 390, height: 844 }, true);

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { ReaderContext } from "./registry.ts";
 import type { InteractionPlan } from "./interaction-plan.ts";
 import type { PiAskUserForm } from "../pi-ask-bridge.ts";
+import type { NativeSteps } from "./step-navigate.ts";
 
 /**
  * A parser that several readers call on the same screen, run once per read: the readers of one
@@ -126,6 +127,8 @@ export type ParsedPrompt = InteractivePrompt & {
   responder: Responder;
   /** Stable question identity across the folded widget and the expanded form. */
   omoQuestion?: { call: string; index: number };
+  /** The form's questions as its own keys move between them without answering (dialogs/step-navigate.ts). */
+  nativeSteps?: NativeSteps;
   openCodeForm?: {
     formId: string;
     fieldKey: string;
@@ -139,6 +142,8 @@ export type ParsedPrompt = InteractivePrompt & {
   };
   /** Pi's active tab, from colors verified against the live detection screen by the caller. */
   piAskForm?: { identity: string; index: number };
+  /** Claude's AskUserQuestion tab shown, from the tab bar's colors (claude.ts claudeTabSteps); absent without them. */
+  claudeTabs?: { identity: string; index: number };
   /** @eko24ive/pi-ask's ask_user form, as the web UI's pi extension reports it (server/pi-ask-bridge.ts). */
   piAskUser?: PiAskUserForm;
   /** Pi's custom row owns the inline editor, rather than only a selected menu row. */
@@ -148,6 +153,8 @@ export type ParsedPrompt = InteractivePrompt & {
   piQuestionnaireInputRows?: string[];
   /** omp says it cut the question (server/omp-ask.ts): it fills the panel's four rows and the footer offers to expand it */
   ompQuestionCut?: true;
+  /** omp: the pane's one open ask call this card was read under (session and call id, omp-ask.ts), checked again before each key */
+  ompCall?: string;
   /** Claude's /effort: the state its Ultracode switch shows, null without one; checked before `s`, never sent */
   claudeUltracode?: boolean | null;
   menuLabels: string[];
@@ -298,7 +305,7 @@ export function finishPrompt(
   draft: PromptDraft,
   internal: Omit<ParsedPrompt, keyof InteractivePrompt>,
   /** fields as the id reads them, where that is not as the card shows them (a fallback card's ticking working line) */
-  hashed: Partial<Pick<InteractivePrompt, "title" | "question" | "body" | "steps" | "can_step_back" | "default_custom_text">> & { call?: string } = {},
+  hashed: Partial<Pick<InteractivePrompt, "title" | "question" | "body" | "steps" | "can_step_back" | "can_step_next" | "default_custom_text">> & { call?: string } = {},
 ): ParsedPrompt {
   // the card in English, field for field where the draft had them: the id reads the same words as ever
   const input: Omit<InteractivePrompt, "id" | "agent"> = {
@@ -349,6 +356,7 @@ export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
     ...(parsed.steps ? { steps: parsed.steps } : {}),
     ...(parsed.answers ? { answers: parsed.answers } : {}),
     ...(parsed.can_step_back ? { can_step_back: parsed.can_step_back } : {}),
+    ...(parsed.can_step_next ? { can_step_next: parsed.can_step_next } : {}),
     ...(parsed.default_option_index !== undefined && parsed.default_option_index !== null ? { default_option_index: parsed.default_option_index } : {}),
     ...(parsed.default_option_indices ? { default_option_indices: parsed.default_option_indices } : {}),
     ...(parsed.default_custom_text ? { default_custom_text: parsed.default_custom_text } : {}),
@@ -502,6 +510,13 @@ export const PI_ROW_RE = /^([\u2192\u276f\u279c])?\s*(?:[\u2713\u2714]\s+)?(\S.*
  * row once another one is current, so the position is read rather than assumed.
  */
 export const PI_MODEL_HINT_RE = /enter to select\s*·\s*ctrl\+s to set as default\s*·\s*escape\/ctrl\+c to cancel/i;
+
+/**
+ * A composer or a shell's prompt: one starting with its mark (`❯`, `$ `, oh-my-zsh's `➜`), or ending
+ * with it (`user@host:~/app$`). Never an ending `%`: a usage status ends with one (`usage 12%`), so
+ * zsh's `host%` prompt, the rarer case, is not recognised.
+ */
+export const PROMPT_LINE_RE = /^(?:[❯›>➜]|[$#](?:\s|$))|[❯›>$#]$/u;
 
 /** pi ticks the model answering now, and marks the one it starts on with `· default` */
 const PI_MODEL_CURRENT_RE = /[\u2713\u2714]/;

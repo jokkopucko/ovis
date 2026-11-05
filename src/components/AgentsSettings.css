@@ -1,0 +1,240 @@
+/* Settings → Agents (AgentsSettings): a row per agent of the PC, other accounts, installs, plan limits */
+.agents-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.agents-head > h3 {
+  margin: 0;
+}
+
+.agents-head .btn,
+.agents-detail-head .btn,
+.agents-row-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agents-head .btn svg,
+.agents-detail-head .btn svg,
+.agents-row-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.agents-card {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agents-item + .agents-item {
+  border-top: var(--hairline) solid var(--border);
+}
+
+/* the row's head: one toggle (mark, name, state), the one action it may have, the chevron */
+.agents-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-4) var(--space-2) 0;
+  cursor: pointer;
+}
+
+.agents-toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) 0 var(--space-2) var(--space-4);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.agents-toggle > .agent-mark {
+  display: inline-flex;
+  flex: none;
+}
+
+.agents-summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agents-summary-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.agents-version {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.agents-state {
+  display: block;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.agents-state.is-ok::before,
+.agents-state.is-warn::before,
+.agents-state.is-none::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: -2px var(--space-2) 0 0;
+  border-radius: var(--radius-pill);
+  vertical-align: middle;
+}
+
+.agents-state.is-ok::before {
+  background: var(--status-done);
+}
+
+.agents-state.is-warn {
+  color: var(--danger-text);
+}
+
+.agents-state.is-warn::before {
+  background: var(--status-blocked);
+}
+
+.agents-state.is-none::before {
+  box-shadow: inset 0 0 0 1.5px var(--text-dim);
+}
+
+.agents-summary .usage-sign-in-again {
+  flex: none;
+}
+
+.agents-row-action {
+  flex: none;
+}
+
+.agents-chevron {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+  transition: transform var(--dur-fast) ease;
+}
+
+.agents-toggle[aria-expanded="true"] ~ .agents-chevron {
+  transform: rotate(180deg);
+}
+
+/* the open row lines up under the name, past the mark */
+.agents-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 0 var(--space-4) var(--space-4) calc(var(--space-4) + 22px + var(--space-3));
+}
+
+.agents-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.agents-accounts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agents-details .agents-accounts,
+.agents-detail-card {
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+
+.agents-detail-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.agents-note {
+  margin: var(--space-2) 0 0;
+}
+
+/* Other accounts' groups sit under their own heading: no divider over each */
+[data-section="other-accounts"] > .usage-provider {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.agents-limits-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Install another agent: shut until asked, then the setup guide's tiles (AgentTile.css) */
+.agents-more > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-dim);
+  cursor: pointer;
+  list-style: none;
+}
+
+.agents-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agents-more-chevron {
+  width: 16px;
+  height: 16px;
+  transition: transform var(--dur-fast) ease;
+}
+
+.agents-more[open] .agents-more-chevron {
+  transform: rotate(90deg);
+}
+
+.settings-agent-error {
+  margin: var(--space-2) 0 0;
+  color: var(--status-blocked);
+}
+
+@media (max-width: 640px) {
+  .agents-summary {
+    gap: var(--space-2);
+    padding-right: var(--space-3);
+  }
+
+  .agents-toggle {
+    padding-left: var(--space-3);
+  }
+
+  .agents-details {
+    padding: 0 var(--space-3) var(--space-3);
+  }
+
+  .agents-row-action-label {
+    display: none;
+  }
+}

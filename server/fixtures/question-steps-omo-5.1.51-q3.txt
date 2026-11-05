@@ -1,0 +1,41 @@
+
+ Call ask_user_question exactly once with waitForAnswer true and three single-choice questions: Color (Red/Blue), Size
+ (Small/Large), Shape (Circle/Square). Do nothing else.
+
+
+
+ todo init (1 phase, 1 task)
+ Ask: Call ask_user_question exactly once with waitForAnswer true and three single-choice questions: Color (Red/Blue),
+ Size (Small/Large), Shape (Circle/Square). Do nothing else.
+ I. Question
+   [•] Ask user for Color, Size, and Shape preferences
+
+
+ I read this as ask three preference questions and wait for answers - no implementation, just collect the user's
+ choices. I'll stop when the user answers all three.
+
+
+ [Color] [Size] [Shape] wait for answer
+
+
+ Tip: Press esc to abort the current turn and restore queued messages to the editor.
+ ↳ Want the full story on any tip? Ask about it: the give-me-tips skill has the tour.
+
+ Todo
+ Question
+ [•] Ask user for Color, Size, and Shape preferences
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Ask user · 30m
+   Color    Size  → Shape    Submit
+ Which shape do you prefer?
+ → 1. Circle
+   2. Square
+   Type your own answer...
+ Submit (0/3 answered) - Enter advances
+ ↑↓ move  1-9 select  space select  enter next  tab next question  c comment  esc cancel
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.cache/qs-capture • CH55.9% • $0.049 • 26K/200K (12.8%) (auto)      (anthropic) claude-haiku-4-5-20251001 • effort off
+(😺 OmO Native by Q Kim)
+

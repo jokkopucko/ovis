@@ -5,7 +5,7 @@
 <h1 align="center">Ovis</h1>
 
 <p align="center">
-  <strong>모든 코딩 에이전트를, 모든 화면에서.</strong>
+  <strong>휴대폰과 브라우저에서 쓰는 Herdr.</strong>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
   <a href="#docs">문서</a>
 </p>
 
-Ovis는 내 컴퓨터의 코딩 에이전트를 채팅으로 보여 주고, 아무 브라우저, Mac 앱, 폰에서 클릭이나 탭으로 답하게 합니다. [herdr](https://github.com/herdrdev/herdr)의 클라이언트이며, 이전 이름은 herdr web UI입니다.
+Ovis는 내 컴퓨터의 코딩 에이전트를 폰, 아무 브라우저, Mac 앱으로 가져옵니다. 대부분의 에이전트는 탭이나 클릭으로 답하는 채팅이 되고, 지원하는 요청과 승인은 카드로 오며, 알림을 켜 두면 에이전트가 나를 기다릴 때 푸시 알림이 옵니다. [herdr](https://github.com/herdrdev/herdr)와 [Herdr 데스크톱 앱의 터미널](docs/guide.md#herdr-app-terminals)을 위한 클라이언트이며, 이전 이름은 herdr web UI입니다.
 
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/hero.webp" alt="데모에서 녹화한 Ovis 화면: 데스크톱 브라우저에서 Claude Code에 후속 메시지를 보내자 턴이 단계별로 진행되고, 이어서 데스크톱과 폰이 나란히 나와 git push origin feat/export-guard 실행을 묻는 Codex의 Allow command? 카드에서 폰으로 Yes를 누르면 두 화면에서 함께 카드가 닫히고, 마지막으로 release 탭을 누르면 셸 pane이 git log와 bun test를 실행하는 실제 터미널로 열립니다."></a>
@@ -55,22 +55,22 @@ Ovis는 내 컴퓨터의 코딩 에이전트를 채팅으로 보여 주고, 아�
 - **Android:** Google Play 베타, [ovis.sh/ko/beta](https://ovis.sh/ko/beta/)에서.
 - **브라우저:** 앱 없이, 페이지를 홈 화면에 추가합니다.
 
-컴퓨터와 폰 모두 Tailscale을 켜고, 컴퓨터에 뜬 QR 코드를 스캔하면 연결됩니다.
+연결하려면 **Settings → Phone & devices**에서 종단 간 암호화되는 **Ovis 릴레이**를 켜고, 그 QR 코드를 Ovis 앱으로 스캔하거나, 폰 카메라로 스캔해 폰 브라우저에서 Ovis를 여세요. 어디서든 되고, 폰에서 따로 설정할 것이 없습니다. [작동 방식 →](docs/guide.md#through-the-ovis-relay) Tailscale을 쓴다면 컴퓨터와 폰 모두 Tailscale을 켜고, 컴퓨터에 뜬 QR 코드를 스캔해도 됩니다.
 
 ## 할 수 있는 일
 
-- **herdr가 돌리는 에이전트라면 무엇이든.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok 등, 대부분 채팅으로 봅니다. [지원 에이전트 →](docs/guide.md#supported-agents)
-- **요청은 카드로.** 답을 보내기 전에 그 요청이 아직 유효한지 확인합니다.
+- **에이전트를 채팅으로.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok 등, 대부분 채팅으로 책상에서도 폰에서도. [지원 에이전트 →](docs/guide.md#supported-agents)
+- **요청과 승인은 카드로.** 지원하는 요청은 탭이나 클릭으로 답하고, 보내기 전에 그 요청이 아직 유효한지 확인합니다.
+- **푸시 알림.** 에이전트가 질문하거나 일을 끝내면, 앱이 닫혀 있어도 옵니다.
 - **실제 터미널이 클릭 한 번 거리에.** herdr가 보여 주는 그 pane 그대로이고, 폰에는 키 바가 붙습니다.
 - **모든 워크스페이스를 한 목록에.** 탭, 분할 pane, SSH로 붙인 다른 PC까지 보이고, 나를 기다리는 것은 표시됩니다.
-- **푸시 알림.** 에이전트가 질문하거나 일을 끝내면, 앱이 닫혀 있어도 옵니다.
 - **무료, MIT.** 내 컴퓨터에서 돌아가고, 가입할 계정이 없습니다.
 
 [전체 기능 →](docs/guide.md#features)
 
-**한계:** Ovis는 [herdr](https://github.com/herdrdev/herdr)와 켜져 있는 내 컴퓨터가 필요하고, 폰에서 그 컴퓨터에 닿아야 합니다(Tailscale, VPN, SSH 터널).
+**한계:** Ovis는 [herdr](https://github.com/herdrdev/herdr)와 켜져 있는 내 컴퓨터가 필요하고, 폰에서 그 컴퓨터에 닿아야 합니다(Ovis 릴레이, Tailscale, VPN, SSH 터널). Herdr 데스크톱 앱의 터미널은 Linux와 macOS에서만 됩니다.
 
-**개인정보:** 세션은 각 에이전트를 실행하는 컴퓨터에 남고, Ovis에는 자체 계정이나 호스팅 릴레이가 없습니다. 익명 사용 집계는 기본적으로 켜져 있으며, **Settings → About → Anonymous usage counts**에서 보내는 내용을 확인하고 끌 수 있습니다. `OVIS_TELEMETRY=0`으로도 끌 수 있습니다. [보내는 내용 →](docs/guide.md#anonymous-usage-counts)
+**개인정보:** 세션은 각 에이전트를 실행하는 컴퓨터에 남고, Ovis에는 계정이 없습니다. 직접 켜기 전까지 꺼져 있는 Ovis 릴레이는 어느 폰이 어느 PC에 어떤 주소에서 언제, 얼마나 주고받는지는 볼 수 있지만 내용은 읽지 못합니다([신뢰 모델](docs/relay.md#trust-model)). 익명 사용 집계는 기본적으로 켜져 있으며, **Settings → About → Anonymous usage counts**에서 보내는 내용을 확인하고 끌 수 있습니다. `OVIS_TELEMETRY=0`으로도 끌 수 있습니다. [보내는 내용 →](docs/guide.md#anonymous-usage-counts)
 
 <a id="docs"></a>
 

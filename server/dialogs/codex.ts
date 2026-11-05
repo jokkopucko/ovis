@@ -16,6 +16,9 @@ export const CODEX_QUEUE_HEADER_RE = /^(?:•\s*)?Queued follow-up inputs$/;
 
 const CODEX_QUEUE_POSITION_RE = /^(\d+) of (\d+)$/;
 
+// request_user_input's hint over several questions: `←/→ to navigate questions` (Codex 0.156 to 0.166)
+const CODEX_NAVIGATE_RE = /←\/→ to navigate questions/;
+
 // Codex's `/model` lists, by the footer of the row under the cursor (its keymap's own words): a
 // row that only opens the next list takes Enter, a row that picks takes `s` for this session and
 // Enter to save the pick as the default (`enter apply` on Ultra)
@@ -67,14 +70,21 @@ function parseCodexQuestion(screen: string): ParsedPrompt | null {
   const progress = lines.slice(Math.max(0, rows[0]!.lineIndex - 6), rows[0]!.lineIndex)
     .map(cleanLine).map((line) => line.match(/^Question (\d+)\/(\d+)/)).find(Boolean);
   const title = progress && progress[2] !== "1" ? own("Question {n} of {total}", { n: progress[1]!, total: progress[2]! }) : own("Question");
+  // several questions, and the hint says ←/→ move between them without answering: the card's Back and Next
+  const at = progress ? Number(progress[1]) - 1 : 0;
+  const total = progress ? Number(progress[2]) : 1;
+  const navigates = total > 1 && at < total && CODEX_NAVIGATE_RE.test(wrapped(lines, hintIndex));
   return finishPrompt("codex", {
     kind: "question", title, question, body: null, options,
     multi_select: false, custom_option_index: options.length,
+    ...(navigates ? { can_step_back: at > 0, can_step_next: at < total - 1 } : {}),
   }, {
+    ...(navigates ? { nativeSteps: { identity: `codex:${total}`, index: at, count: total, next: KEY.right, previous: KEY.left } } : {}),
     responder: "codex-question", menuLabels: rows.map((row) => row.label),
     selectedIndex: rows.findIndex((row) => row.selected), checkedOptionIndices: [], customMenuIndex: customIndex,
     rejectWithEscapeIndex: null,
-  });
+    // Back and Next come from the hint, which a narrow pane may cut: the same question keeps its id without them
+  }, { can_step_back: undefined, can_step_next: undefined });
 }
 
 /**

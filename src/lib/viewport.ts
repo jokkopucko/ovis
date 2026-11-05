@@ -1,5 +1,6 @@
 import { shouldSyncViewportOnResume } from "./viewportResume.ts";
-import { keyboardViewportReference } from "./keyboard.ts";
+import { keyboardTypingField, keyboardViewportReference } from "./keyboard.ts";
+import { keyboardControl } from "./keyboardControl.ts";
 
 /*
  * Sizes the shell to the VISUAL viewport. When the soft keyboard opens, iOS
@@ -55,10 +56,7 @@ root.append(topInset);
 // shrinks all three viewports, but not when a split view shrinks the large
 // viewport while leaving only its ordinary visual inset.
 const unobstructedHeights = new Map<number, { large: number; height: number }>();
-const typing = (element: Element | null): boolean =>
-  (element instanceof HTMLTextAreaElement && (!element.classList.contains("xterm-helper-textarea") || element.closest("[data-direct-typing]") !== null))
-  || (element instanceof HTMLInputElement && !["button", "checkbox", "radio", "range", "submit", "reset", "file", "color"].includes(element.type))
-  || (element instanceof HTMLElement && element.isContentEditable);
+const typing = keyboardTypingField;
 const syncKeyboard = (): void => {
   const width = window.innerWidth;
   const height = viewport?.height ?? window.innerHeight;
@@ -74,6 +72,9 @@ const syncKeyboard = (): void => {
     || !!viewport && Math.abs(viewport.width - document.documentElement.clientWidth) < 2 && reference - height > reference * 0.2);
   if (!visible) unobstructedHeights.set(width, { large, height: Math.max(reference, height) });
   root.toggleAttribute("data-keyboard", visible);
+  // the key bar's keyboard control reads this value with its tap word (lib/keyboardControl.ts):
+  // label and tap hold the user's word while the value is mid-animation
+  keyboardControl.measure(visible);
   if (visible && viewport) root.style.setProperty("--app-height", `${Math.round(height)}px`);
   else {
     // Only correct the standalone status region when the screen-to-CSS gap

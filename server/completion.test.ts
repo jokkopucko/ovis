@@ -132,6 +132,54 @@ describe("CompletionTracker", () => {
     expect(tracker.observe("p", "unknown", "claude")).toBe("done");
   });
 
+  it("on herdr-core, finishes only on the program's own working then idle, and keeps no badge without a report", () => {
+    const tracker = new CompletionTracker(null, () => null, () => true);
+    tracker.observe("reported", "working", "claude");
+    expect(tracker.observe("reported", "idle", "claude")).toBe("done");
+    // the program cleared its report: no badge kept from it
+    expect(tracker.observe("reported", "unknown", "claude")).toBe("unknown");
+
+    tracker.observe("cleared", "working", "claude");
+    expect(tracker.observe("cleared", "unknown", "claude")).toBe("unknown");
+    expect(tracker.observe("cleared", "idle", "claude")).toBe("idle");
+
+    // another identity's unknown right after work is not work invented for it
+    tracker.observe("handover", "working", "codex");
+    expect(tracker.observe("handover", "unknown", "claude")).toBe("unknown");
+
+    // a pause it reported, then idle: the user may have declined; no finish
+    tracker.observe("paused", "blocked", "claude");
+    expect(tracker.observe("paused", "idle", "claude")).toBe("idle");
+    tracker.observe("resumed", "blocked", "claude");
+    tracker.observe("resumed", "working", "claude");
+    expect(tracker.observe("resumed", "idle", "claude")).toBe("done");
+
+    // a report naming no program: nobody can say the idle is the same program's
+    tracker.observe("anonymous", "working", null);
+    expect(tracker.observe("anonymous", "idle", null)).toBe("idle");
+
+    // straight from one program's work to another's idle: not a finish of either
+    tracker.observe("direct", "working", "codex");
+    expect(tracker.observe("direct", "idle", "claude")).toBe("idle");
+
+    // a report cleared while subscriptions moved is news on replay, and clears the finish
+    tracker.observe("replay", "working", "claude");
+    expect(tracker.observe("replay", "idle", "claude")).toBe("done");
+    expect(tracker.replayed("replay", "unknown", { before: "idle", agent: "claude" })).toBe(true);
+    expect(tracker.observe("replay", "unknown", "claude")).toBe("unknown");
+  });
+
+  it("on herdr-core, a resync after lost events finishes only the program that reported the work", () => {
+    const tracker = new CompletionTracker(null, () => null, () => true);
+    tracker.observe("same", "working", "claude");
+    tracker.observe("other", "working", "codex");
+    tracker.observe("cleared", "working", "claude");
+    tracker.resync([{ pane_id: "same", agent_status: "idle", agent: "claude" }, { pane_id: "other", agent_status: "idle", agent: "claude" }, { pane_id: "cleared", agent_status: "unknown", agent: "claude" }], new Set());
+    expect(tracker.observe("same", "idle", "claude")).toBe("done");
+    expect(tracker.observe("other", "idle", "claude")).toBe("idle");
+    expect(tracker.observe("cleared", "unknown", "claude")).toBe("unknown");
+  });
+
   it("drops a derived finish when its agent leaves or another agent replaces it", () => {
     const tracker = new CompletionTracker();
     tracker.observe("left", "working", "codex");

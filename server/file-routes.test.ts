@@ -64,6 +64,28 @@ describe("file routes", () => {
     }
   });
 
+  it("prefers foreground_cwd for relative images even when pane.cwd has another copy", async () => {
+    const foreground = join(folder, "subproject");
+    mkdirSync(join(folder, "out"), { recursive: true });
+    mkdirSync(join(foreground, "out"), { recursive: true });
+    const parentImage = join(folder, "out", "diagram.svg");
+    const foregroundImage = join(foreground, "out", "diagram.svg");
+    const image = (label: string) => `<svg xmlns="http://www.w3.org/2000/svg"><title>${label}</title></svg>`;
+    writeFileSync(parentImage, image("pane cwd"));
+    writeFileSync(foregroundImage, image("foreground cwd"));
+    const get = spyOn(herdr, "paneGet").mockImplementation(async (paneId) => ({ pane_id: paneId, cwd: folder, foreground_cwd: foreground }) as unknown as Awaited<ReturnType<typeof herdr.paneGet>>);
+    try {
+      const stat = await fetch(url(`/api/fs/stat?pane_id=w1:p1&path=${q("./out/diagram.svg")}`));
+      expect(stat.status).toBe(200);
+      const info = await stat.json() as { path: string };
+      expect(info.path).toBe(foregroundImage);
+      const bytes = await fetch(url(`/api/fs/file?pane_id=w1:p1&path=${q(info.path)}`));
+      expect(await bytes.text()).toBe(image("foreground cwd"));
+    } finally {
+      get.mockRestore();
+    }
+  });
+
   it("answers a folder's project icon, or none", async () => {
     expect(await error(await fetch(url("/api/fs/favicon")))).toEqual([400, "missing_root"]);
     expect(await (await fetch(url(`/api/fs/favicon?root=${q(folder)}`))).json()).toMatchObject({ icon: { name: "favicon.ico", kind: "image" } });

@@ -15,6 +15,12 @@ describe("phonePlan", () => {
     expect(phonePlan(page, running({ state: "missing" }))).toEqual({ kind: "here", url: "https://pc.example.ts.net" });
   });
 
+  it("never offers the hosted relay shell's own address as this PC's, but the PC's Tailscale address when it has one", () => {
+    const shell = { protocol: "https:", hostname: "app.ovis.sh", origin: "https://app.ovis.sh", secure: true, shell: true };
+    expect(phonePlan(shell, running({ serving_url: "https://pc.example.ts.net", serve_command: null, serve_url: null }))).toEqual({ kind: "served", url: "https://pc.example.ts.net" });
+    expect(phonePlan(shell, null)).toEqual({ kind: "unknown" });
+  });
+
   it("treats localhost over HTTPS and any plain-HTTP page as not reachable from a phone", () => {
     expect(phonePlan({ protocol: "https:", hostname: "localhost", origin: "https://localhost:7317", secure: true }, null)).toEqual({ kind: "unknown" });
     expect(phonePlan({ protocol: "http:", hostname: "192.168.0.10", origin: "http://192.168.0.10:7317", secure: false }, running()).kind).toBe("command");

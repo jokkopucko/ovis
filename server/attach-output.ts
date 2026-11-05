@@ -59,34 +59,45 @@ export class AttachStartupProbes {
 }
 
 /**
- * Hold only a possible trailing takeover diagnostic until exit confirms it. Everything else
- * passes through unchanged, including the same words in the pane's normal screen output.
+ * Hold only a possible trailing takeover diagnostic's words until exit confirms it. Everything
+ * else passes through unchanged, including the same words in the pane's normal screen output.
+ * herdr's teardown before the words is the terminal's either way: it passes at once, and what
+ * of the diagnostic it began is remembered, so words in a later read still match however late.
  */
 export class AttachOutputTail {
+  /** the start of the diagnostic already passed on: its teardown, or part of it */
+  private passed = "";
+  /** the diagnostic's words after it, held */
   private tail = "";
 
   get pending(): boolean { return this.tail.length > 0; }
 
+  /** what is held is the whole diagnostic: only the exit that confirms it is still to come */
+  get complete(): boolean { return (this.passed + this.tail).startsWith(TAKEN); }
+
   push(data: string): string {
-    const text = this.tail + data;
+    const already = this.passed.length;
+    const text = this.passed + this.tail + data;
+    this.passed = "";
     this.tail = "";
+    let start = -1;
     const full = text.lastIndexOf(TAKEN);
-    if (full !== -1 && /^[\r\n]{0,4}$/.test(text.slice(full + TAKEN.length))) {
-      this.tail = text.slice(full);
-      return text.slice(0, full);
-    }
+    if (full !== -1 && /^[\r\n]{0,4}$/.test(text.slice(full + TAKEN.length))) start = full;
     // Reads may split at any byte in the teardown or diagnostic, including the first ESC.
-    for (let length = Math.min(text.length, TAKEN.length - 1); length > 0; length--) {
-      if (text.endsWith(TAKEN.slice(0, length))) {
-        this.tail = text.slice(-length);
-        return text.slice(0, -length);
-      }
+    else for (let length = Math.min(text.length, TAKEN.length - 1); length > 0; length--) {
+      if (text.endsWith(TAKEN.slice(0, length))) { start = text.length - length; break; }
     }
-    return text;
+    if (start === -1) return text.slice(already);
+    // the teardown goes out now; only the words after it wait
+    const words = start + Math.min(text.length - start, TEARDOWN.length);
+    this.passed = text.slice(start, words);
+    this.tail = text.slice(words);
+    return text.slice(already, words);
   }
 
   flush(taken = false): string {
-    const data = taken && this.tail.startsWith(TAKEN) ? TEARDOWN : this.tail;
+    const data = taken && this.complete ? "" : this.tail;
+    this.passed = "";
     this.tail = "";
     return data;
   }

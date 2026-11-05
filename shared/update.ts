@@ -46,6 +46,26 @@ export interface UpdateStatus {
    */
   port?: number;
   serving_url?: string | null;
+  /**
+   * Which builds this PC updates to: `stable` releases only, or also the `beta` builds CI publishes
+   * from green main. Absent from a supervisor older than the field, which offers releases only.
+   */
+  channel?: UpdateChannel;
+}
+
+/**
+ * `stable` takes `vX.Y.Z` releases only; `beta` also takes the `vX.Y.Z-beta.N` builds CI tags on
+ * main once its checks pass. Off (`stable`) unless the PC opts in.
+ */
+export type UpdateChannel = "stable" | "beta";
+
+/**
+ * The channel a setting names (`OVIS_UPDATE_CHANNEL`, or the `update-channel` file in the state
+ * dir): `beta` turns the beta builds on, `stable` off; anything else names none.
+ */
+export function readUpdateChannel(value: string | null | undefined): UpdateChannel | null {
+  const name = value?.trim().toLowerCase();
+  return name === "beta" || name === "stable" ? name : null;
 }
 
 export type UpdateErrorCode = "update_offer_changed";

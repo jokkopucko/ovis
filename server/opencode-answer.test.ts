@@ -27,6 +27,8 @@ async function fixture(run: (f: {
   readResponse(): Promise<Response>;
   read(): Promise<InteractivePrompt>;
   answer(prompt: InteractivePrompt, choice: Omit<PromptAnswer, "pane_id" | "prompt_id">, signal?: AbortSignal): Promise<Response>;
+  /** answers handlePromptRequest counted as reaching the agent (onAnswered) */
+  counted: { answers: number };
 }) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "opencode-answer-"));
   const path = join(root, "herdr.sock");
@@ -34,8 +36,10 @@ async function fixture(run: (f: {
   const session = "ses_fixture01";
   const url = new URL(`http://localhost/api/pane/prompt?pane_id=${paneId}`);
   const answerUrl = new URL("http://localhost/api/pane/prompt/answer");
-  const options = { openCodeStateDir: root };
+  const counted = { answers: 0 };
+  const options = { openCodeStateDir: root, onAnswered: () => { counted.answers += 1; } };
   const f = {
+    counted,
     serviceFile: join(root, "service.json"),
     working: () => promptWaitEnded(paneId),
     session: session as string | null, closed: false,
@@ -128,8 +132,12 @@ describe("OpenCode answer ordering", () => {
       await fixture(async (f) => {
         f.forms[0]!.fields.length = 1;
         const prompt = await f.read();
+        // a refused answer reached nothing, so it is not counted
+        expect((await f.answer({ ...prompt, id: `${prompt.id}-stale` }, { custom_text: "answered" })).status).toBe(409);
+        expect(f.counted.answers).toBe(0);
         expect((await f.answer(prompt, { custom_text: "answered" })).status).toBe(200);
         expect(f.replies).toHaveLength(1);
+        expect(f.counted.answers).toBe(1);
       });
       // the card's read and its answer both asked, and each asked for Windows too (opencode-service.test.ts)
       expect(asked.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -390,6 +398,17 @@ describe("OpenCode answer ordering", () => {
     });
   });
 
+  it("never submits for a Next, with or without an answer in the same body", async () => {
+    await fixture(async (f) => {
+      f.forms[0]!.fields.length = 1;
+      const card = await f.read();
+      expect((await f.answer(card, { step_next: true, custom_text: "first" })).status).toBe(400);
+      expect((await f.answer(card, { step_next: true })).status).toBe(400);
+      expect(f.replies).toEqual([]);
+      expect(f.counted.answers).toBe(0);
+    });
+  });
+
   it("saves unsent edits on backward navigation", async () => {
     await fixture(async (f) => {
       expect((await f.answer(await f.read(), { custom_text: "first" })).status).toBe(200);
@@ -399,6 +418,8 @@ describe("OpenCode answer ordering", () => {
       expect((await f.answer(await f.read(), { custom_text: "revised first" })).status).toBe(200);
       expect((await f.read()).default_custom_text).toBe("not submitted yet");
       expect(f.replies).toEqual([]);
+      // a saved step and a step back reach nothing upstream: no answer is counted
+      expect(f.counted.answers).toBe(0);
     });
   });
 

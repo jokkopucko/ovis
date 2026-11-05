@@ -1,0 +1,162 @@
+.connect-phone-dialog {
+  width: min(100%, 520px);
+}
+
+.connect-phone-dialog:focus {
+  outline: none;
+}
+
+.connect-phone-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow-y: auto;
+}
+
+/* the ways a phone connects: one card each, the chosen one outlined in the accent */
+.connect-phone-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2);
+}
+
+.connect-phone-choice {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.connect-phone-choice-button {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-3);
+  text-align: start;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+
+.connect-phone-choice-button:hover {
+  background: var(--bg-hover);
+}
+
+.connect-phone-choice-button[aria-pressed="true"] {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 var(--hairline) var(--accent);
+}
+
+.connect-phone-choice-label {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+}
+
+.connect-phone-choice-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+/* the relay's switch sits in its card's top corner, beside the label, not inside the button */
+.connect-phone-choice .settings-toggle {
+  position: absolute;
+  top: var(--space-3);
+  inset-inline-end: var(--space-3);
+}
+
+/* the label row is as tall as the switch's finger-sized box, so the hint starts under that box at the
+   card's full width and a tap on the hint never lands on the switch */
+.connect-phone-choice:has(.settings-toggle) .connect-phone-choice-label {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  min-height: calc(var(--touch-target) - var(--space-2));
+  margin-top: calc(var(--space-1) * -1);
+  padding-inline-end: calc(var(--touch-target) + var(--space-2));
+}
+
+.connect-phone-gate {
+  margin: 0;
+}
+
+/* the Connect a phone row: where a phone stands, then the relay's state on a line of its own */
+.settings-row .connect-phone-summary,
+.settings-row .relay-status {
+  display: block;
+}
+
+/* the identity reset is the relay's last and quietest action */
+.connect-phone-reset {
+  padding-top: var(--space-2);
+  border-top: var(--hairline) solid var(--border);
+}
+
+/* a phone stacks them, one full-width line each */
+@media (max-width: 640px) {
+  .connect-phone-choices {
+    grid-template-columns: 1fr;
+  }
+}
+
+.connect-phone-route,
+.connect-phone-relay,
+.connect-phone-code {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.connect-phone-route[hidden] {
+  display: none;
+}
+
+.connect-phone-route p {
+  margin: 0;
+}
+
+.connect-phone-route a,
+.connect-phone-how a {
+  color: var(--accent);
+}
+
+.connect-phone-route .relay-pairing {
+  display: flex;
+}
+
+.connect-phone-how {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.connect-phone-how p {
+  margin: 0;
+}
+
+/* the toggle stands alone here, with no sentence before it to hang its dot on */
+.connect-phone-how .settings-details-toggle::before {
+  content: none;
+}
+
+/* on a phone: this phone's own one-tap relay pairing, then the link for another device under a hairline */
+.connect-phone-self,
+.relay-pairing-phone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.relay-pairing-phone {
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}

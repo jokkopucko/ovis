@@ -1,4 +1,5 @@
 import { constants, fstatSync, closeSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { uptime } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { herdrRpc } from "./herdr/client.ts";
@@ -225,17 +226,35 @@ export function omoSessionFolder(cwd: string): string {
 }
 const sessionDir = (cwd: string, agentDir: string) => join(agentDir, "sessions", omoSessionFolder(cwd));
 
-// A holder's start is floored to the second (as `ps -o lstart`), ours is in clock ticks.
+// A holder's start is floored to the second (as `ps -o lstart`), ours is in clock ticks. omo
+// derives it from its own clock (now minus its runtime's uptime), and a runtime that comes up
+// late on a busy machine reads a start seconds after the kernel's (7 s seen, #2281). A reused
+// pid's leftover always starts earlier, so a record may start up to a minute late, but only when
+// it names this host's boot as its own (`bootAtMs`, which omo reads as we do here): a record from
+// another host sharing the store, from before a clock step, or without a boot keeps the 3 s bound
+// both ways.
 const HOLDER_START_TOLERANCE_MS = 3000;
+const HOLDER_START_LATE_MS = 60_000;
+
+/** This host's boot instant as omo records it: the wall clock minus uptime, in whole seconds. null if unreadable. */
+export function hostBootAt(now = Date.now()): number | null {
+  try {
+    return Math.round((now - uptime() * 1000) / 1000) * 1000;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * omo keeps no descriptor on its session file, but every process with a session open
  * publishes <session dir>/session-holders/<encoded id>/<pid>.json and removes it on
  * release (/new, /resume, exit). A crashed process leaves its record behind, so one
  * counts only for the live pid it names and, where our start time is readable, only
- * if it started when that pid did: a reused pid starts later.
+ * if it started when that pid did: a reused pid starts later than the crashed holder,
+ * so a record from before this pid's start is refused, and one up to a minute after it
+ * is this process's own, read late, when it was written on this host since its boot.
  */
-export function heldSessionIds(dir: string, pid: number, startedAt: number | null, cwd?: string): string[] {
+export function heldSessionIds(dir: string, pid: number, startedAt: number | null, cwd?: string, bootAt: number | null = hostBootAt()): string[] {
   const holders = join(dir, "session-holders");
   let names: string[] = [];
   try { names = readdirSync(holders); } catch { return []; }
@@ -245,7 +264,12 @@ export function heldSessionIds(dir: string, pid: number, startedAt: number | nul
       const record = JSON.parse(readFileSync(join(holders, name, `${pid}.json`), "utf8"));
       if (record?.pid !== pid) continue;
       if (cwd !== undefined && record.cwd !== cwd) continue;
-      if (startedAt !== null && !(typeof record.processStartedAtMs === "number" && Math.abs(record.processStartedAtMs - startedAt) <= HOLDER_START_TOLERANCE_MS)) continue;
+      if (startedAt !== null) {
+        if (typeof record.processStartedAtMs !== "number") continue;
+        const thisBoot = bootAt !== null && typeof record.bootAtMs === "number" && Math.abs(record.bootAtMs - bootAt) <= HOLDER_START_TOLERANCE_MS;
+        const lag = record.processStartedAtMs - startedAt;
+        if (lag < -HOLDER_START_TOLERANCE_MS || lag > (thisBoot ? HOLDER_START_LATE_MS : HOLDER_START_TOLERANCE_MS)) continue;
+      }
       ids.push(decodeURIComponent(name));
     } catch { /* this pid holds nothing here, or the record is unreadable */ }
   }

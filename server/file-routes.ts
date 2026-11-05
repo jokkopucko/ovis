@@ -76,8 +76,8 @@ async function fileRoute(request: Request, url: URL, pathname: string, { bridgeA
   // several files end in that name: the viewer lists them to choose from
   if ("candidates" in found) return jsonResponse({ error: { code: "ambiguous_path", message: "several files have that name", candidates: found.candidates } }, 409);
   // a page another PC's server asks for through its bridge is played from that server's address, which this one cannot name: it is drawn as before
-  const mediaSource = bridgeAuthorized ? null : pageMediaSource(requestHost, isSecureRequest(request), forwarded ? request.headers.get("x-forwarded-host") : null);
+  const mediaSource = bridgeAuthorized || (access.level === "full" && access.via === "relay") ? null : pageMediaSource(requestHost, isSecureRequest(request), forwarded ? request.headers.get("x-forwarded-host") : null);
   // its media plays only for the client address that rendered it, and ends with that device (file-view.ts)
   const media = mediaSource === null ? null : { source: mediaSource, client, device: access.level === "full" ? access.device?.id ?? null : null };
-  return pathname === "/api/fs/stat" ? jsonResponse(found.info) : await fileResponse(found.info, url.searchParams.get("download") === "1", url.searchParams.get("render") === "1", media, request, watch, found.within ?? null);
+  return pathname === "/api/fs/stat" ? jsonResponse(found.info) : await fileResponse(found.info, url.searchParams.get("download") === "1", url.searchParams.get("render") === "1", media, request, watch, found.within ?? null, access.level === "full" && access.via === "relay");
 }

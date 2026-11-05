@@ -1,6 +1,6 @@
 /**
- * An OpenCode pane's subagents, counted and listed as a Claude Code pane's are
- * (server/claude-subagents.ts), from the store the chat reads (server/opencode.ts).
+ * An OpenCode pane's subagents and background commands, counted and listed as a Claude Code
+ * pane's are (server/claude-subagents.ts), from the store the chat reads (server/opencode.ts).
  *
  * OpenCode 2 runs a subagent in a child session of the session that started it: a `session_v2`
  * row whose `parent_id` names that session, with `session_message` rows of its own (the
@@ -11,6 +11,11 @@
  * called again with its sessionID) starts another run, with rows after that one. A store
  * OpenCode 1.x wrote and 2.0 migrated has no idle rows: there a step that finished for anything
  * but its tool calls, or with an error, ended the run.
+ *
+ * A background command is not a child session: the session's own `shell` row carries it
+ * (`metadata.background`, its `shellID`, `command`, `status` and `exit`), the same rows the chat
+ * reads, so the list and the chat agree on it. It never counts for the turn: the parent is woken
+ * by its result, and does not wait on it.
  *
  * The runs belong to OpenCode's background service, not to the TUI in the pane: a service that
  * stopped without an idle row (a crash, a kill) took its runs with it, so a run last written
@@ -123,6 +128,8 @@ interface Scan {
   sessionId: string; now: number; live: boolean; serviceStart: number | null; detail: boolean;
   /** session_v2's columns, once read; a store with no child sessions has nothing to read */
   columns: Set<string> | null; after: number; paged: boolean;
+  /** the session's background commands, once read: `shell` rows with `background` metadata, as tasks */
+  shells: OmoTask[] | null; shellRunning: number;
   open: string[]; ended: { id: string; at: number }[];
   /** phase 2: the ids to read again, and how far (a page is taken only once all of it is read: one that failed is read again whole) */
   ids: string[] | null; reread: number; promptAt: number | null;
@@ -138,17 +145,86 @@ const WORK_STEP = 50;
 export const RUNNING_LIMIT = 1000;
 
 function newScan(sessionId: string, now: number, live: boolean, serviceStart: number | null, detail: boolean): Scan {
-  return { sessionId, now, live, serviceStart, detail, columns: null, after: 0, paged: false, open: [], ended: [], ids: null, reread: 0, promptAt: null, running: 0, turnRunning: 0, going: [], stopped: [], state: null, shown: [], work: new Map(), worked: 0, finished: false };
+  return { sessionId, now, live, serviceStart, detail, columns: null, after: 0, paged: false, shells: null, shellRunning: 0, open: [], ended: [], ids: null, reread: 0, promptAt: null, running: 0, turnRunning: 0, going: [], stopped: [], state: null, shown: [], work: new Map(), worked: 0, finished: false };
+}
+
+/** What one of a session's `shell` rows says of a command it ran in the background. */
+type ShellRow = {
+  id: string; shell: string | null; command: string | null; status: string | null; exit: number | null;
+  started: number | null; created: number; updated: number;
+};
+
+/**
+ * A session's background commands, listed as its subagents are: those that run, and the newest that ended within
+ * the last day. The chat reads the same rows (server/opencode.ts), so the list and the chat agree on them. A
+ * command the session's OpenCode no longer runs is left lost, ended when it was last heard of; one written before
+ * its service started is lost the same way, that service having taken its process along.
+ */
+function shellStep(db: Database, scan: Scan): void {
+  const from = `
+    FROM session_message AS m
+    WHERE m.session_id = ? AND m.type = 'shell' AND json_valid(m.data)
+      AND json_type(m.data, '$.metadata.background') = 'true'`;
+  const running = `CASE WHEN json_extract(m.data, '$.status') = 'running' AND ?
+    AND (? IS NULL OR m.time_updated >= ?) THEN 1 ELSE 0 END`;
+  const bindings: [string, number, number | null, number] = [
+    scan.sessionId, scan.live ? 1 : 0, scan.serviceStart, (scan.serviceStart ?? 0) - START_SLACK_MS,
+  ];
+  const select = `
+    SELECT m.id,
+      CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.shellID') END AS shell,
+      CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.command') END AS command,
+      CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.status') END AS status,
+      CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.exit') END AS exit,
+      CASE WHEN json_valid(m.data) AND json_type(m.data, '$.time.created') IN ('integer', 'real') AND json_extract(m.data, '$.time.created') > 0
+        THEN json_extract(m.data, '$.time.created') END AS started,
+      m.time_created AS created, m.time_updated AS updated ${from}`;
+  // Count and list from the same snapshot, retaining only the newest commands that can be displayed.
+  const { runningCount, rows } = db.transaction(() => {
+    const runningCount = db.query<{ running: number }, typeof bindings>(`
+      SELECT count(*) AS running ${from} AND (${running})`).get(...bindings)?.running ?? 0;
+    const rows = [
+      ...db.query<ShellRow, typeof bindings>(`${select}
+        AND (${running}) ORDER BY coalesce(started, created) DESC LIMIT ${RUNNING_LIMIT}`).all(...bindings),
+      ...db.query<ShellRow, [...typeof bindings, number]>(`${select}
+        AND NOT (${running}) AND m.time_updated >= ?
+        ORDER BY m.time_updated DESC LIMIT ${RECENT_LIMIT}`).all(...bindings, scan.now - RECENT_MS),
+    ];
+    return { runningCount, rows };
+  })();
+  scan.shells = [];
+  scan.shellRunning = runningCount;
+  for (const row of rows) {
+    const id = label(row.shell) ?? row.id;
+    const ended = row.status === "running" ? null
+      : { status: row.exit === 0 ? "completed" as const : "failed" as const, at: row.updated };
+    const orphan = scan.serviceStart !== null && row.updated < scan.serviceStart - START_SLACK_MS;
+    if (ended === null && scan.live && !orphan) {
+      scan.shells.push({
+        id, title: label(row.command) ?? id, category: "shell", model: null, status: "running",
+        started_at: iso(row.started ?? row.created), ended_at: null, turns: null, tool_calls: null, tokens: null, detail_kind: null,
+      });
+      continue;
+    }
+    const at = ended?.at ?? row.updated;
+    if (scan.now - at > RECENT_MS) continue;
+    scan.shells.push({
+      id, title: label(row.command) ?? id, category: "shell", model: null,
+      status: ended !== null ? ended.status : "lost",
+      started_at: iso(row.started ?? row.created), ended_at: iso(at), turns: null, tool_calls: null, tokens: null, detail_kind: null,
+    });
+  }
 }
 
 /** One step of a scan. */
 function scanStep(db: Database, scan: Scan): void {
   if (scan.columns === null) {
     const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('session_v2')").all().map((column) => column.name));
-    // 1.x tables, or a 2.0 store from before child sessions: no subagents to tell of
-    if (!columns.has("parent_id")) { scan.state = NOTHING; scan.finished = true; return; }
+    // 1.x tables, or a 2.0 store from before child sessions: no subagents to tell of, and no `session_message` rows either
+    if (!columns.has("parent_id")) { scan.shells = []; scan.state = NOTHING; scan.finished = true; return; }
     scan.columns = columns;
   }
+  if (scan.shells === null) shellStep(db, scan);
   if (!scan.paged) scanPage(db, scan, scan.columns);
   else if (scan.state === null) rereadPage(db, scan, scan.columns);
   else workStep(db, scan);
@@ -250,7 +326,15 @@ function scanResult(scan: Scan): OpencodeSubagentState {
       detail_kind: null,
     };
   });
-  return { ...state, tasks };
+  if (scan.shells === null || (scan.shells.length === 0 && scan.shellRunning === 0)) return { ...state, tasks };
+  // commands join the subagents' list: running first, oldest first; ended newest first, the ten that ended last
+  const started = (task: OmoTask): number => task.started_at === null ? 0 : Date.parse(task.started_at) || 0;
+  const ended = (task: OmoTask): number => task.ended_at === null ? 0 : Date.parse(task.ended_at) || 0;
+  const running = [...tasks.filter((task) => task.status === "running"), ...scan.shells.filter((task) => task.status === "running")]
+    .sort((a, b) => started(a) - started(b)).slice(-RUNNING_LIMIT);
+  const settled = [...tasks.filter((task) => task.status !== "running"), ...scan.shells.filter((task) => task.status !== "running")]
+    .sort((a, b) => ended(b) - ended(a)).slice(0, RECENT_LIMIT);
+  return { ...state, running: state.running + scan.shellRunning, unlisted: state.running + scan.shellRunning - running.length, tasks: [...running, ...settled] };
 }
 
 /** The event loop let go between two steps of a read. */

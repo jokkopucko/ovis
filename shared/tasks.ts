@@ -1,4 +1,4 @@
-/** One background task of an OmO session, or one subagent of a Claude Code session (GET /api/pane/omo-tasks), from OmO's task record or the subagent's files. */
+/** One background task of an OmO session, one subagent of a Claude Code session, or one subagent or background command of an OpenCode session (GET /api/pane/omo-tasks), from OmO's task record, the subagent's files, or OpenCode's store. */
 export interface OmoTask {
   id: string;
   /** the task's summary, else its description or name */

@@ -30,7 +30,7 @@ try {
   const ctx: UsageContext = {
     home, env: {}, platform: process.platform,
     fetch: async () => Response.json({ five_hour: { utilization: 18 } }),
-    now: Date.now, keychain: async () => ({ status: "missing" }), run: async () => null,
+    now: Date.now, keychain: async () => ({ status: "missing" }), run: async () => null, has: () => true,
   };
   const service = new CLIProxyService(stateDir);
   await service.save({ url: fake.server.url.origin, management_key: key });
@@ -46,6 +46,7 @@ try {
 const fixtureFetch=window.fetch;
 window.fetch=(input,init)=>{
 const u=new URL(typeof input==='string'?input:input.url||input.href,location.href);
+if(u.pathname==='/api/agent-catalog')return Promise.resolve(Response.json({platform:'linux',agents:[]}));
 return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.startsWith('/api/cliproxy/'))?window.demoNativeFetch(input,init):fixtureFetch(input,init);
 };
 </script><script type="module"`);
@@ -70,17 +71,20 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
   await page.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
-  await page.goto(`${origin}/?settings=usage`);
-  await openSettingsPage(page, "Subscription usage");
+  await page.goto(`${origin}/?settings=agents`);
+  await openSettingsPage(page, "Agents");
   await page.locator(".usage-accounts-row").first().waitFor();
-  const add = page.locator(".usage-accounts-header").getByRole("button", { name: "Add account", exact: true });
+  const add = page.locator("[data-section='other-accounts'] .agents-head").getByRole("button", { name: "Add account", exact: true });
   const modal = page.locator(".usage-account-dialog");
   const before = await page.locator(".usage-accounts-row").count();
 
-  // Given: Add is the next Tab stop after the meters' last option.
+  // Given: Plan limits closes the page, the status-line switch after the meters' last option; Add heads Other accounts.
+  const statusline = page.getByRole("switch", { name: "Read Claude's limits from its status line", exact: true });
+  await statusline.waitFor();
   await page.getByRole("button", { name: "Session", exact: true }).focus();
   await page.keyboard.press("Tab");
-  assert.equal(await add.evaluate((button) => button === document.activeElement), true);
+  assert.equal(await statusline.evaluate((toggle) => toggle === document.activeElement), true);
+  await add.focus();
   // When: Enter walks provider -> method.
   await page.keyboard.press("Enter");
   await modal.waitFor();
@@ -161,7 +165,7 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   await modal.getByRole("button", { name: /^Through the hub/ }).waitFor();
   await second.close();
   await modal.getByRole("button", { name: "Close", exact: true }).click();
-  await page.waitForFunction(() => document.activeElement === document.querySelector(".usage-accounts-header .btn"));
+  await page.waitForFunction(() => document.activeElement === document.querySelector("[data-section='other-accounts'] .agents-head .btn"));
 
   // Given: a hub session is still waiting when its dialog is dismissed.
   await add.click();
@@ -214,7 +218,7 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   await confirm.getByRole("button", { name: "Remove", exact: true }).click();
   assert.equal((await removed).status(), 200);
   await connection.waitFor({ state: "hidden" });
-  await page.waitForFunction(() => document.activeElement === document.querySelector(".usage-accounts-header .btn"));
+  await page.waitForFunction(() => document.activeElement === document.querySelector("[data-section='other-accounts'] .agents-head .btn"));
   assert.equal(deletes, 1);
   await add.click();
   await modal.getByRole("button", { name: "Claude", exact: true }).click();

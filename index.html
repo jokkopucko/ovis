@@ -36,7 +36,8 @@
     <title>Ovis</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- What a slow link shows until the app's script runs: React's first frame replaces it (#2329) -->
+    <div id="root"><div class="boot" role="status"><div class="boot-spinner" aria-hidden="true"></div><span class="visually-hidden">Loading Ovis</span></div></div>
     <script type="module" src="/src/main.tsx"></script>
     <script type="module" src="/src/pwa.ts"></script>
   </body>

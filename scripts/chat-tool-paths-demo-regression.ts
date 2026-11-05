@@ -102,12 +102,18 @@ async function expandCards(scope: Locator): Promise<void> {
   await scope.locator('button.work-block-head[aria-expanded="true"]').waitFor();
   const rows = scope.locator(".work-row-head");
   await rows.first().waitFor();
-  for (let index = 0; index < await rows.count(); index += 1) {
-    const row = rows.nth(index);
-    if (await row.getAttribute("aria-expanded") === "false") await row.click();
+  // a single pass over the rows left the last one folded on a busy run (a click that did not take,
+  // or a row drawn again after its state was read): open whatever is folded until every file shows
+  const files = scope.locator(".chat-tool-file");
+  const folded = scope.locator('.work-row-head[aria-expanded="false"]');
+  const lastFile = files.nth(ORDER.length - 1);
+  for (let pass = 0; !(await lastFile.isVisible()); pass += 1) {
+    assert.ok(pass < 3 * ORDER.length, `every tool row opens: ${JSON.stringify(await rows.evaluateAll((heads) => heads.map((head) => head.getAttribute("aria-expanded"))))}`);
+    // a folded row to open, or the last file: whichever shows first
+    await folded.or(lastFile).first().waitFor();
+    if (await folded.count() > 0) await folded.first().click();
   }
-  await scope.locator(".chat-tool-file").nth(ORDER.length - 1).waitFor();
-  assert.equal(await scope.locator(".chat-tool-file").count(), ORDER.length);
+  assert.equal(await files.count(), ORDER.length);
 }
 
 /** The demo pane shown now (another may stay mounted, hidden, after a switch). */

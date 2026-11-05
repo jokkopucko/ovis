@@ -1,6 +1,7 @@
 import type { DialogReader } from "./registry.ts";
 import { pickerPlan } from "./interaction-plan.ts";
-import { type InteractivePromptAnswer } from "../../shared/protocol.ts";
+import { type InteractivePromptAnswer, type InteractivePromptStep } from "../../shared/protocol.ts";
+import { piActiveTab } from "./pi-ask-tabs.ts";
 import { ANSI_RE, onePerPass, type CardWords, KEY, NUMBERED_OPTION_RE, type ParsedPrompt, SELECTED_RE, SOLID_RULE_RE, cleanLine, englishOf, findLastIndex, finishPrompt, own, isDivider, joinWrapped, keySteps, listNames, listRows, menuRows, navigationKeys, nearestQuestion, normalizeText, parseNumberedRows, screenWidth, sequentialRows, sliderKeys, wrapped } from "./shared.ts";
 
 // several questions navigate between tabs: "Tab/Arrow keys to navigate"
@@ -127,6 +128,7 @@ function withoutPreview(lines: string[], from: number, to: number): string[] {
 }
 
 function parseClaudeQuestion(screen: string): ParsedPrompt | null {
+  const colored = screen.split(/\r?\n/);
   const raw = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const hintIndex = findLastIndex(raw, (_, index) => CLAUDE_ASK_HINT_RE.test(wrapped(raw, index)));
   if (hintIndex < 0) return null;
@@ -165,11 +167,15 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
   const rowAt = rows.findIndex((row) => row.selected);
   // the cursor's place among the rows it moves through, Submit counted before the last one
   const selectedIndex = onSubmit ? rows.length - 1 : submit && rowAt === rows.length - 1 ? rowAt + 1 : rowAt;
-  const current = tabs?.tabs.findIndex((tab) => !tab.answered) ?? -1;
+  // the tab the bar's colors show; without them, the first question still open
+  const shown = tabs ? claudeTabSteps(colored[tabs.index] ?? "", tabs) : null;
+  const open = tabs?.tabs.findIndex((tab) => !tab.answered) ?? -1;
   // a bar cut off by a narrow pane does not show how many questions there are
-  const title = tabs && current >= 0
+  const titleOf = (current: number) => tabs && current >= 0
     ? tabs.whole && tabs.tabs.length > 1 ? own("{label} · {n} of {total}", { label: tabs.tabs[current]!.label, n: current + 1, total: tabs.tabs.length }) : tabs.tabs[current]!.label
     : chip ?? own(multiSelect ? "Multiple choice" : "Question");
+  const nav = shown !== null && shown.index < tabs!.tabs.length ? shown : null;
+  const title = titleOf(nav?.index ?? open);
   // read off the screen, not part of the question: left out of the card's id
   const words = claudeWordsAbove(raw, rows[0]!.lineIndex);
   const parsed = finishPrompt("claude", {
@@ -177,8 +183,10 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
     options: optionRows.map((row) => ({ label: row.label, description: row.description ?? null })),
     // a multiple choice takes its typed answer where its Submit row shows: Enter there sends it
     multi_select: multiSelect, custom_option_index: preview || (multiSelect && !submit) ? null : customIndex,
+    ...(nav ? { steps: nav.steps, can_step_back: nav.index > 0 } : {}),
   }, {
     responder: "claude-question",
+    ...(nav ? { claudeTabs: { identity: nav.identity, index: nav.index } } : {}),
     menuLabels: submit ? [...rows.slice(0, -1).map((row) => row.label), "Submit", rows.at(-1)!.label] : rows.map((row) => row.label),
     selectedIndex,
     checkedOptionIndices: optionRows.flatMap((row, index) => row.checked ? [index] : []),
@@ -191,7 +199,9 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
         { text }, ...keySteps(multiSelect ? [KEY.down, KEY.enter] : [KEY.enter]),
       ],
     } : {}),
-  });
+    // the id reads the tab shown (its title names it and its place): two tabs asking the same are two
+    // cards. On the first question still open it is the title a read without colors gives too
+  }, { steps: undefined, can_step_back: undefined });
   return words === null ? parsed : { ...parsed, screen_words: words };
 }
 
@@ -346,6 +356,26 @@ function claudeTabs(lines: string[], beforeIndex: number): { index: number; whol
   return null;
 }
 
+/**
+ * The card's steps from Claude's whole tab bar, the questions and its Submit: the tab shown is the one
+ * drawn on a background, the others in the default color (measured on 2.1.312:
+ * `\x1b[38;2;0;0;0m\x1b[48;2;177;185;249m ☒ Device \x1b[0m ☐ Symptoms  ✔ Submit  →`). Claude moves
+ * between them with ←/→ and keeps the answers given. Under NO_COLOR, with two tabs lit, or with a bar
+ * cut off by a narrow pane, nothing says which tab is shown: null, and the card offers no steps.
+ */
+function claudeTabSteps(coloredLine: string, bar: { whole: boolean; tabs: { label: string; answered: boolean }[] }): { steps: InteractivePromptStep[]; index: number; identity: string } | null {
+  if (!bar.whole || bar.tabs.length < 2) return null;
+  const plain = coloredLine.replace(ANSI_RE, "");
+  const marks = [...plain.matchAll(/[☐☒☑✔]/g)];
+  if (marks.length !== bar.tabs.length + 1 || plain[marks.at(-1)!.index!] !== "✔") return null;
+  const index = piActiveTab(coloredLine, marks.map((mark) => mark.index!), true);
+  if (index === null) return null;
+  const steps = [...bar.tabs, { label: "Submit", answered: false }].map((tab, at) => ({
+    label: tab.label, answered: tab.answered, current: at === index, ...(at !== index ? { can_navigate: true } : {}),
+  }));
+  return { steps, index, identity: JSON.stringify(bar.tabs.map((tab) => [tab.label, tab.answered])) };
+}
+
 /** The question over Claude's options, joined back when a narrow pane wraps it over several lines. */
 function claudeQuestionText(lines: string[], tabsIndex: number, firstRow: number): string | null {
   const text: string[] = [];
@@ -419,15 +449,21 @@ function parseClaudeSubmit(screen: string): ParsedPrompt | null {
   const answers = review?.answers;
   const body = review ? review.notes.join("\n") : panel.map(cleanLine)
     .filter((line) => line && !isDivider(line) && !/^Review your answers$/i.test(line)).join("\n");
+  // the review is the bar's Submit tab: Back and the steps go to its questions
+  const bar = tabsIndex >= 0 ? claudeTabs(lines, tabsIndex + 1) : null;
+  const shown = bar ? claudeTabSteps(screen.split(/\r?\n/)[tabsIndex] ?? "", bar) : null;
+  const nav = shown !== null && shown.index === bar!.tabs.length ? shown : null;
   return finishPrompt("claude", {
     // a menu, not a question: a typed pick submits every answer at once, so it waits for Confirm
     kind: "menu", title: own("Review your answers"), question: cleanLine(lines[questionIndex]!), body: body || null,
     ...(answers ? { answers } : {}),
     options: rows.map((row) => ({ label: row.label, description: null })), multi_select: false, custom_option_index: null,
+    ...(nav ? { steps: nav.steps, can_step_back: true } : {}),
   }, {
     responder: "claude-submit", menuLabels: rows.map((row) => row.label), selectedIndex: rows.findIndex((row) => row.selected),
     checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
-  });
+    ...(nav ? { claudeTabs: { identity: nav.identity, index: nav.index } } : {}),
+  }, { steps: undefined, can_step_back: undefined });
 }
 
 function parseClaudeApproval(screen: string): ParsedPrompt | null {

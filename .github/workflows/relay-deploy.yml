@@ -1,0 +1,77 @@
+name: Relay deploy
+# Deploys the Ovis relay (relay/, https://relay.ovis.sh) to Cloudflare after a push to main that touches
+# the Worker's code passes CI, or by hand from main. The deploy job waits in the `production` environment for the
+# maintainer's approval (a required reviewer, set in GitHub). A deploy drops every socket; clients reconnect.
+# Without the Cloudflare secrets the job passes with a notice; relay/README.md lists the one-time setup.
+on:
+  push:
+    branches: [main]
+    # the Worker's code: relay/ and the shared module it imports
+    paths: ['relay/**', 'shared/relay-server-proof.ts']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: relay-deploy
+  cancel-in-progress: false
+jobs:
+  validate:
+    name: Validate source
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      actions: read
+  deploy:
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    # GitHub-hosted only: the Cloudflare token never reaches the shared self-hosted runners
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    environment:
+      name: production
+      url: https://relay.ovis.sh/health
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - run: bun install --frozen-lockfile
+      - run: bun test ./relay
+      - name: Check the Cloudflare secrets
+        id: secrets
+        env:
+          HAS_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAS_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+        run: |
+          missing=""
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            has="HAS_$name"; [ "${!has}" = true ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::notice title=Relay deploy skipped::The relay is not deployed: these secrets are not set in the production environment:$missing. Set them (relay/README.md), then run the Relay deploy workflow."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: Deploy the Worker
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: relay
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bunx wrangler@4.156.0 deploy
+      - name: Check the relay answers
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          for attempt in 1 2 3 4 5; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 https://relay.ovis.sh/health || true)
+            echo "attempt $attempt: HTTP $code"
+            case "$code" in 2??) exit 0 ;; esac
+            sleep 5
+          done
+          echo "::error::https://relay.ovis.sh/health did not answer 2xx (last: HTTP $code)." >&2
+          exit 1

@@ -211,6 +211,85 @@ describe("lifecycle invalidations", () => {
     } finally { collector.stop(); }
   });
 
+  it("cleans up a closed pane without ending it, and a closed tracked pane is not reported ended by a later snapshot", async () => {
+    // Given: one tracked pane (a sign-in tab) and one ordinary pane
+    const herdr = fakeHerdr([]);
+    const { handlers } = recorder();
+    const ended: string[] = [];
+    const closed: string[] = [];
+    handlers.onPaneEnded = (paneId) => ended.push(paneId);
+    handlers.onPaneClosed = (paneId) => closed.push(paneId);
+    const collector = startStatusCollector(handlers, herdr.deps);
+    try {
+      await collector.ready;
+      const tracked = Promise.withResolvers<void>();
+      handlers.onReconciled = () => tracked.resolve();
+      herdr.setPanes([paneOf("w1:p1", "idle"), paneOf("w1:p2", "idle")]);
+      collector.trackPane("w1:p2");
+      await tracked.promise;
+      // When: both are closed (herdr's pane.close, hc's terminal.kill: pane_closed alone) and a snapshot follows
+      herdr.setPanes([]);
+      const reconciled = Promise.withResolvers<void>();
+      handlers.onReconciled = () => reconciled.resolve();
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p1" } });
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p2" } });
+      await reconciled.promise;
+      // Then: both are cleaned up as closed, and neither is reported ended
+      expect(closed).toEqual(["w1:p1", "w1:p2"]);
+      expect(ended).toEqual([]);
+    } finally { collector.stop(); }
+  });
+
+  it("does not clean up again a pane whose close follows its exit, but does once its ID is registered anew", async () => {
+    // Given
+    const herdr = fakeHerdr([]);
+    const { handlers } = recorder();
+    const ended: string[] = [];
+    const closed: string[] = [];
+    handlers.onPaneEnded = (paneId) => ended.push(paneId);
+    handlers.onPaneClosed = (paneId) => closed.push(paneId);
+    const collector = startStatusCollector(handlers, herdr.deps);
+    try {
+      await collector.ready;
+      // When: a program ends and its pane then closes (herdr, and hc for a program that exited)
+      herdr.lifecycle().emit({ data: { type: "pane_exited", pane_id: "w1:p1" } });
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p1" } });
+      // Then: the exit's cleanup was the only one
+      expect(ended).toEqual(["w1:p1"]);
+      expect(closed).toEqual([]);
+      // When: the ID ends, is taken by a new tracked pane, and that one is closed
+      herdr.lifecycle().emit({ data: { type: "pane_exited", pane_id: "w1:p2" } });
+      collector.trackPane("w1:p2");
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p2" } });
+      // Then: the new pane is cleaned up
+      expect(closed).toEqual(["w1:p2"]);
+    } finally { collector.stop(); }
+  });
+
+  it("cleans up on close a pane a snapshot showed again after its exit, and once only one it no longer showed", async () => {
+    // Given
+    const herdr = fakeHerdr([]);
+    const { handlers } = recorder();
+    const closed: string[] = [];
+    handlers.onPaneClosed = (paneId) => closed.push(paneId);
+    const collector = startStatusCollector(handlers, herdr.deps);
+    try {
+      await collector.ready;
+      // When: p1 exits and a snapshot then shows its ID in use again; p2 exits and a snapshot no longer shows it
+      herdr.lifecycle().emit({ data: { type: "pane_exited", pane_id: "w1:p1" } });
+      herdr.lifecycle().emit({ data: { type: "pane_exited", pane_id: "w1:p2" } });
+      herdr.setPanes([paneOf("w1:p1", "idle")]);
+      const reconciled = Promise.withResolvers<void>();
+      handlers.onReconciled = () => reconciled.resolve();
+      herdr.lifecycle().emit({ data: { type: "pane_created", pane_id: "w1:p1" } });
+      await reconciled.promise;
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p1" } });
+      herdr.lifecycle().emit({ data: { type: "pane_closed", pane_id: "w1:p2" } });
+      // Then: the pane shown again is cleaned up on its close; the one gone was cleaned up by its exit
+      expect(closed).toEqual(["w1:p1"]);
+    } finally { collector.stop(); }
+  });
+
   const types = [
     "workspace_created", "workspace_updated", "workspace_metadata_updated",
     "workspace_renamed", "workspace_moved", "workspace_reordered", "workspace_closed",
@@ -308,6 +387,32 @@ describe("lifecycle invalidations", () => {
       await moved.promise;
       expect(old.closedByCollector).toBe(true);
       expect(herdr.status()?.paneIds).toEqual(["w1:p2", "w2:p1"]);
+    } finally { collector.stop(); }
+  });
+
+  it("tells a move to a new pane ID before the structure change, and no move that keeps the ID (#1503)", async () => {
+    const herdr = fakeHerdr([paneOf("w1:p1", "idle")]);
+    const { log, handlers } = recorder();
+    const moves: string[] = [];
+    handlers.onPaneMoved = (from, to) => moves.push(`${from}->${to} after ${log.structure} structure changes`);
+    const changed = Promise.withResolvers<void>();
+    handlers.onStructureChange = () => { log.structure += 1; changed.resolve(); };
+    const subscribe = herdr.deps.subscribe;
+    if (!subscribe) throw new Error("fake subscribe missing");
+    const collector = startStatusCollector(handlers, {
+      ...herdr.deps,
+      subscribe: (subs, callbacks) => {
+        const connection = subscribe(subs, callbacks);
+        queueMicrotask(() => callbacks.onStarted?.());
+        return connection;
+      },
+    });
+    try {
+      await collector.ready;
+      herdr.lifecycle().emit({ data: { type: "pane_moved", previous_pane_id: "w1:p1", pane: { pane_id: "w1:p1", agent_status: "idle" } } });
+      herdr.lifecycle().emit({ data: { type: "pane_moved", previous_pane_id: "w1:p1", pane: { pane_id: "w2:p1", agent_status: "idle" } } });
+      expect(moves).toEqual(["w1:p1->w2:p1 after 0 structure changes"]);
+      await changed.promise;
     } finally { collector.stop(); }
   });
 

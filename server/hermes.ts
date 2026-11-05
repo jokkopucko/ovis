@@ -636,6 +636,37 @@ export function hermesConversationPage(
   }
 }
 
+/** One of Hermes's own image hints: `[Image attached at: <path>]` (agent/image_routing.py). */
+const IMAGE_HINT = /^\[Image attached at: ([^\n\]]+)\]$/;
+/** The stand-in Hermes's text-only store projection leaves for each attached picture. */
+const SCREENSHOT_PLACEHOLDER = "[screenshot]";
+
+/** A path as a Markdown destination the file API reads back exactly: each segment percent-encoded, brackets and parentheses too. */
+const markdownPath = (path: string): string => path.split("/").map((segment) => encodeURIComponent(segment).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)).join("/");
+
+/**
+ * A prompt whose stored text ends in Hermes's own picture hints (`caption\n\n[Image attached at: <path>]`, one
+ * line per picture, then the `[screenshot]` Hermes's store writes for each picture it attached), split into
+ * its caption and a Markdown image of each local file, as Hermes's own history reads the block
+ * (tui_gateway/session_history.py), though a picture sent with Hermes's default caption is shown too: the chat shows each through the file API as any local Markdown image
+ * (src/lib/markdownImages.ts), or keeps the link. Null, and the text left as written, unless every hint
+ * names an absolute POSIX path and each has its `[screenshot]` (words alone attach nothing). The images go
+ * before the words, as the chat shows other agents' prompt pictures, so nothing in the words (an open code
+ * fence) can take them in.
+ */
+export function hermesPromptPictures(text: string): { caption: string; images: string } | null {
+  const split = text.indexOf("\n\n[Image attached at: ");
+  if (split <= 0) return null;
+  const caption = text.slice(0, split);
+  const lines = text.slice(split + 2).split("\n");
+  let placeholders = 0;
+  while (lines.length > 0 && lines.at(-1) === SCREENSHOT_PLACEHOLDER) { lines.pop(); placeholders++; }
+  const paths = lines.map((line) => IMAGE_HINT.exec(line)?.[1]);
+  if (paths.length === 0 || placeholders !== paths.length
+    || paths.some((path) => path === undefined || !path.startsWith("/") || path.startsWith("//") || /[\u0000-\u001f\u007f\\]/.test(path))) return null;
+  return { caption, images: (paths as string[]).map((path) => `![${path.slice(path.lastIndexOf("/") + 1)}](${markdownPath(path)})`).join("\n") };
+}
+
 /** Groups assistant activity and matched tool results into turns, preserving recorded reasoning. */
 export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
@@ -647,11 +678,13 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
 
       if (row.role === "user") {
         const text = typeof row.content === "string" ? row.content : "";
-        const invocation = hermesSkillPrompt(text);
+        // the pictures come off the stored text first: a skill invocation's parser keeps only its request
+        const pictures = hermesPromptPictures(text);
+        const invocation = hermesSkillPrompt(pictures?.caption ?? text);
         turns.push({
           role: "user",
           ts,
-          parts: [{ kind: "text", text: invocation?.request ?? text }, ...(invocation?.skills ?? []).map((skill) => ({ kind: "skill" as const, skill }))],
+          parts: [{ kind: "text", text: pictures === null ? invocation?.request ?? text : `${pictures.images}\n\n${invocation?.request ?? pictures.caption}` }, ...(invocation?.skills ?? []).map((skill) => ({ kind: "skill" as const, skill }))],
         });
       } else if (row.role === "assistant") {
         let turn = turns[turns.length - 1];

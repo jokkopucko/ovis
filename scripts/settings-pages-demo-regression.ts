@@ -20,7 +20,7 @@ import { comboKey, LEGACY_COMBOS } from "./theme-baseline.ts";
 // HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-demo-"));
 const devApp = mkdtempSync(join(tmpdir(), "herdr-settings-dev-"));
-const PAGES = ["Appearance", "Chat", "Terminal", "Alerts", "Voice input", "Subscription usage", "Shortcuts", "Phone & devices", "Remote PCs", "Agent integrations", "About"];
+const PAGES = ["Appearance", "Chat", "Terminal", "Alerts", "Voice input", "Agents", "Shortcuts", "Phone & devices", "Remote PCs", "About"];
 const SETTINGS = { language: "en", showUsage: true, voiceInput: true, showQuickReplies: true, fileOpen: "panel" };
 
 const dialogOf = (page: Page) => page.getByRole("dialog", { name: "Settings", exact: true });
@@ -146,7 +146,7 @@ const landing = async (page: Page, label: (name: string) => string): Promise<{ p
   return { page: id, section, visible };
   });
   // the panel is named by its page's label in the language shown: back to the page's id
-  const ids = ["appearance", "chat", "terminal", "alerts", "voice", "usage", "shortcuts", "devices", "remote", "integrations", "about"];
+  const ids = ["appearance", "chat", "terminal", "alerts", "voice", "agents", "shortcuts", "devices", "remote", "about"];
   return { ...shown, page: shown.page === null ? null : ids[PAGES.findIndex((name) => label(name) === shown.page)] ?? `unknown: ${shown.page}` };
 };
 /** Anything in the palette or Settings wider than the window: a long query or label must not push the sheet sideways. */
@@ -514,7 +514,7 @@ try {
               [label("Loading…"), label("Asking this PC about Tailscale…")]);
             if (name === "Appearance" && process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `select-arrows-${width}-${language}.png`), animations: "disabled" });
             await checkSelectArrows(page);
-            if (name === "Subscription usage") await page.locator(".usage-accounts-row").first().waitFor();
+            if (name === "Agents") await page.locator(".usage-accounts-row").first().waitFor();
             if (name === "Voice input") {
               await page.locator(".voice-key").waitFor();
               const dictation = page.getByLabel(label("Dictation language"), { exact: true });
@@ -525,38 +525,56 @@ try {
                 "dictation selection does not change the display language");
               await dictation.selectOption("auto");
             }
-            if (name === "Agent integrations") {
-              // the demo's fixture, in herdr's order with the agents found on the PC first: a failed request
-              // would leave one error paragraph that still fits, so the rows and their states are asserted
+            if (name === "Agents") {
+              // the demo's PC has Claude Code, Codex, Oh My Pi, pi and Hermes; its accounts go under their
+              // agent, and the rest (Cursor, OpenCode, whose agent is not on the PC) under Other accounts
               const body = page.locator(".settings-body:not([hidden])");
-              assert.equal(await body.locator("[role='alert']").count(), 0, "the integrations page shows no error");
+              await body.locator(".agents-item").first().waitFor();
+              assert.equal(await body.locator("[role='alert']").count(), 0, "the Agents page shows no error");
+              assert.deepEqual(await body.locator(".agents-item").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-agent"))), ["claude", "codex", "omp", "pi", "hermes"]);
+              assert.deepEqual(await body.locator("[data-section='other-accounts'] .usage-provider-heading > span:not(.usage-account-count):not(.agent-mark)").allTextContents(), ["Cursor", "OpenCode"]);
+              assert.deepEqual(await body.locator("h3").allTextContents(), [label("On this PC"), label("Other agents herdr found"), label("Not found on this PC"), label("Other accounts"), label("New agents"), label("Plan limits")]);
+              // herdr's integrations no row shows: found on the PC first, then the rest, each with its command
+              assert.deepEqual(await body.locator("[data-section='integrations'] .settings-label").allTextContents(), ["opencode"]);
+              assert.deepEqual(await body.locator("[data-section='integrations-missing'] .settings-label").allTextContents(), ["copilot", "cursor", "antigravity-cli"]);
+              // the launch modes are always there, whatever the PC has
+              assert.equal(await body.locator("[data-section='launch-modes'] select").count(), 2);
               const install = (target: string): string => `herdr integration install ${target}`;
-              const shown = await body.locator(".settings-row").evaluateAll((nodes) => nodes.map((node) => ({
-                label: node.querySelector(".settings-label")?.textContent ?? "",
-                description: node.querySelector(".settings-description")?.textContent ?? "",
-                command: node.querySelector("code")?.textContent ?? null,
-                copy: node.querySelector("button")?.getAttribute("aria-label") ?? null,
-              })));
               const copyLabel = (target: string): string => label("Copy the command for {name}").replace("{name}", target);
-              const missing = label("Not installed");
-              assert.deepEqual(shown, [
-                // the launch modes for new Claude Code and Codex agents lead the page
-                { label: "Claude Code", description: label("Permission mode"), command: null, copy: null },
-                { label: "Codex", description: label("Sandbox and approvals"), command: null, copy: null },
-                { label: "pi", description: missing + install("pi"), command: install("pi"), copy: copyLabel("pi") },
-                { label: "claude", description: label("Installed"), command: null, copy: null },
-                { label: "codex", description: label("Installed, but older than this herdr: run this to update it") + install("codex"), command: install("codex"), copy: copyLabel("codex") },
-                { label: "opencode", description: missing + install("opencode"), command: install("opencode"), copy: copyLabel("opencode") },
-                { label: "omp", description: missing + install("omp"), command: install("omp"), copy: copyLabel("omp") },
-                { label: "copilot", description: missing + install("copilot"), command: install("copilot"), copy: copyLabel("copilot") },
-                { label: "cursor", description: missing + install("cursor"), command: install("cursor"), copy: copyLabel("cursor") },
-                { label: "antigravity-cli", description: missing + install("antigravity-cli"), command: install("antigravity-cli"), copy: copyLabel("antigravity-cli") },
-              ], "every fixture integration, with its state and install command");
-              assert.deepEqual(await body.locator("h3").allTextContents(), [label("New agents"), label("Not found on this PC")]);
-              const copy = body.getByRole("button", { name: copyLabel("codex"), exact: true });
+              // a row opens on its accounts and herdr's session resume
+              const codex = body.locator(".agents-item[data-agent='codex']");
+              await codex.locator(".agents-toggle").tap();
+              assert.equal(await codex.locator(".agents-toggle").getAttribute("aria-expanded"), "true");
+              assert.equal(await codex.locator(".usage-accounts-row").count(), 2, "Codex's two accounts are in its row");
+              assert.equal(await codex.locator("code").textContent(), install("codex"));
+              const copy = codex.getByRole("button", { name: copyLabel("codex"), exact: true });
               await copy.tap();
-              await body.getByRole("button", { name: copyLabel("codex"), exact: true }).filter({ hasText: label("Copied") }).waitFor();
+              await codex.getByRole("button", { name: copyLabel("codex"), exact: true }).filter({ hasText: label("Copied") }).waitFor();
               assert.equal(await page.evaluate(() => navigator.clipboard.readText()), install("codex"));
+              // a move within Codex's row swaps its two accounts and leaves Claude's place in the meters' order
+              const second = codex.locator(".usage-accounts-row").nth(1);
+              const moved = await second.locator(".usage-accounts-account").textContent();
+              await second.locator(".usage-accounts-actions .icon-button").first().tap();
+              await page.waitForFunction(() => (JSON.parse(localStorage.getItem("ovis:settings")!).usageOrder as string[]).length > 0);
+              const order = await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings")!).usageOrder as string[]);
+              assert.ok(order[0]!.startsWith("claude"), `Claude keeps the first place: ${order.join(", ")}`);
+              assert.equal(await codex.locator(".usage-accounts-row").first().locator(".usage-accounts-account").textContent(), moved);
+              // a Check again that fails after a good read keeps the rows it had, and says why beside them
+              await page.evaluate(() => {
+                const passing = window.fetch;
+                (window as unknown as { restoreCatalog: () => void }).restoreCatalog = () => { window.fetch = passing; };
+                window.fetch = (input, init) => new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href).pathname === "/api/agent-catalog"
+                  ? Promise.resolve(Response.json({ error: { code: "fixture", message: "The catalog check failed (fixture)." } }, { status: 500 }))
+                  : passing(input, init);
+              });
+              await body.getByRole("button", { name: label("Check again"), exact: true }).tap();
+              await body.locator("[data-section='agents-installed'] [role='alert']").filter({ hasText: "The catalog check failed (fixture)." }).waitFor();
+              assert.equal(await codex.locator(".usage-accounts-row").count(), 2, "Codex's accounts stay after a failed Check again");
+              assert.deepEqual(await body.locator(".agents-item").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-agent"))), ["claude", "codex", "omp", "pi", "hermes"]);
+              await page.evaluate(() => (window as unknown as { restoreCatalog: () => void }).restoreCatalog());
+              await body.getByRole("button", { name: label("Check again"), exact: true }).tap();
+              await body.locator("[data-section='agents-installed'] [role='alert']").waitFor({ state: "detached" });
+              await codex.locator(".agents-toggle").tap();
             }
             if (name === "Appearance" && language === "en") {
               // each legacy palette-mode is written to the document and saved, and its blocks of styles.css

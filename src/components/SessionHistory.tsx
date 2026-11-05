@@ -32,6 +32,7 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { claudeResumeRequest, inFlightGuard, paneShowingRow, recentlyResumedPane, resumeTabRequest, rowKey, rowStore, sessionHistoryAgent, sessionHistorySourcePane, sessionRowTime, standingResume, type RecentResume } from "../lib/sessionHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
+import { readSessionHistory } from "../lib/sessionHistoryRetry.ts";
 
 interface Props {
   workspace: WorkspaceInfo;
@@ -69,6 +70,7 @@ export function SessionHistory({ workspace, panes, agent: firstAgent, sourcePane
   const [kinds, setKinds] = useState<AgentKind[]>([]);
   const [answer, setAnswer] = useState<SessionHistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busyRetry, setBusyRetry] = useState(false);
   /** the key (rowKey) of the row whose Resume is in flight */
   const [pending, setPending] = useState<string | null>(null);
   /** bumped to read the list again: a Claude store that changed since it was read */
@@ -146,15 +148,22 @@ export function SessionHistory({ workspace, panes, agent: firstAgent, sourcePane
   }, [fetchAgentKinds]);
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     // a list read again after a changed store keeps its rows until the new ones come: nothing moves under the pointer
     if (!keepRows.current) setAnswer(null);
     keepRows.current = false;
     setError(null);
-    fetchSessionHistory(workspace.workspace_id, agent, sourcePaneId).then(
+    setBusyRetry(false);
+    readSessionHistory(() => fetchSessionHistory(workspace.workspace_id, agent, sourcePaneId), agent, { signal: controller.signal }).then(
       (listing) => { if (!cancelled) { setAnswer(listing); setRelisting(false); } },
-      (reason: unknown) => { if (!cancelled) { setAnswer(null); setError(refusal(reason)); setRelisting(false); } },
+      (reason: unknown) => { if (!cancelled) {
+        setAnswer(null);
+        setError(refusal(reason));
+        setBusyRetry(agent === "pi" && reason instanceof ApiError && reason.status === 503 && reason.code === "session_history_busy");
+        setRelisting(false);
+      } },
     );
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [agent, fetchSessionHistory, reload, sourcePaneId, refusal, workspace.workspace_id]);
   useEffect(() => { setRelisted(false); }, [agent]);
   const options = useMemo(() => {
@@ -286,9 +295,10 @@ export function SessionHistory({ workspace, panes, agent: firstAgent, sourcePane
           )}
           {/* one line kept under the rows, so none of them moves when it speaks: Resuming, Reading again, why it was read again */}
           {rows && rows.length > 0 && <p className="field-hint session-status" role="status">{pending !== null ? t("Resuming…") : relisting ? t("Reading sessions…") : relisted ? t("Claude's store changed; the list was read again.") : null}</p>}
-          {error && <p className="field-hint session-error" role="alert">{error}</p>}
+          {error && <p className="field-hint session-error" role={busyRetry ? "status" : "alert"}>{error}</p>}
         </div>
         <footer className="modal-footer">
+          {busyRetry && <button type="button" className="btn" onClick={() => setReload((count) => count + 1)}>{t("Retry")}</button>}
           <button type="button" className="btn btn-ghost" disabled={pending !== null} onClick={onClose}>{t("Cancel")}</button>
         </footer>
       </div>

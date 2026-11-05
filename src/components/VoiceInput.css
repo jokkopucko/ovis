@@ -66,6 +66,18 @@
   }
 }
 
+/* a finger gets --touch-target both ways through an invisible expander: the mic keeps its
+   --control-h circle beside the composer's add button (8px apart, so neither takes the other's
+   tap), and the terminal line's mic, already a --touch-target circle, grows by nothing. The
+   percentages are of the button's padding box, so its hairline border is counted */
+@media (pointer: coarse) {
+  .voice-mic::before {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc((100% - var(--touch-target)) / 2));
+  }
+}
+
 /* always mounted: a transition (not keyframes) so a cancel mid-entrance reverses smoothly;
    visibility waits for the exit to finish */
 .voice-pill {
@@ -135,6 +147,21 @@
 .voice-pill-button svg {
   width: var(--icon-size);
   height: var(--icon-size);
+}
+
+/* Cancel and Insert stay the pill's small circles and take a finger's --touch-target through an
+   invisible expander, a few pixels past the pill's edge; the dot, words and timer between them
+   take no taps */
+@media (pointer: coarse) {
+  .voice-pill-button {
+    position: relative;
+  }
+
+  .voice-pill-button::before {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc((100% - var(--touch-target)) / 2));
+  }
 }
 
 .voice-done {

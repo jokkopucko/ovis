@@ -157,7 +157,7 @@ describe("CLIProxyAPI v8", () => {
 
   it("keeps local usage when the proxy cannot be reached", async () => {
     // Given
-    const ctx: UsageContext = { home: dir, env: {}, platform: "linux", fetch, now: Date.now, keychain: async () => ({ status: "missing" }), run: async () => null };
+    const ctx: UsageContext = { home: dir, env: {}, platform: "linux", fetch, now: Date.now, keychain: async () => ({ status: "missing" }), run: async () => null, has: () => true };
     await configure();
     fake.server.stop(true);
     await service.save({ url: fake.server.url.origin, management_key: KEY });

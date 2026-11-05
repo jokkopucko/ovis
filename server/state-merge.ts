@@ -34,6 +34,7 @@ import { MAX_PREFERENCES_BYTES, sharedPreferencesBody, type PreferencesChange } 
 import { readDeviceRegistry, type StoredDevice } from "./devices.ts";
 import { preparePrivateState, publishPrivateState, writePrivateState } from "./private-state.ts";
 import { normalizeEndpoint, PUSH_EXTRA_KEYS } from "./push.ts";
+import { readStateId, STATE_ID_FILE, writeStateId } from "./preferences.ts";
 import { readStateDocument, writeStateDocument } from "./state-document.ts";
 import { stateDirNames } from "./update-state.ts";
 
@@ -404,6 +405,7 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
   // that could not be written keeps its snapshot as it is on disk, and takes the settled values next time
   write(active, own.doc);
   write(sibling, other.doc);
+  mergeStateId(active, sibling, stamp);
   const held = (dir: string, fallback: PreferencesSnapshot | null): PreferencesSnapshot | null => {
     const read = readPreferences(dir);
     if (read === null) return fallback;
@@ -416,6 +418,24 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
     if (snapshot !== null) snapshots[realpath(dir)] = snapshot;
   }
   return { snapshots, target: merged };
+}
+
+/**
+ * Both dirs end with one state folder id (preferences.ts), this dir's or, while it has none, the other's:
+ * a browser that knew it from either is not told the folder started over. A damaged one is left alone.
+ */
+function mergeStateId(active: string, sibling: string, stamp: string): void {
+  try {
+    const own = readStateId(active);
+    const other = readStateId(sibling);
+    if (own === null || other === null) return;
+    if (own !== undefined && other !== own) {
+      if (other !== undefined) backUp(sibling, STATE_ID_FILE, stamp);
+      writeStateId(sibling, own);
+    } else if (own === undefined && other !== undefined) writeStateId(active, other);
+  } catch (error) {
+    console.error(`Cannot give ${active} and ${sibling} one state folder id: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } } & Record<string, unknown>;

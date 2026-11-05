@@ -19,9 +19,9 @@ function withEnglish<T>(run: () => T): T {
   }
 }
 
-function render(now: number): string {
+function render(now: number, sends: readonly WaitingSend[] = [send]): string {
   setSystemTime(new Date(now));
-  return withEnglish(() => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(SentWaitingList, { sends: [send] }) })));
+  return withEnglish(() => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(SentWaitingList, { sends }) })));
 }
 const textWithoutTags = (markup: string): string => markup.replace(/<[^>]*>/gu, "");
 
@@ -40,6 +40,13 @@ describe("SentWaitingList", () => {
     const markup = render(at + WAITING_HINT_MS);
     expect(markup).toContain("chat-sent-late");
     expect(textWithoutTags(markup)).toBe(send.text);
+  });
+
+  test("shows a long message whole, capped at the lines its turn's card shows, so the turn takes its place at its height", () => {
+    const long: WaitingSend = { ...send, id: 2, text: Array.from({ length: 20 }, (_, index) => `Step ${index + 1}: run the flaky test again and keep its log`).join("\n") };
+    const markup = render(at, [long, send]);
+    expect(textWithoutTags(markup)).toBe(long.text + send.text);
+    expect(markup.match(/class="chat-bubble(?: [^"]*)?"/gu)).toEqual(['class="chat-bubble is-capped"', 'class="chat-bubble"']);
   });
 
   test("is no live region of its own: the chat footer's one status region stays the only one", () => {

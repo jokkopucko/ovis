@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { DISMISS_DRAG_PX, dismissKeyboardOn, dragDismisses, keyboardHoldsGrid, keyboardToggleAction, scrolledDown, subscribeKeyboardUp, tapDismisses } from "./keyboard.ts";
+import { DISMISS_DRAG_PX, dismissKeyboardOn, dragDismisses, keyboardHoldsGrid, scrolledDown, tapDismisses } from "./keyboard.ts";
 
 describe("dragDismisses", () => {
   test("a drag down the transcript puts the keyboard away", () => {
@@ -95,54 +95,6 @@ describe("scrolledDown", () => {
     card.scrollTop = 8;
     expect(scrolledDown(line, card)).toBe(true);
     expect(scrolledDown(null, card)).toBe(true);
-  });
-});
-
-/** the key bar's keyboard control (#1046): measured state decides, a composition refuses */
-describe("keyboardToggleAction", () => {
-  test("a keyboard measured up is put away, one measured down is shown", () => {
-    expect(keyboardToggleAction(true, false)).toBe("hide");
-    expect(keyboardToggleAction(false, false)).toBe("show");
-  });
-
-  test("a composition, or a commit still on its way, refuses the tap whichever way the keyboard is", () => {
-    expect(keyboardToggleAction(true, true)).toBe("refuse");
-    expect(keyboardToggleAction(false, true)).toBe("refuse");
-  });
-});
-
-/** the control's state follows the attribute lib/viewport.ts measures, on a stand-in document */
-describe("subscribeKeyboardUp", () => {
-  const names = ["document", "MutationObserver"] as const;
-  let saved: Record<string, unknown>;
-
-  beforeEach(() => {
-    saved = Object.fromEntries(names.map((name) => [name, (globalThis as Record<string, unknown>)[name]]));
-  });
-  afterEach(() => {
-    for (const name of names) (globalThis as Record<string, unknown>)[name] = saved[name];
-  });
-
-  test("watches only data-keyboard on the root, and the stop disconnects", () => {
-    const root = {};
-    const observed: Array<{ target: unknown; options: unknown }> = [];
-    let disconnected = 0;
-    class Observer {
-      constructor(public readonly callback: () => void) {}
-      observe(target: unknown, options: unknown): void { observed.push({ target, options }); }
-      disconnect(): void { disconnected++; }
-    }
-    (globalThis as Record<string, unknown>)["MutationObserver"] = Observer;
-    (globalThis as Record<string, unknown>)["document"] = { documentElement: root };
-    const stop = subscribeKeyboardUp(() => {});
-    expect(observed).toEqual([{ target: root, options: { attributes: true, attributeFilter: ["data-keyboard"] } }]);
-    stop();
-    expect(disconnected).toBe(1);
-  });
-
-  test("without a document (a server render) it subscribes to nothing", () => {
-    (globalThis as Record<string, unknown>)["document"] = undefined;
-    expect(() => subscribeKeyboardUp(() => {})()).not.toThrow();
   });
 });
 

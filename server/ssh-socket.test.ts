@@ -13,7 +13,7 @@ it.skipIf(process.platform === "win32")("keeps SSH sockets short and private eve
   process.env["TMPDIR"] = long;
   const ssh = new SshConnection({ destination: "pc" }, join(root, "state"));
   try {
-    const dir = ssh["dir"];
+    const dir = ssh["makeDir"]();
     expect(statSync(dir).mode & 0o777).toBe(0o700);
     // OpenSSH first binds a temporary control socket with a random suffix before renaming it.
     for (const name of ["control.0123456789abcdef", "ask"]) {

@@ -126,6 +126,40 @@ it("reads only the live process's own holder records, never a reused pid's lefto
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+it("keeps a holder whose runtime came up seconds after the kernel started its process (#2281)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "herdr-omo-holders-"));
+  try {
+    const boot = 50_000;
+    const hold = (id: string, pid: number, processStartedAtMs: number, bootAtMs?: number) => {
+      const holders = join(dir, "session-holders", encodeURIComponent(id));
+      mkdirSync(holders, { recursive: true });
+      writeFileSync(join(holders, `${pid}.json`), JSON.stringify({ pid, bootAtMs, processStartedAtMs, cwd: "/project" }));
+    };
+    // the kernel started each pid at 100s; omo's own clock read its start later on a busy machine
+    hold("late-3500", 51, 103_500, boot);
+    hold("late-6958", 52, 106_958, boot + 1000);
+    hold("far-too-late", 53, 220_000, boot);
+    hold("reused-pid", 54, 96_500, boot);
+    hold("other-host", 55, 106_958, boot + 600_000);
+    hold("no-boot", 56, 106_958);
+    hold("no-boot-in-time", 57, 102_000);
+    expect(heldSessionIds(dir, 51, 100_000, undefined, boot)).toEqual(["late-3500"]);
+    expect(heldSessionIds(dir, 52, 100_000, "/project", boot)).toEqual(["late-6958"]);
+    expect(heldSessionIds(dir, 52, 100_000, "/elsewhere", boot)).toEqual([]);
+    expect(heldSessionIds(dir, 53, 100_000, undefined, boot)).toEqual([]);
+    // a record from before this process's start is a crashed process's whose pid was reused
+    expect(heldSessionIds(dir, 54, 100_000, undefined, boot)).toEqual([]);
+    // a late record proves nothing unless it names this host's boot: another host sharing the
+    // store, a clock step or an omo that writes no boot keeps the 3 s bound
+    expect(heldSessionIds(dir, 55, 100_000, undefined, boot)).toEqual([]);
+    expect(heldSessionIds(dir, 56, 100_000, undefined, boot)).toEqual([]);
+    expect(heldSessionIds(dir, 57, 100_000, undefined, boot)).toEqual(["no-boot-in-time"]);
+    // where this host's boot cannot be read, only the strict bound applies
+    expect(heldSessionIds(dir, 52, 100_000, undefined, null)).toEqual([]);
+    expect(heldSessionIds(dir, 57, 100_000, undefined, null)).toEqual(["no-boot-in-time"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 it("shows no earlier conversation after /new, while the session held now has no file yet", () => {
   // the process started at 10s and wrote /fresh.jsonl; /new then made it hold a session not written yet
   const afterNew = heldRuntime(runtime("a"), ["new-session"], files);

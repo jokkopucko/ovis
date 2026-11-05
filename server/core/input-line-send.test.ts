@@ -68,3 +68,12 @@ it("never types a long input line after its prompt failed in a way that may have
   expect(typed).not.toHaveBeenCalled();
   expect(keys).not.toHaveBeenCalled();
 });
+
+it("sends chat text through the guarded terminal path when a custom dsh agent has no prompt adapter", async () => {
+  const { prompt, typed, keys } = herdr();
+  spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent: "dsh", agent_status: "idle", cwd: "/tmp", terminal_id: "dsh-test" } as Awaited<ReturnType<typeof client.paneGet>>);
+  prompt.mockRejectedValue(new client.HerdrError("agent_not_ready", "custom dsh agent"));
+  await submitter()("w:p1", "hello dsh", "hello dsh", Date.now(), false);
+  expect(typed).toHaveBeenCalledWith("w:p1", "hello dsh", undefined, expect.any(Function));
+  expect(keys).toHaveBeenCalledWith("w:p1", ["Enter"], undefined, expect.any(Function));
+});

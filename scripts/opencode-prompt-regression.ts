@@ -120,7 +120,8 @@ try {
         if (process.env.OPENCODE_FOLLOWUP !== "optional") {
           await page.evaluate(() => { Object.assign(window, { nativeUnconfirmed: true }); });
           await page.locator(".composer-text").fill("A composer answer");
-          await page.locator(".composer-text").press("Enter");
+          // the send key: a phone's Return breaks the line by default, its hardware Mod+Enter sends
+          await page.locator(".composer-text").press(width === 390 ? "ControlOrMeta+Enter" : "Enter");
           await page.locator(".composer-note").waitFor();
           assert.equal(await page.locator(".composer-note").textContent(), KO[unconfirmedKey], "composer must show the shipped unconfirmed translation");
           if (shots) await page.screenshot({ path: join(shots, `${width}-${theme}-composer-unconfirmed.png`) });

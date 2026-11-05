@@ -19,6 +19,7 @@ function errorNote(t: Translate, error: VoiceError | VoiceUnavailable): string |
     case "insecure": return t("Voice input needs HTTPS");
     case "permission": return t("Microphone permission was denied");
     case "no_mic": return t("No microphone found");
+    case "speech_unavailable": return t("Speech recognition is off or unavailable on this device");
     case "not_configured": return t("Add an OpenAI API key in Settings > Voice input");
     case "provider_auth": return t("The OpenAI key was refused");
     case "provider":
@@ -236,10 +237,19 @@ export function MicButton({ dictation, className = "" }: { dictation: Dictation;
   const { voice, connected, press } = dictation;
   const recording = voice.state === "starting" || voice.state === "recording";
   const reason = voice.unavailableReason ? errorNote(t, voice.unavailableReason) : null;
-  const label = recording ? t("Insert dictation") : t("Dictate (hold)");
+  // a touch cannot hold the browser's recognition (below), so its label promises no hold
+  const label = recording ? t("Insert dictation") : voice.engine === "browser" ? t("Dictate") : t("Dictate (hold)");
   // a pointer already acted on pointerdown, so the click that follows its release is skipped;
   // a touch tap's click has detail 0 like a keyboard's, so detail cannot tell them apart
   const pointerUpAt = useRef(-Infinity);
+  // only the pointer that pressed may release a hold: another one's pointerup (a right-click) is not it
+  const holding = useRef<number | null>(null);
+  // iOS lets browser speech start only from a user activation, which a touch's pointerdown is not
+  // (#2343): there the tap's click starts or finishes the take, as the take stood at its pointerdown,
+  // so a take that ended on its own meanwhile is not started again; a touch hold is not push-to-talk
+  const tap = useRef<"start" | "finish" | null>(null);
+  // a touch hold ends with no click: its gesture is stale by the next click (Enter or Space)
+  const tapUpAt = useRef(-Infinity);
   return (
     <span className={`voice-mic-wrap ${className}`} data-state={voice.state}>
       <span className="voice-mic-ring" ref={voice.bindRing} aria-hidden="true" />
@@ -254,12 +264,35 @@ export function MicButton({ dictation, className = "" }: { dictation: Dictation;
           if (event.button !== 0) return;
           // focus and the soft keyboard stay where they are
           event.preventDefault();
+          if (event.pointerType !== "mouse" && voice.engine === "browser") {
+            tap.current = recording ? "finish" : "start";
+            return;
+          }
+          tap.current = null;
+          holding.current = event.pointerId;
           event.currentTarget.setPointerCapture(event.pointerId);
           press();
         }}
-        onPointerUp={() => { pointerUpAt.current = performance.now(); voice.release(); }}
-        onPointerCancel={() => voice.release()}
-        onClick={() => { if (performance.now() - pointerUpAt.current > 500) press(); }}
+        onPointerUp={(event) => {
+          if (tap.current !== null) tapUpAt.current = performance.now();
+          if (event.pointerId !== holding.current) return;
+          holding.current = null;
+          pointerUpAt.current = performance.now();
+          voice.release();
+        }}
+        onPointerCancel={(event) => {
+          tap.current = null;
+          if (event.pointerId !== holding.current) return;
+          holding.current = null;
+          voice.release();
+        }}
+        onClick={() => {
+          const gesture = performance.now() - tapUpAt.current < 500 ? tap.current : null;
+          tap.current = null;
+          if (gesture === "finish") voice.finish();
+          else if (gesture === "start") press();
+          else if (performance.now() - pointerUpAt.current > 500) press();
+        }}
       >
         {recording ? <Square aria-hidden="true" /> : <Mic aria-hidden="true" />}
       </button>

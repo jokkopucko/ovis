@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { type ReactNode, useRef, useState } from "react";
+import { QrCode as QrIcon, RefreshCw } from "lucide-react";
 
 import "./PhonePanel.css";
 
@@ -9,22 +9,23 @@ import { QrCode } from "./QrCode.tsx";
 import { useT } from "../lib/i18n.ts";
 
 const README_PHONE = "https://github.com/devswha/ovis#on-your-phone";
-const README_SAFETY = "https://github.com/devswha/ovis#access-and-safety";
 
 export interface PhonePanelProps {
   plan: PhonePlan;
   /** the server is still being asked */
   loading: boolean;
   onRefresh: () => void;
+  /** shown on a phone: the address to copy or share, its QR code behind Show QR code */
+  phone?: boolean;
 }
 
-/** Settings → Phone: the address a phone can open, or the one step still missing on this PC. */
-export function PhonePanel({ plan, loading, onRefresh }: PhonePanelProps) {
+/** Settings → Phone & devices → Connect a phone → Tailscale: the address a phone can open, or the one step still missing on this PC. */
+export function PhonePanel({ plan, loading, onRefresh, phone = false }: PhonePanelProps) {
   const t = useT();
-  return <div className="phone-panel">{loading && plan.kind !== "here" ? <p className="settings-hint" role="status">{t("Asking this PC about Tailscale…")}</p> : <Plan plan={plan} loading={loading} onRefresh={onRefresh} />}</div>;
+  return <div className="phone-panel">{loading && plan.kind !== "here" ? <p className="settings-hint" role="status">{t("Asking this PC about Tailscale…")}</p> : <Plan plan={plan} loading={loading} onRefresh={onRefresh} phone={phone} />}</div>;
 }
 
-function Plan({ plan, loading, onRefresh }: PhonePanelProps) {
+function Plan({ plan, loading, onRefresh, phone }: PhonePanelProps) {
   const t = useT();
   const checkAgain = <button type="button" className="btn" onClick={onRefresh} disabled={loading}><RefreshCw aria-hidden="true" />{t("Check again")}</button>;
   switch (plan.kind) {
@@ -32,9 +33,10 @@ function Plan({ plan, loading, onRefresh }: PhonePanelProps) {
     case "served":
       return (
         <>
-          <Address url={plan.url} title={t(plan.kind === "here" ? "Open this address on your phone" : "Tailscale already serves this PC")} />
+          {phone
+            ? <PhoneAddress url={plan.url} title={t(plan.kind === "here" ? "This page's address, for your other devices" : "Tailscale already serves this PC")} />
+            : <Address url={plan.url} title={t(plan.kind === "here" ? "Open this address on your phone" : "Tailscale already serves this PC")} />}
           <p className="settings-description">{t("Once it is open, install the app, then open the ⋯ menu and tap Alerts.")}</p>
-          {plan.kind === "served" && <Sharing />}
         </>
       );
     case "command":
@@ -44,7 +46,6 @@ function Plan({ plan, loading, onRefresh }: PhonePanelProps) {
           <Command command={plan.command} />
           {plan.url !== null && <p className="settings-description">{t("It will be at {url}.", { url: plan.url })}</p>}
           <div className="phone-actions">{checkAgain}</div>
-          <Sharing />
         </>
       );
     case "stopped":
@@ -84,6 +85,71 @@ export function Address({ url, title }: { url: string; title: string }) {
   );
 }
 
+/**
+ * The address on the phone itself: there is no camera to point at the screen it is shown on, so the
+ * address is read, copied or shared, and its QR code, for another device's camera, waits behind
+ * Show QR code.
+ */
+function PhoneAddress({ url, title }: { url: string; title: string }) {
+  const t = useT();
+  return (
+    <div className="phone-address phone-address-phone">
+      <p className="settings-label">{title}</p>
+      <p className="phone-url"><a href={url} target="_blank" rel="noreferrer">{url}</a></p>
+      <ShareLink url={url} copyLabel={t("Copy address")} />
+      <QrReveal value={url} label={`QR code: ${url}`} />
+    </div>
+  );
+}
+
+/** Share (where the browser can) and Copy for a link; Copy says Copied for a moment once it worked. */
+export function ShareLink({ url, copyLabel, children }: { url: string; copyLabel: string; children?: ReactNode }) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const canShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
+  const copy = async () => {
+    setFailed(false);
+    if (!(await copyText(url))) { setFailed(true); return; }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  };
+  return (
+    <>
+      <div className="phone-actions phone-share">
+        {canShare && <button type="button" className="btn" onClick={() => { navigator.share({ url }).catch(() => undefined); }}>{t("Share link")}</button>}
+        <button type="button" className="btn" onClick={() => void copy()}>{copied ? t("Copied") : copyLabel}</button>
+        {children}
+      </div>
+      {failed && (
+        <>
+          <p className="settings-hint" role="alert">{t("This browser would not copy it. Press and hold the link to copy it.")}</p>
+          <p className="phone-url"><a href={url} target="_blank" rel="noreferrer">{url}</a></p>
+        </>
+      )}
+    </>
+  );
+}
+
+/** A QR code drawn only once asked for: on a phone it is for another device's camera, not the reader's. */
+export function QrReveal({ value, label, hint }: { value: string; label: string; hint?: string }) {
+  const t = useT();
+  const [shown, setShown] = useState(false);
+  return (
+    <div className="qr-reveal">
+      <button type="button" className="btn btn-ghost qr-reveal-toggle" aria-expanded={shown} onClick={() => setShown((value) => !value)}>
+        <QrIcon aria-hidden="true" />{t(shown ? "Hide QR code" : "Show QR code")}
+      </button>
+      {shown && (
+        <div className="qr-reveal-body">
+          <QrCode value={value} label={label} />
+          {hint !== undefined && <p className="settings-description">{hint}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Command({ command }: { command: string }) {
   const t = useT();
   const codeRef = useRef<HTMLElement>(null);
@@ -98,15 +164,5 @@ function Command({ command }: { command: string }) {
       <code ref={codeRef}>{command}</code>
       <button type="button" className="btn" onClick={() => void copy()}>{t(copied ? "Copied" : "Copy")}</button>
     </div>
-  );
-}
-
-function Sharing() {
-  const t = useT();
-  return (
-    <details className="settings-details">
-      <summary>{t("Your own Tailscale devices get in as you.")}<span className="settings-details-toggle">{t("Details")}</span></summary>
-      <p className="settings-hint">{t("With an access token set, each asks for it once. Anyone else's device, or a LAN or public address, needs pairing: Devices, below.")} <a href={README_SAFETY} target="_blank" rel="noreferrer">{t("Access and safety")}</a></p>
-    </details>
   );
 }

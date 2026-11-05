@@ -3,10 +3,15 @@ import { createElement, useLayoutEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import { DEFAULT_ALERTS } from "../../shared/notify-policy.ts";
-import { ensurePushSubscription, pushSupported, removePushSubscription, testDevicePush } from "./push.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { ensurePushSubscription, pushSupported, registerPendingPush, removePushSubscription, testDevicePush } from "./push.ts";
 import { ApiError } from "./api.ts";
 import { notificationState, refreshNotificationState, requestNotificationPermission } from "./notifications.ts";
 import { useNotificationSwitch } from "./useNotifications.ts";
+import { fakeIndexedDB } from "./indexedDB.fake.ts";
+import type { FakeIndexedDB } from "./indexedDB.fake.ts";
+import { indexedDeviceStore, indexedPendingPush } from "./relay/device.ts";
 
 /**
  * The device-side subscription flow against a stand-in browser whose PushManager, like
@@ -522,4 +527,156 @@ it("preserves a rapid on-off-on sequence instead of reusing a subscription being
   expect(issued).toBe(2);
   expect(await reenable).toBe(live!.endpoint);
   expect(live!.unsubscribed).toBe(false);
+});
+
+describe("a subscription the hosted shell's worker kept while no window could tell the PC", () => {
+  const SERVER = "0123456789abcdef0123456789abcdef";
+  const OTHER = "fedcba9876543210fedcba9876543210";
+  let db: FakeIndexedDB;
+  /** what reached the PC, in order; `online` false: the relay is out of reach */
+  let calls: { method: string; endpoint: string }[];
+  let online: boolean;
+  let refusal: number | null;
+  const savedIndexedDB = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
+
+  const subscription = (endpoint: string, key: ArrayBuffer | null = null) => ({
+    endpoint, options: { applicationServerKey: key },
+    toJSON: () => ({ endpoint, expirationTime: null, keys: { p256dh: "p", auth: "a" } }),
+  });
+
+  /** public/sw.js as the worker of `scope`, with `windows` open: fires its pushsubscriptionchange. */
+  async function rotate(scope: string, change: { oldSubscription?: unknown; newSubscription?: unknown }, windows: { url: string; postMessage: (data: unknown) => void }[] = []) {
+    const listeners = new Map<string, (event: unknown) => void>();
+    const workerFetches: string[] = [];
+    const self = {
+      registration: { scope, pushManager: { subscribe: async () => subscription("https://push.example/resubscribed") } },
+      clients: { matchAll: async () => windows },
+      addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
+    };
+    new Function("self", "indexedDB", "fetch", readFileSync(join(import.meta.dir, "..", "..", "public", "sw.js"), "utf8"))(
+      self, db.factory, async (url: string) => { workerFetches.push(url); return new Response(null, { status: 404 }); });
+    let done: Promise<unknown> = Promise.resolve();
+    listeners.get("pushsubscriptionchange")!({ ...change, waitUntil: (work: Promise<unknown>) => { done = work; } });
+    await done;
+    return workerFetches;
+  }
+
+  beforeEach(() => {
+    db = fakeIndexedDB();
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: db.factory });
+    calls = [];
+    online = true;
+    refusal = null;
+    const server = globalThis.fetch;
+    globalThis.fetch = Object.assign(async (...args: Parameters<typeof fetch>) => {
+      const [url, init] = args;
+      if (url === "/api/push/subscribe") {
+        if (!online) throw new TypeError("Failed to fetch");
+        const body = JSON.parse(String(init?.body)) as { subscription?: { endpoint: string }; endpoint?: string };
+        calls.push({ method: init?.method ?? "GET", endpoint: body.subscription?.endpoint ?? body.endpoint ?? "" });
+        if (refusal !== null) return Response.json({ error: { code: "invalid_subscription", message: "no" } }, { status: refusal });
+      }
+      return server(...args);
+    }, { preconnect: server.preconnect });
+  });
+
+  afterEach(() => {
+    if (savedIndexedDB) Object.defineProperty(globalThis, "indexedDB", savedIndexedDB);
+    else Reflect.deleteProperty(globalThis, "indexedDB");
+  });
+
+  it("is stored by the PC's worker, then registered with that PC on the next start exactly once", async () => {
+    const fetched = await rotate(`https://app.test/s/${SERVER}/`, {
+      oldSubscription: subscription("https://push.example/old"), newSubscription: subscription("https://push.example/new"),
+    });
+    // the worker has no way to its PC: nothing is sent from it, the subscription waits in IndexedDB
+    expect(fetched).toEqual([]);
+    expect([...db.rows("pending-push").values()]).toEqual([{ server_id: SERVER,
+      subscription: { endpoint: "https://push.example/new", expirationTime: null, keys: { p256dh: "p", auth: "a" } }, old_endpoint: "https://push.example/old" }]);
+    expect(db.version()).toBe(2);
+
+    // another PC's start registers nothing of it
+    expect(await registerPendingPush(OTHER, indexedPendingPush)).toBe(false);
+    expect(calls).toEqual([]);
+
+    expect(await registerPendingPush(SERVER, indexedPendingPush)).toBe(true);
+    expect(calls).toEqual([{ method: "POST", endpoint: "https://push.example/new" }, { method: "DELETE", endpoint: "https://push.example/old" }]);
+    expect(db.rows("pending-push").size).toBe(0);
+    // the start after that has nothing left to register
+    expect(await registerPendingPush(SERVER, indexedPendingPush)).toBe(false);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("is registered once on a start with alerts allowed, where the app's own load-time registration runs too", async () => {
+    await rotate(`https://app.test/s/${SERVER}/`, {
+      oldSubscription: subscription("https://push.example/old"), newSubscription: subscription("https://push.example/new"),
+    });
+    // the browser now holds the rotated subscription, made for this PC's key
+    live = standIn("https://push.example/new", new Uint8Array(65).fill(4).buffer);
+    // a start: the shell's recovery, then the app's effect while the recovery is still on its way
+    const recovery = registerPendingPush(SERVER, indexedPendingPush, DEFAULT_ALERTS);
+    const load = ensurePushSubscription(DEFAULT_ALERTS);
+    expect(await recovery).toBe(true);
+    expect(await load).toBe("https://push.example/new");
+    expect(calls.filter(({ method }) => method === "POST")).toEqual([{ method: "POST", endpoint: "https://push.example/new" }]);
+    expect(issued).toBe(0);
+    // the skip is spent: the next start's load-time registration goes to the PC as always
+    await ensurePushSubscription(DEFAULT_ALERTS);
+    expect(calls.filter(({ method }) => method === "POST")).toHaveLength(2);
+  });
+
+  it("still hands the PC alerts chosen otherwise than the recovery sent", async () => {
+    await rotate(`https://app.test/s/${SERVER}/`, { newSubscription: subscription("https://push.example/new") });
+    live = standIn("https://push.example/new", new Uint8Array(65).fill(4).buffer);
+    const recovery = registerPendingPush(SERVER, indexedPendingPush, DEFAULT_ALERTS);
+    const load = ensurePushSubscription({ ...DEFAULT_ALERTS, input: !DEFAULT_ALERTS.input });
+    await Promise.all([recovery, load]);
+    expect(calls.filter(({ method }) => method === "POST")).toHaveLength(2);
+  });
+
+  it("tells only the PC's own open windows, and still keeps it for a window that is not connected", async () => {
+    const own: unknown[] = [];
+    const other: unknown[] = [];
+    await rotate(`https://app.test/s/${SERVER}/`, { newSubscription: subscription("https://push.example/new") }, [
+      { url: `https://app.test/s/${OTHER}/`, postMessage: (data) => other.push(data) },
+      { url: `https://app.test/s/${SERVER}/?pane=w1%3Ap1`, postMessage: (data) => own.push(data) },
+    ]);
+    expect(own).toEqual([{ type: "push-subscription-change" }]);
+    expect(other).toEqual([]);
+    expect(db.rows("pending-push").get(SERVER)).toMatchObject({ old_endpoint: null });
+  });
+
+  it("waits through a start that cannot reach the PC, and a second rotation keeps the endpoint the PC knows", async () => {
+    const scope = `https://app.test/s/${SERVER}/`;
+    await rotate(scope, { oldSubscription: subscription("https://push.example/a"), newSubscription: subscription("https://push.example/b") });
+    online = false;
+    await expect(registerPendingPush(SERVER, indexedPendingPush)).rejects.toBeInstanceOf(TypeError);
+    expect(db.rows("pending-push").size).toBe(1);
+    // rotated again while offline: the PC never heard of b, so a is the one to drop
+    await rotate(scope, { oldSubscription: subscription("https://push.example/b"), newSubscription: subscription("https://push.example/c") });
+    online = true;
+    expect(await registerPendingPush(SERVER, indexedPendingPush)).toBe(true);
+    expect(calls).toEqual([{ method: "POST", endpoint: "https://push.example/c" }, { method: "DELETE", endpoint: "https://push.example/a" }]);
+    expect(db.rows("pending-push").size).toBe(0);
+  });
+
+  it("is dropped once the PC refused it, so no start asks again", async () => {
+    await rotate(`https://app.test/s/${SERVER}/`, { newSubscription: subscription("https://push.example/new") });
+    refusal = 400;
+    await expect(registerPendingPush(SERVER, indexedPendingPush)).rejects.toBeInstanceOf(ApiError);
+    expect(db.rows("pending-push").size).toBe(0);
+  });
+
+  it("goes with the PC when the phone forgets it (a revoked PC's subscription is never registered)", async () => {
+    await rotate(`https://app.test/s/${SERVER}/`, { newSubscription: subscription("https://push.example/new") });
+    await indexedDeviceStore.remove(SERVER);
+    expect(db.rows("pending-push").size).toBe(0);
+    expect(await registerPendingPush(SERVER, indexedPendingPush)).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("subscribes again with the old key when the browser gave no new subscription", async () => {
+    await rotate(`https://app.test/s/${SERVER}/`, { oldSubscription: subscription("https://push.example/old", new Uint8Array(65).fill(4).buffer) });
+    expect(db.rows("pending-push").get(SERVER)).toMatchObject({ subscription: { endpoint: "https://push.example/resubscribed" }, old_endpoint: "https://push.example/old" });
+  });
 });

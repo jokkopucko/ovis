@@ -12,9 +12,10 @@ export function sshOutputParts(text: string): SshOutputPart[] {
   let offset = 0;
   // an address starts the text, a word or a bracket/quote: `https://` inside another URL
   // (ftp://host/https://…) is part of that URL, and linking it would point somewhere else
-  for (const match of text.matchAll(/(?<![^\s(<\["'])https:\/\/[^\s<>"']+/gi)) {
-    const index = match.index ?? 0;
-    const url = trimUrl(match[0]);
+  // (the character before it is matched, not looked behind at: shared/lookbehind.ts)
+  for (const match of text.matchAll(/(?:^|[\s(<["'])(https:\/\/[^\s<>"']+)/gi)) {
+    const index = match.index! + match[0].length - match[1]!.length;
+    const url = trimUrl(match[1]!);
     // a bare scheme ("https://") is not an address
     if (url.length <= "https://".length) continue;
     if (index > offset) parts.push({ type: "text", value: text.slice(offset, index) });

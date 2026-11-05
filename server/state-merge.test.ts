@@ -505,6 +505,33 @@ describe("shared preferences of the install's other state dir", () => {
     expect(existsSync(join(active, "preferences.json"))).toBe(false);
     expect(readFileSync(join(sibling, "preferences.json"), "utf8")).toBe("{ not json");
   });
+
+  it("end with one state folder id, this dir's or, while it has none, the other's", () => {
+    const id = (dir: string) => (JSON.parse(readFileSync(join(dir, "preferences-id.json"), "utf8")) as { state_id: string }).state_id;
+    const name = (dir: string, value: string) => writeFileSync(join(dir, "preferences-id.json"), JSON.stringify({ state_id: value }));
+    const a = "a".repeat(32);
+    const b = "b".repeat(32);
+    {
+      const { active, sibling } = install();
+      name(active, a);
+      mergeSiblingState(active, sibling, at(0));
+      expect([id(active), id(sibling)]).toEqual([a, a]);
+    }
+    {
+      const { active, sibling } = install();
+      name(sibling, b);
+      mergeSiblingState(active, sibling, at(0));
+      expect([id(active), id(sibling)]).toEqual([b, b]);
+      expect(new PreferenceStore(active).get().state_id).toBe(b);
+    }
+    {
+      const { active, sibling } = install();
+      name(active, a);
+      name(sibling, b);
+      mergeSiblingState(active, sibling, at(0));
+      expect([id(active), id(sibling)]).toEqual([a, a]);
+    }
+  });
 });
 
 describe("push subscriptions of the install's other state dir", () => {

@@ -235,6 +235,7 @@ describe("error reasons and keywords", () => {
     expect(micErrorReason("NotFoundError")).toBe("no_mic");
     expect(speechErrorReason("no-speech")).toBeNull();
     expect(speechErrorReason("not-allowed")).toBe("permission");
+    expect(speechErrorReason("service-not-allowed")).toBe("speech_unavailable");
     expect(speechErrorReason("audio-capture")).toBe("no_mic");
     expect(speechErrorReason("network")).toBe("network");
   });

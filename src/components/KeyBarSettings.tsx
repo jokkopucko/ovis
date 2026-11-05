@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, Plus, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronUp, GripVertical, Plus, X } from "lucide-react";
 
 import "./KeyBarSettings.css";
 
@@ -7,12 +7,13 @@ import { DEFAULT_KEY_BAR_ITEMS, KEY_BAR_ITEMS_MAX, KEY_BAR_KEYS, keyBarInputSequ
 import { NO_STICKY_MODIFIERS, type StickyModifiers } from "../lib/keys.ts";
 import { useSettings } from "../lib/settings.ts";
 import { useT } from "../lib/i18n.ts";
+import { edgeScrollStep, rowAt } from "../lib/touchReorder.ts";
 
 const MODIFIERS: readonly (keyof StickyModifiers)[] = ["ctrl", "alt", "shift"];
 const MODIFIER_CAPS: Record<keyof StickyModifiers, string> = { ctrl: "Ctrl", alt: "Alt", shift: "Shift" };
 const CHARACTER_KEY = "character";
 
-/** The phone's key row, edited in its display order without requiring a drag gesture. */
+/** The phone's key row: handles are a shortcut; buttons keep editing possible without dragging. */
 export function KeyBarSettings() {
   const t = useT();
   const { settings, update } = useSettings();
@@ -26,6 +27,97 @@ export function KeyBarSettings() {
   const [character, setCharacter] = useState("");
   const [comboModifiers, setComboModifiers] = useState<StickyModifiers>(NO_STICKY_MODIFIERS);
   const full = items.length >= KEY_BAR_ITEMS_MAX;
+  const listRef = useRef<HTMLOListElement>(null);
+  const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
+
+  useEffect(() => {
+    const list = listRef.current;
+    const scroller = list?.closest<HTMLElement>(".settings-key-bar-body");
+    if (!list || !scroller) return;
+    let lifted: { handle: HTMLElement; pointer: number; from: number; to: number; y: number } | null = null;
+    let frame = 0;
+
+    const place = (): void => {
+      if (!lifted) return;
+      const rows = Array.from(list.children, (row, index) => {
+        const box = row.getBoundingClientRect();
+        return { id: String(index), top: box.top, bottom: box.bottom };
+      });
+      const over = rowAt(lifted.y, rows);
+      if (over === null) return;
+      const to = Number(over);
+      if (to !== lifted.to) {
+        lifted.to = to;
+        setDrag({ from: lifted.from, to });
+      }
+    };
+    const scroll = (): void => {
+      if (!lifted) return;
+      const box = scroller.getBoundingClientRect();
+      scroller.scrollTop += edgeScrollStep(lifted.y, box.top, box.bottom);
+      place();
+      frame = window.requestAnimationFrame(scroll);
+    };
+    const finish = (save: boolean): void => {
+      if (!lifted) return;
+      const { handle, pointer, from, to } = lifted;
+      lifted = null;
+      window.cancelAnimationFrame(frame);
+      if (handle.hasPointerCapture(pointer)) handle.releasePointerCapture(pointer);
+      setDrag(null);
+      if (save && from !== to) {
+        const next = [...items];
+        next.splice(to, 0, next.splice(from, 1)[0]!);
+        update({ keyBarItems: next });
+      }
+    };
+    const down = (event: PointerEvent): void => {
+      const handle = (event.target as Element).closest<HTMLElement>(".key-bar-settings-handle");
+      if (!handle || !event.isPrimary || event.button !== 0 || lifted) return;
+      event.preventDefault();
+      const from = Array.prototype.indexOf.call(list.children, handle.parentElement) as number;
+      handle.setPointerCapture(event.pointerId);
+      lifted = { handle, pointer: event.pointerId, from, to: from, y: event.clientY };
+      setDrag({ from, to: from });
+      frame = window.requestAnimationFrame(scroll);
+    };
+    const move = (event: PointerEvent): void => {
+      if (!lifted || event.pointerId !== lifted.pointer) return;
+      event.preventDefault();
+      lifted.y = event.clientY;
+      place();
+    };
+    const up = (event: PointerEvent): void => {
+      if (!lifted || event.pointerId !== lifted.pointer) return;
+      lifted.y = event.clientY;
+      place();
+      finish(true);
+    };
+    const cancel = (event: PointerEvent): void => {
+      if (event.pointerId === lifted?.pointer) finish(false);
+    };
+    const escape = (event: KeyboardEvent): void => {
+      if (!lifted || event.key !== "Escape" || event.isComposing) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      finish(false);
+    };
+    list.addEventListener("pointerdown", down);
+    list.addEventListener("pointermove", move);
+    list.addEventListener("pointerup", up);
+    list.addEventListener("pointercancel", cancel);
+    list.addEventListener("lostpointercapture", cancel);
+    window.addEventListener("keydown", escape, true);
+    return () => {
+      finish(false);
+      list.removeEventListener("pointerdown", down);
+      list.removeEventListener("pointermove", move);
+      list.removeEventListener("pointerup", up);
+      list.removeEventListener("pointercancel", cancel);
+      list.removeEventListener("lostpointercapture", cancel);
+      window.removeEventListener("keydown", escape, true);
+    };
+  }, [items, update]);
 
   useEffect(() => {
     if (!available.includes(chosenKey)) setChosenKey(available[0] ?? "");
@@ -52,11 +144,12 @@ export function KeyBarSettings() {
   return (
     <div className="key-bar-settings">
       <p className="settings-hint">{t("Choose the keys and their order under the terminal. The keyboard mode button stays first.")}</p>
-      <ol className="key-bar-settings-list" aria-label={t("Key bar keys")}>
+      <ol ref={listRef} className="key-bar-settings-list" aria-label={t("Key bar keys")}>
         {items.map((item, index) => {
           const name = keyBarItemLabel(item);
           return (
-            <li className="key-bar-settings-row" key={keyBarItemId(item)}>
+            <li className={`key-bar-settings-row${drag?.from === index ? " is-dragging" : ""}${drag?.to === index && drag.from !== index ? drag.from > index ? " drop-before" : " drop-after" : ""}`} key={keyBarItemId(item)}>
+              <span className="key-bar-settings-handle" aria-hidden="true" title={t("Drag to reorder")}><GripVertical aria-hidden="true" /></span>
               <span className="key-bar-settings-cap" title={name}>{name}</span>
               <span className="key-bar-settings-kind">{item.type === "modifier" ? t("Held modifier") : item.modifiers ? t("Saved combination") : null}</span>
               <span className="key-bar-settings-actions">

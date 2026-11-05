@@ -3,6 +3,7 @@ import { paneStorageId, type Machine } from "../../shared/machines.ts";
 import { fetchSession } from "./api.ts";
 import { fileFromLink, resolveLink, type AppLink, type LinkNote } from "./deepLink.ts";
 import { machineGone, notificationLanding, notificationTargetFromSearch, sameLink, onNotificationTarget, type NotificationTarget } from "./notificationTarget.ts";
+import { pageSearch } from "./pageQuery.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
 import { markSelection, type SelectionMark } from "./selectionMark.ts";
 import type { PaneView } from "./actions.ts";
@@ -35,7 +36,7 @@ export function useSelectionState({ initialLink }: { initialLink: AppLink | null
     return storedSelection()?.pane_id ?? null;
   });
   const [notificationViewTarget, setNotificationViewTarget] = useState<NotificationTarget | null>(
-    () => notificationTargetFromSearch(window.location.search),
+    () => notificationTargetFromSearch(pageSearch()),
   );
   // a terminal command's peek (lib/terminalPeek.ts): the selected pane's terminal over its chat, this
   // browser's alone and never stored. Whatever clears the lens drawn over the pane's own clears it too
@@ -115,7 +116,7 @@ export function useSelectionMark({ selectedMachineId, selectedPaneId }: { select
   return { selectionRef, movingPanes };
 }
 
-export function useSelectTarget({ selectedMachineId, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setDrawerOpen, setOutputStopped, setNotificationViewTarget, setTerminalPeek, pendingLink, pendingFile, setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot, selectedMachine, selectedPaneId, setHeaderNote, linkTick, movingPanes }: {
+export function useSelectTarget({ selectedMachineId, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setDrawerOpen, setOutputStopped, setNotificationViewTarget, setTerminalPeek, pendingLink, pendingFile, setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot, selectedMachine, selectedPaneId, setHeaderNote, linkTick, movingPanes, onPick }: {
   selectedMachineId: string;
   setConnected: Dispatch<SetStateAction<boolean>>;
   setConnectedBefore: Dispatch<SetStateAction<boolean>>;
@@ -139,13 +140,17 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   linkTick: number;
   /** panes a tab move has on its way to another workspace (paneStorageId): their selection waits for the move */
   movingPanes: RefObject<Set<string>>;
+  /** told of every pick (a row, the palette, a link, an alert, a new pane), never of the app's own fallback */
+  onPick?: () => void;
 }) {
+  const onPickRef = useRef(onPick); onPickRef.current = onPick;
   const selectedMachineRef = useRef(selectedMachineId);
   selectedMachineRef.current = selectedMachineId;
   /** how many picks were made since the tab opened: a link, an alert, the user (lib/hiddenMachines.ts reads it) */
   const picks = useRef(0);
   const selectTarget = useCallback((machineId: string, paneId: string | null, view?: PaneView) => {
     picks.current += 1;
+    onPickRef.current?.();
     // Only another PC mounts a new terminal (and socket), which reports its own state. A pane
     // on the same PC keeps the connected socket, which never reports again: resetting here
     // left the header on "reconnecting" after every pane switch.
@@ -241,7 +246,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   return { selectedMachineRef, selectTarget, selectTargetRef, picks };
 }
 
-export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen }: {
+export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, onPick }: {
   pendingLink: RefObject<AppLink | null>;
   pendingFile: RefObject<string | null>;
   setLinkLanded: Dispatch<SetStateAction<boolean>>;
@@ -251,8 +256,12 @@ export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selecti
   setTerminalPeek: Dispatch<SetStateAction<TerminalPeek | null>>;
   setAutoSelected: Dispatch<SetStateAction<boolean>>;
   setDrawerOpen: Dispatch<SetStateAction<boolean>>;
+  /** told of a pane the user picked (focusInput), as selectTarget's onPick is; never of the app's own fallback */
+  onPick?: () => void;
 }) {
+  const onPickRef = useRef(onPick); onPickRef.current = onPick;
   const selectPane = useCallback((paneId: string, focusInput = true) => {
+    if (focusInput) onPickRef.current?.();
     pendingLink.current = null; pendingFile.current = null; setLinkLanded(true);
     selectionHint.current = null;
     setSelectedPaneId(paneId);
@@ -320,7 +329,7 @@ export function useSelectedLayout({ selectedPane, snapshot, drawerOpen, selected
   const selectedLayout = snapshot?.layouts.find((layout) => layout.tab_id === selectedPane?.tab_id);
   // Selection can precede rendering: in a zoomed tab the layout effect below redirects it,
   // but the sidebar's passive effect can still see that first selection. Only the selected
-  // pane the canvas actually draws counts; paneInFront checks coverage at acknowledgement time.
+  // pane the canvas actually draws counts; panePresence checks coverage at acknowledgement time.
   const presentedPaneId = !drawerOpen && selectedPane && !selectedPane.restore_error
     && (!selectedLayout?.panes.length || selectedLayout.panes.some((pane) => pane.pane_id === selectedPane.pane_id))
     && (!selectedLayout?.zoomed || selectedLayout.focused_pane_id === selectedPane.pane_id)

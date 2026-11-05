@@ -11,7 +11,8 @@ const POLL_MS = 2000;
 /** One serial lane for newest pages and their gap fills; an older page starts in it, after the
  * newest read before it, but never holds the next newest read back. */
 export class ConversationRefresh {
-  private read: (() => Promise<void>) | null = null;
+  private read: ((signal: AbortSignal) => Promise<void>) | null = null;
+  private scope: AbortController | null = null;
   private pending = false;
   private invalidated = false;
   private running = false;
@@ -20,8 +21,10 @@ export class ConversationRefresh {
   private pushes = false;
   private readonly pages: (() => Promise<void>)[] = [];
 
-  /** Replace a cancelled reader without letting its still-pending REST request overlap this one. */
-  setRead(read: () => Promise<void>): void {
+  /** A replaced screen releases its REST read before the new screen enters the serial lane. */
+  setRead(read: (signal: AbortSignal) => Promise<void>): void {
+    this.scope?.abort();
+    this.scope = new AbortController();
     this.clearTimer();
     this.pending = false;
     this.invalidated = false;
@@ -64,10 +67,14 @@ export class ConversationRefresh {
   /** An explicitly requested older page starts once the newest read in flight (and its gap fill)
    * has settled, so a history change found there drops it first. A slow older page never delays
    * the newest page: a clear or a new turn still shows while it loads, and its caller discards it. */
-  page<T>(read: () => Promise<T>): Promise<T> {
+  page<T>(read: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const { promise, resolve, reject } = Promise.withResolvers<T>();
+    const signal = this.scope?.signal;
     this.pages.push(async () => {
-      try { resolve(await read()); }
+      try {
+        if (signal === undefined || signal.aborted) throw signal?.reason ?? new DOMException("The read was cancelled.", "AbortError");
+        resolve(await read(signal));
+      }
       catch (cause) { reject(cause); }
     });
     this.clearTimer();
@@ -75,12 +82,14 @@ export class ConversationRefresh {
     return promise;
   }
 
-  /** Hidden/unmounted readers leave no timer or pending refresh; an in-flight read finishes first. */
+  /** Hidden/unmounted readers leave no timer, pending refresh or REST read holding the lane. */
   stop(): void {
     this.read = null;
     this.pending = false;
     this.invalidated = false;
     this.clearTimer();
+    this.scope?.abort();
+    this.scope = null;
   }
 
   private backstop(): number {
@@ -108,7 +117,7 @@ export class ConversationRefresh {
         this.invalidated = false;
         // Monotonic elapsed time keeps wall-clock corrections out of the rate bound.
         this.newestAt = performance.now();
-        await this.read();
+        await this.read(this.scope!.signal);
       }
     } finally {
       this.running = false;

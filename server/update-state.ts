@@ -69,7 +69,7 @@ const BRIDGE_REGISTRY = "bridges";
  * copies of the new dir's files, which are not state of the old dir's own while they are the same
  * bytes, and the backups of what it replaced, which move along.
  */
-const MERGE_COPIES = ["devices.json", "preferences.json", "muted-panes.json", "state-merge.json", "state-merge-devices-incomplete.json"];
+const MERGE_COPIES = ["devices.json", "preferences.json", "muted-panes.json", "preferences-id.json", "state-merge.json", "state-merge-devices-incomplete.json"];
 const MERGE_BACKUPS = "state-merge-backups";
 
 const sameFile = (left: string, right: string): boolean => {

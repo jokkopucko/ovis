@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { panelUrl, wantsPanel } from "./webPanel.ts";
+import { panelUrl, shouldOpenWebPage, wantsPanel } from "./webPanel.ts";
 
 const lan = { protocol: "http:", hostname: "100.123.228.51", origin: "http://100.123.228.51:7317" };
 const local = { protocol: "http:", hostname: "localhost", origin: "http://localhost:7317" };
@@ -45,5 +45,24 @@ describe("wantsPanel", () => {
     expect(wantsPanel("tab", true)).toBe(true);
     expect(wantsPanel("panel", false)).toBe(true);
     expect(wantsPanel("panel", true)).toBe(false);
+  });
+});
+
+describe("shouldOpenWebPage", () => {
+  it("lets only plain and Shift left-clicks follow the app setting", () => {
+    const calls: Array<[string, boolean, string]> = [];
+    const open = (uri: string, shiftKey: boolean, machineId: string) => { calls.push([uri, shiftKey, machineId]); return true; };
+    const click = (values: Partial<MouseEvent> = {}) => ({ button: 0, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...values }) as MouseEvent;
+
+    expect(shouldOpenWebPage(click(), "https://pc.tail.ts.net:9000/report", open, "local")).toBe(true);
+    expect(shouldOpenWebPage(click({ shiftKey: true }), "https://pc.tail.ts.net:9000/report", open, "local")).toBe(true);
+    for (const modifier of ["metaKey", "ctrlKey", "altKey"] as const) {
+      expect(shouldOpenWebPage(click({ [modifier]: true }), "https://pc.tail.ts.net:9000/report", open, "local")).toBe(false);
+    }
+    expect(shouldOpenWebPage(click({ button: 1 }), "https://pc.tail.ts.net:9000/report", open, "local")).toBe(false);
+    expect(calls).toEqual([
+      ["https://pc.tail.ts.net:9000/report", false, "local"],
+      ["https://pc.tail.ts.net:9000/report", true, "local"],
+    ]);
   });
 });

@@ -49,12 +49,14 @@ export function workImages(parts: readonly ConversationPart[]): WorkImage[] {
 
 /**
  * The refs the browser keeps once fetched, so a line may fetch their pictures before anything is
- * opened: Claude's (`<entry uuid>:<block>[:<index>]`) and pi's (`pi:`, `pi-prompt:`) name bytes
- * that never change, and server/pane-routes.ts serves them immutable. Codex and OpenCode refs are
+ * opened: Claude's (`<entry uuid>:<block>[:<index>]`), pi's (`pi:`, `pi-prompt:`), Grok's
+ * (`grok-image:<digest of the bytes>`) and Copilot's (`copilot:<digest of the bytes>`) name bytes
+ * that never change, and server/pane-routes.ts serves
+ * them immutable. Codex and OpenCode refs are
  * served no-store, and an agent not listed here is taken to be, so their pictures load only when
  * their row is opened (ToolImages).
  */
-const CACHED_IMAGE_REFS = [/^[0-9a-f-]{8,64}:\d{1,3}(?::\d{1,3})?$/i, /^pi:/, /^pi-prompt:/];
+const CACHED_IMAGE_REFS = [/^[0-9a-f-]{8,64}:\d{1,3}(?::\d{1,3})?$/i, /^pi:/, /^pi-prompt:/, /^grok-image:[a-f0-9]{64}$/, /^copilot:[a-f0-9]{64}$/];
 
 /** Whether the browser keeps the picture `ref` names, so a line may fetch it without a click. */
 export function cachedImageRef(ref: string): boolean {

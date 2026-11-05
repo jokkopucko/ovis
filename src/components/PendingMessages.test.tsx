@@ -93,6 +93,16 @@ describe("a pending row's refusal note", () => {
     }
   });
 
+  // #511: a held message whose paste was left in the terminal's input line tells where it is, in every language
+  it("says plainly that a held message sits in the terminal's input line", () => {
+    for (const language of ["en", "ko", "ja", "zh"] as const) {
+      const html = render("pasted_not_sent", "The message is in the terminal's input line, not sent; clear it or press Enter there", [language], true, "uncertain");
+      // uncertain: copied or discarded, never sent again from here
+      expect(html).not.toContain("pending-message-send");
+      expect(html).toContain(translate(language, "Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.").replace(/'/g, "&#x27;"));
+    }
+  });
+
   it("shows the still-open note as the composer wrote it, once", () => {
     const note = translate("ko", "Not sent: {command} is still open in the terminal.", { command: "/btw" });
     const html = render("still_open", note, ["ko"]);

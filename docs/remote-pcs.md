@@ -65,6 +65,30 @@ stop for that failure; signing in alone does not fix it.
 An existing herdr server is always reused. Signing in later does not move an already-running
 headless server into the desktop session, and Ovis never restarts it or its panes automatically.
 An initial connection can be cancelled while waiting; already-started work stays running.
+## Through the relay
+
+**Settings → Remote PCs → Add a PC through the relay** adds another PC with no SSH and no open
+port: both PCs only connect out to the [Ovis relay](relay.md). On the other PC, turn the relay on
+under **Settings → Phone & devices**, choose **Copy link**, and paste that link here. This PC's
+server then pairs with that one exactly as a phone does: the same one-time code, the same
+end-to-end encryption and the same device key, kept on this server in
+`<stateDir>/relay-pcs/<pc id>.json` (mode `0600`). The other PC lists it under Devices as
+`Ovis on <this PC's name>`, with the access any paired device has. The PC itself is saved in
+`<stateDir>/relay-pcs.json`, apart from `machines.json`, so going back to an older release still starts.
+
+Its workspaces then join the sidebar as an SSH PC's do. Nothing is installed on that PC: it runs
+its own Ovis, which updates itself, so it has no bridge controls. Its connection carries the PC's
+status, its API routes and its terminals as streams of one relay session, which holds at most 8
+WebSockets, so about 7 of its terminals can be open at once. A dropped connection comes back with
+the same backoff as an SSH PC's and signs in with the saved key; nothing typed is sent again.
+
+**Revoke** under Phone & devices on the other PC ends this PC's access: the PC turns to an error
+that says so and is not tried again. **Remove PC** here forgets the PC and its key; revoke it on
+the other PC as well to remove it there. To add it again, paste a new link.
+
+`POST /api/machines/relay` with `{ "link": "<pairing link>", "name"?: "<PC name>" }` adds one
+(201 `{ machine }`, with `kind: "relay"`), under the same guards as every PC change.
+
 ## Runtime and endpoints
 
 ```
@@ -101,7 +125,9 @@ herdr 0.9.3). Older bridge bundles keep waiting until updated, and observe conne
 **Update bridge** also reuses a bridge whose live identity verifies as current; it does not
 download, install or restart the same version again.
 
-**Multiple apps connecting to one PC.** Keep those apps on the same version. An older app
+**Multiple apps connecting to one PC.** Keep those apps on the same version, or run one app on a
+PC that stays on and add the others to it as remote PCs
+([One always-on PC for all your PCs](guide.md#one-always-on-pc-for-all-your-pcs)). An older app
 with this protection refuses to downgrade a newer bridge and asks you to update the app itself.
 Apps from before this version can still replace a newer bridge. If another app
 starts an incompatible bridge during an update, setup reports a **Bridge connection conflict**

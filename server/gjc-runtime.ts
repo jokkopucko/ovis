@@ -277,6 +277,9 @@ type GjcProcessIdentity = { pid: number; birth: number };
 export type GjcTranscriptOptions = {
   platform?: string;
   processInfo?: (paneId: string) => Promise<GjcPaneProcessInfo | null>;
+  /** herdr's answer the caller's poll already read for this pane: it stands in for the first read only, the
+   * check after the binding is read always asks again */
+  known?: GjcPaneProcessInfo["process_info"] | null;
   processBirth?: (pid: number) => number | null | Promise<number | null>;
   readProcessTable?: () => Promise<ProcessRow[]>;
   now?: () => number;
@@ -366,7 +369,7 @@ async function lookupNativeTranscript(
     const readProcessInfo = options.processInfo ?? ((id: string) => herdrRpc<GjcPaneProcessInfo>(
       "pane.process_info", { pane_id: id },
     ).catch(() => null));
-    const initialInfo = await readProcessInfo(paneId);
+    const initialInfo = options.known !== undefined ? (options.known === null ? null : { process_info: options.known }) : await readProcessInfo(paneId);
     if (!initialInfo || token.cancelled) return null;
     const initial = await foregroundProcesses(initialInfo, platform, options, false);
     if (!initial || initial.length !== 1 || token.cancelled) return null;

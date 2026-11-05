@@ -102,9 +102,9 @@ export class ConversationFinishEvidence {
 export const conversationFinishEvidence = new ConversationFinishEvidence();
 
 /** Retained phone siblings keep their suggestions, but invisible content covers no pane. */
-export function paneCovered(): boolean {
-  return [...document.querySelectorAll(PANE_COVER_SELECTOR)].some((node) =>
-    !node.closest('[hidden],[inert],[aria-hidden="true"],.is-hidden')
+export function paneCovered(exclude?: string, selector = PANE_COVER_SELECTOR): boolean {
+  return [...document.querySelectorAll(selector)].some((node) =>
+    (!exclude || !node.matches(exclude)) && !node.closest('[hidden],[inert],[aria-hidden="true"],.is-hidden')
       && node.getClientRects().length > 0 && getComputedStyle(node).visibility === "visible");
 }
 

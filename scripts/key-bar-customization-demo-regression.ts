@@ -7,6 +7,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { keyBarItemLabel } from "../src/lib/keyBar.ts";
 
 // Production client over the demo's synthetic transport. Editing and typing stay in this
 // disposable, loopback-only app; no herdr session or user terminal is opened.
@@ -101,6 +102,165 @@ const addCharacter = async (editor: Locator, character: string, wanted: string[]
   await editor.getByRole("button", { name: "Add combination", exact: true }).tap();
 };
 
+/** Real touch input must reorder only on the grip; the rest of the list remains a scroll surface. */
+async function checkHandleReorder(page: Page): Promise<void> {
+  const original = await settingsOf(page);
+  let dialog = await openSettings(page);
+  const caps = (): Promise<string[]> => dialog.locator(".key-bar-settings-cap").allTextContents();
+  const savedCaps = async (): Promise<string[]> => {
+    const items = (await settingsOf(page)).keyBarItems;
+    assert.ok(Array.isArray(items), "the layout is saved as an ordered array");
+    return items.map(keyBarItemLabel);
+  };
+  const before = await caps();
+  const expected = [before.at(-1)!, ...before.slice(0, -1)];
+  const cdp = await page.context().newCDPSession(page);
+  const touch = (type: "touchStart" | "touchMove" | "touchEnd" | "touchCancel", point?: { x: number; y: number }): Promise<unknown> =>
+    cdp.send("Input.dispatchTouchEvent", { type, touchPoints: point ? [point] : [] });
+  const center = async (node: Locator): Promise<{ x: number; y: number }> => {
+    await node.scrollIntoViewIfNeeded();
+    const box = await node.boundingBox();
+    assert.ok(box, "the gesture target is visible");
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  };
+  const trackSaves = (): Promise<void> => page.evaluate((key) => {
+    const originalSet = Storage.prototype.setItem;
+    // This counter is installed and read only by this browser test.
+    const recorder = window as unknown as { keyBarSettingsWrites: number };
+    recorder.keyBarSettingsWrites = 0;
+    Storage.prototype.setItem = function (name, value) {
+      if (this === localStorage && name === key) recorder.keyBarSettingsWrites++;
+      originalSet.call(this, name, value);
+    };
+  }, SETTINGS_KEY);
+  const saves = (): Promise<number> => page.evaluate(() => {
+    // The test installed this counter before any gesture.
+    const recorder = window as unknown as { keyBarSettingsWrites: number };
+    return recorder.keyBarSettingsWrites;
+  });
+  try {
+    await trackSaves();
+    const last = await center(dialog.locator(".key-bar-settings-handle").last());
+    if (evidence) await page.screenshot({ path: join(evidence, "key-bar-drag-before-phone.png") });
+    const framesBefore = await framesOf(page);
+    await touch("touchStart", last);
+    const body = await dialog.locator(".settings-key-bar-body").boundingBox();
+    assert.ok(body);
+    // A held finger at the top must keep scrolling without further pointer moves.
+    const edge = { x: last.x, y: body.y + 8 };
+    for (let step = 1; step <= 12; step++) {
+      await touch("touchMove", { x: last.x, y: last.y + (edge.y - last.y) * step / 12 });
+      await settled(page);
+    }
+    await page.waitForFunction(() => document.querySelector(".settings-key-bar-body")!.scrollTop === 0, undefined, { timeout: 10_000 });
+    const first = await center(dialog.locator(".key-bar-settings-handle").first());
+    await touch("touchMove", first);
+    assert.equal(await saves(), 0, "holding and edge scrolling do not save intermediate orders");
+    assert.deepEqual(await caps(), before, "the source stays in place until release");
+    await touch("touchEnd");
+    await settled(page);
+    assert.deepEqual(await caps(), expected, "a touch handle moves the last key to the first slot");
+    assert.deepEqual(await savedCaps(), expected, "the exact rendered order is saved");
+    assert.equal(await saves(), 1, "one release saves once, not once per crossed row");
+    assert.deepEqual(await framesOf(page), framesBefore, "editing the layout never types into a terminal");
+    if (evidence) await page.screenshot({ path: join(evidence, "key-bar-drag-after-phone.png") });
+    await closeSettings(page, dialog);
+    const terminalOrder = await keysOf(page);
+    assert.deepEqual(terminalOrder, ["direct", "paste", "keyboard", MIGRATED_KEYS.at(-1)!, ...MIGRATED_KEYS.slice(3, -1)]);
+    await page.reload();
+    await ready(page);
+    assert.deepEqual(await keysOf(page), terminalOrder, "the dragged order persists through reload");
+    dialog = await openSettings(page);
+    assert.deepEqual(await caps(), expected);
+    await trackSaves();
+    const saved = (await settingsOf(page)).keyBarItems;
+
+    let start = await center(dialog.locator(".key-bar-settings-handle").first());
+    let target = await center(dialog.locator(".key-bar-settings-handle").nth(2));
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(target.x, target.y, { steps: 8 });
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    assert.equal(await dialog.isVisible(), true, "Escape cancels the drag, not the key-bar detail");
+    assert.deepEqual(await caps(), expected);
+    assert.deepEqual((await settingsOf(page)).keyBarItems, saved);
+    assert.equal(await saves(), 0, "Escape does not persist an intermediate order");
+
+    await touch("touchStart", start);
+    await touch("touchMove", target);
+    await touch("touchCancel");
+    await settled(page);
+    assert.deepEqual(await caps(), expected);
+    assert.deepEqual((await settingsOf(page)).keyBarItems, saved);
+    assert.equal(await saves(), 0, "a cancelled pointer restores without saving");
+    await touch("touchStart", start);
+    await touch("touchEnd");
+    await settled(page);
+    assert.equal(await saves(), 0, "releasing in the original slot does not save");
+
+    const swipe = await center(dialog.locator(".key-bar-settings-cap").nth(4));
+    const scrollBefore = await dialog.locator(".settings-key-bar-body").evaluate((node) => node.scrollTop);
+    await touch("touchStart", swipe);
+    for (let step = 1; step <= 12; step++) {
+      await touch("touchMove", { x: swipe.x, y: swipe.y - 160 * step / 12 });
+      await settled(page);
+    }
+    await touch("touchEnd");
+    await page.waitForFunction((before) => document.querySelector(".settings-key-bar-body")!.scrollTop > before, scrollBefore);
+    assert.deepEqual(await caps(), expected, "swiping a row body scrolls without reordering");
+    assert.deepEqual((await settingsOf(page)).keyBarItems, saved);
+    assert.equal(await saves(), 0, "native scrolling does not save");
+
+    start = await center(dialog.locator(".key-bar-settings-handle").first());
+    const currentBody = await dialog.locator(".settings-key-bar-body").boundingBox();
+    assert.ok(currentBody);
+    const lowerEdge = { x: start.x, y: currentBody.y + currentBody.height - 8 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(lowerEdge.x, lowerEdge.y, { steps: 8 });
+    await page.waitForFunction(() => {
+      const row = document.querySelector(".key-bar-settings-row:last-child")!.getBoundingClientRect();
+      const body = document.querySelector(".settings-key-bar-body")!.getBoundingClientRect();
+      return row.bottom <= body.bottom;
+    }, undefined, { timeout: 10_000 });
+    target = await center(dialog.locator(".key-bar-settings-handle").last());
+    await page.mouse.move(target.x, target.y);
+    assert.equal(await saves(), 0);
+    await page.mouse.up();
+    await settled(page);
+    const mouseOrder = [...expected.slice(1), expected[0]!];
+    assert.deepEqual(await caps(), mouseOrder, "the same handle supports a mouse without a long press");
+    assert.deepEqual(await savedCaps(), mouseOrder);
+    assert.equal(await saves(), 1);
+
+    start = await center(dialog.locator(".key-bar-settings-handle").first());
+    target = await center(dialog.locator(".key-bar-settings-handle").nth(2));
+    const sheetBefore = await dialog.boundingBox();
+    assert.ok(sheetBefore);
+    await touch("touchStart", start);
+    for (let step = 1; step <= 8; step++) {
+      await touch("touchMove", { x: start.x, y: start.y + (target.y - start.y) * step / 8 });
+      await settled(page);
+    }
+    const sheetDuring = await dialog.boundingBox();
+    assert.ok(sheetDuring);
+    assert.ok(Math.abs(sheetDuring.y - sheetBefore.y) < 1, "dragging down on the grip icon never drags the Settings sheet");
+    await touch("touchEnd");
+    await settled(page);
+    const downOrder = [mouseOrder[1]!, mouseOrder[2]!, mouseOrder[0]!, ...mouseOrder.slice(3)];
+    assert.equal(await dialog.isVisible(), true, "a downward touch reorder does not dismiss Settings");
+    assert.deepEqual(await caps(), downOrder);
+    assert.deepEqual(await savedCaps(), downOrder);
+    assert.equal(await saves(), 2, "each completed mouse or touch reorder saves once");
+    console.log("PASS touch handle last-to-first with edge scrolling, one save on release, reload persistence, Escape/pointercancel/no-op cancellation, row-body scrolling and mouse reorder");
+  } finally { await cdp.detach(); }
+  // Keep the legacy-customization scenarios below independent of this gesture's order.
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, JSON.stringify(value)), { key: SETTINGS_KEY, value: original });
+  await page.reload();
+  await ready(page);
+}
+
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
@@ -157,6 +317,7 @@ try {
         await ready(page);
         await appFaces(page);
         assert.deepEqual(await keysOf(page), MIGRATED_KEYS, "old extras retain every fixed key, modifier and paired extra in their original order");
+        await checkHandleReorder(page);
 
         let dialog = await openSettings(page);
         let editor = dialog.locator(".key-bar-settings");

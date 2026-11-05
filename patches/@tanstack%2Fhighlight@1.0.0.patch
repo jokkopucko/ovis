@@ -1,0 +1,50 @@
+diff --git a/dist/internal/script.js b/dist/internal/script.js
+index 82973ef372324b373bd7b4ac312be63dd57d4875..3e698b745c7e2eac476579c51d75e9ff1af40562 100644
+--- a/dist/internal/script.js
++++ b/dist/internal/script.js
+@@ -2,9 +2,15 @@ import { collectPatternRanges, offsetRanges } from './patterns.js';
+ const keywords = 'abstract|as|asserts|async|await|break|case|catch|class|const|continue|debugger|declare|default|delete|do|else|enum|export|extends|finally|for|from|function|get|if|implements|import|in|infer|instanceof|interface|is|keyof|let|module|namespace|new|of|override|package|private|protected|public|readonly|return|satisfies|set|static|super|switch|this|throw|try|type|typeof|using|var|while|with|yield';
+ const semanticPatterns = [
+     {
+-        className: 'property',
+-        regex: /(?<!\.)\.([A-Za-z_$][\w$]*)/g,
+-        group: 1,
++        // `.name` after no dot, checked without a lookbehind: Safari before 16.4 cannot parse one
++        collect: (code) => {
++            const ranges = [];
++            for (const match of code.matchAll(/\.([A-Za-z_$][\w$]*)/g)) {
++                if (code[match.index - 1] !== '.')
++                    ranges.push({ start: match.index + 1, end: match.index + match[0].length, className: 'property' });
++            }
++            return ranges;
++        },
+     },
+     { className: 'function', regex: /@[A-Za-z_$][\w$]*/g },
+     {
+diff --git a/dist/languages/cpp.js b/dist/languages/cpp.js
+index 5c481993d001bebba431b0979dd1cf8c6f12d102..c010afbb407836f0da81459f8901886d413ab996 100644
+--- a/dist/languages/cpp.js
++++ b/dist/languages/cpp.js
+@@ -5,8 +5,20 @@ export const cpp = defineLanguage({
+     aliases: ['c++', 'cc', 'cxx', 'hpp', 'hxx'],
+     tokenize: patternTokenizer([
+         {
+-            className: (match) => match[0].startsWith('/') ? 'comment' : 'string',
+-            regex: /\/\/(?:\\\r?\n|[^\n])*|\/\*[\s\S]*?\*\/|(?:u8|u|U|L)?R"([^ ()\\\t\r\n]{0,16})\([\s\S]*?\)\1"|(?:u8|u|U|L)?"(?:\\[\s\S]|[^"\\])*"|(?<![\w'])(?:u8|u|U|L)?'(?:\\.|[^'\\\r\n])*'/g,
++            // a character literal after no word character or `'` (`1'000` is a number), checked
++            // without a lookbehind: Safari before 16.4 cannot parse one
++            collect: (code) => {
++                const regex = /\/\/(?:\\\r?\n|[^\n])*|\/\*[\s\S]*?\*\/|(?:u8|u|U|L)?R"([^ ()\\\t\r\n]{0,16})\([\s\S]*?\)\1"|(?:u8|u|U|L)?"(?:\\[\s\S]|[^"\\])*"|(?:u8|u|U|L)?'(?:\\.|[^'\\\r\n])*'/g;
++                const ranges = [];
++                for (let match = regex.exec(code); match; match = regex.exec(code)) {
++                    if (/^(?:u8|u|U|L)?'/.test(match[0]) && /[\w']/.test(code[match.index - 1] ?? '')) {
++                        regex.lastIndex = match.index + 1;
++                        continue;
++                    }
++                    ranges.push({ start: match.index, end: match.index + match[0].length, className: match[0].startsWith('/') ? 'comment' : 'string' });
++                }
++                return ranges;
++            },
+         },
+         { className: 'string', regex: /^[ \t]*#[ \t]*include[ \t]*(<[^>\r\n]+>)/gm, group: 1 },
+         { className: 'meta', regex: /^[ \t]*(#[ \t]*[A-Za-z_]\w*)/gm, group: 1 },

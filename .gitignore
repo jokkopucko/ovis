@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# the hosted shell, `bun run build:shell` (scripts/shell-build.ts)
+dist-shell/
 *.log
 .env
 evidence/

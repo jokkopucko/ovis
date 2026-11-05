@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { herdrStateDir } from "./plugin-state.ts";
 import { readProcessBirth } from "../server/process-owner.ts";
 import { updateStateDir } from "../server/update-state.ts";
+import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
+import { decodeOffer, encodeOffer } from "../shared/relay-offer.ts";
 
 /**
  * The plugin's settings files, read by hand the way a headless PC runs `status` or `pair`:
@@ -274,7 +276,12 @@ describe("starts at the same moment", () => {
       const stopped = await run("stop", { HERDR_PLUGIN_ROOT: root, PORT: port });
       expect(stopped.exitCode, stopped.err).toBe(0);
       expect(stopped.out).toContain(`stopped Ovis (pid ${pid})`);
-      expect(() => process.kill(pid, 0)).toThrow();
+      // gone, or exited and not yet reaped by whatever adopted it: stop counts a zombie as gone, and
+      // signal 0 still reaches one; without /proc (macOS) signal 0 is all there is
+      if (existsSync("/proc/self/stat")) {
+        const stat = (() => { try { return readFileSync(`/proc/${pid}/stat`, "utf8"); } catch { return null; } })();
+        expect(stat === null ? "gone" : stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0]).toMatch(/^(gone|Z)$/);
+      } else expect(() => process.kill(pid, 0)).toThrow();
     } finally {
       for (const { pid } of servers) try { process.kill(-pid, "SIGKILL"); } catch { /* stopped */ }
       listener.stop(true);
@@ -755,5 +762,89 @@ describe("the state dir when run by hand", () => {
     expect(herdrStateDir({}, "darwin", "/h")).toBe(join("/h", ".local", "state", "herdr"));
     expect(herdrStateDir({ LOCALAPPDATA: "C:/L" }, "win32", "/h")).toBe(join("C:/L", "herdr"));
     expect(herdrStateDir({ USERPROFILE: "C:/U" }, "win32", "/h")).toBe(join("C:/U", "AppData", "Local", "herdr"));
+  });
+});
+
+describe("pair relay offer", () => {
+  async function pairWithRelay(phase: "online" | "off" | "missing" | "malformed" | "bad-offer") {
+    const key = generateKeyPair();
+    let offerRequests = 0;
+    let validOfferUrl = "";
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/api/health") return Response.json(APP_HEALTH);
+        if (path === "/api/devices/pair/start") return Response.json({ code: "123456", expires_at: "2030-01-01T00:00:00.000Z" });
+        if (path === "/api/access") return Response.json({ tailscale: { serving_url: null } });
+        if (path === "/api/relay") {
+          if (phase === "missing") return new Response("not found", { status: 404 });
+          if (phase === "malformed") return new Response("{", { headers: { "content-type": "application/json" } });
+          return Response.json({ phase: phase === "bad-offer" ? "online" : phase });
+        }
+        if (path === "/api/relay/offer") {
+          offerRequests++;
+          expect(request.method).toBe("POST");
+          expect(request.headers.get("x-herdr-update")).toBe("1");
+          expect(request.headers.get("origin")).toBe(`http://127.0.0.1:${server.port}`);
+          if (phase === "bad-offer") return Response.json({ url: "https://app.ovis.sh/#offer=not-valid" });
+          // Construct via the shared encoder so this fixture exercises the production URL contract.
+          validOfferUrl = encodeOffer({
+            v: 1, server_id: "0123456789abcdef0123456789abcdef",
+            server_public_key: exportPublicKey(key.publicKey), relay: "wss://relay.ovis.sh", code: "123456",
+          }, "https://app.ovis.sh");
+          return Response.json({ url: validOfferUrl, expires_at: "2030-01-01T00:00:00.000Z" });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    try {
+      const result = await run("pair", { PORT: String(server.port) });
+      return { ...result, offerRequests };
+    } finally {
+      await server.stop(true);
+    }
+  }
+
+  it("prints the relay offer URL and QR only while online", async () => {
+    const result = await pairWithRelay("online");
+    expect(result.exitCode, result.err).toBe(0);
+    expect(result.out).toContain("Ovis relay");
+    const printedUrl = result.out.split("\n").find((line) => line.includes("#offer="));
+    expect(printedUrl).toBeString();
+    const offer = decodeOffer(printedUrl!);
+    expect(offer?.code).toBe("123456");
+    const printedCode = /Pairing code: (\d{3}) (\d{3})/.exec(result.out);
+    expect(printedCode?.[1] + printedCode?.[2]).toBe(offer?.code);
+    expect(result.out.slice(result.out.indexOf(printedUrl!) + printedUrl!.length)).toContain("█");
+    expect(result.offerRequests).toBe(1);
+  });
+
+  it("prints one settings hint while relay is off and never requests an offer", async () => {
+    const result = await pairWithRelay("off");
+    expect(result.exitCode, result.err).toBe(0);
+    expect(result.out).not.toContain("#offer=");
+    expect(result.out.match(/To turn on Ovis relay:/g)).toHaveLength(1);
+    expect(result.offerRequests).toBe(0);
+  });
+
+  it("prints nothing extra when the relay API is missing", async () => {
+    const result = await pairWithRelay("missing");
+    expect(result.exitCode, result.err).toBe(0);
+    expect(result.out).not.toContain("Ovis relay");
+    expect(result.out).not.toContain("To turn on Ovis relay:");
+    expect(result.offerRequests).toBe(0);
+  });
+
+  it("reports malformed relay responses without crashing or printing a QR", async () => {
+    const status = await pairWithRelay("malformed");
+    expect(status.exitCode).toBe(0);
+    expect(status.err).toContain("Could not read Ovis relay pairing:");
+    expect(status.out).not.toContain("#offer=");
+    const offer = await pairWithRelay("bad-offer");
+    expect(offer.exitCode).toBe(0);
+    expect(offer.err).toContain("Could not read Ovis relay pairing:");
+    expect(offer.out).not.toContain("#offer=");
   });
 });

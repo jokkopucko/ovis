@@ -10,6 +10,9 @@ import { CONFUSABLES_DATA } from "./confusables.generated.ts";
 import { t } from "./i18n.ts";
 import { optionName, promptWords } from "./promptText.ts";
 
+/** The agents whose own keys move between a form's questions (pi's tabs, Claude Code's question tabs, omo's Tab, omp's Tab, Codex's ←/→, Hermes's Tab): a move carries none of the card's edits. */
+const KEYED_STEPS = new Set(["pi", "claude", "omo", "omp", "codex", "hermes"]);
+
 export type TypedAnswer = Pick<PromptAnswer, "option_index" | "option_indices" | "custom_text">;
 
 /** The options a typed number can pick, by the number the agent shows (index + 1). */
@@ -127,9 +130,9 @@ export function sendsChecksWithText(prompt: InteractivePrompt): boolean {
   return prompt.multi_select && !prompt.fallback && (prompt.checks_with_text === true || prompt.agent === "opencode");
 }
 
-/** Pi switches native tabs, not web-owned drafts. Keep edits visible until sent or cleared. */
+/** Pi and Claude Code switch native tabs, not web-owned drafts. Keep edits visible until sent or cleared. */
 export function blocksStepNavigation(prompt: InteractivePrompt, selected: ReadonlySet<number>, custom: string): boolean {
-  if (prompt.agent !== "pi" || prompt.drafts_saved || !prompt.steps?.some(step => step.can_navigate)) return false;
+  if (!KEYED_STEPS.has(prompt.agent) || prompt.drafts_saved || !(prompt.can_step_next || prompt.can_step_back || prompt.steps?.some(step => step.can_navigate))) return false;
   return custom !== (prompt.default_custom_text ?? "") || prompt.multi_select
     && JSON.stringify([...selected].sort((a, b) => a - b)) !== JSON.stringify(prompt.default_option_indices ?? []);
 }

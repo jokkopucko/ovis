@@ -35,12 +35,14 @@
 import { closeSync, fstatSync, openSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { readOmoLines as readLines, type OmoLine } from "./omo-records.ts";
+import { readOmoLinesCooperatively, type OmoLine } from "./omo-records.ts";
 export { readOmoLines as readLines, type OmoLine } from "./omo-records.ts";
 
 import type { AgentStatus, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { omoAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { omoDetachedAfter, type OmoDetachedCell } from "./omo-detached.ts";
+import { omoJobCount, omoJobsAfter, omoJobTasks, type OmoJobs } from "./omo-jobs.ts";
+import type { OmoTask } from "../shared/protocol.ts";
 import type { OmoRest } from "./completion.ts";
 import { OMO_RUNNING, omoStateDir, type OmoStateOptions } from "./omo-state-dir.ts";
 
@@ -63,6 +65,8 @@ export interface OmoTurn {
   asks: OmoAsks;
   /** eval cells whose terminal notification has not arrived */
   detached?: readonly OmoDetachedCell[];
+  /** background commands, monitors and detached cells, for the list (omo-jobs.ts) */
+  jobs?: OmoJobs;
 }
 
 export const noTurn = (): OmoTurn => ({ status: null, at: null, asks: [] });
@@ -82,6 +86,7 @@ export function omoTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
   let role: unknown, stopReason: unknown, customType: unknown, timestamp: unknown;
   let asks = turn.asks;
   let detached = turn.detached;
+  let jobs = turn.jobs;
   if ("text" in line) {
     try {
       const entry = JSON.parse(line.text) as { customType?: unknown; timestamp?: unknown; message?: { role?: unknown; stopReason?: unknown } };
@@ -90,6 +95,7 @@ export function omoTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
       stopReason = entry.message?.stopReason;
       asks = omoAsksAfter(asks, entry);
       detached = omoDetachedAfter(detached ?? [], entry);
+      jobs = omoJobsAfter(jobs ?? { running: [], ended: [] }, entry);
     } catch { return turn; }
   } else {
     // Legacy end-only records cannot establish or close a question safely.
@@ -100,9 +106,9 @@ export function omoTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
   }
   const parsed = typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
   const at = Number.isFinite(parsed) ? parsed : turn.at;
-  if (custom) return typeof customType === "string" && TURN_STARTS.has(customType) ? { status: "working", at, asks, detached } : turn;
-  if (role === "assistant") return stopReason === "toolUse" ? { status: "working", at, asks, detached } : { status: "idle", ...(stopReason === "error" ? { failed: true } : {}), at, asks, detached };
-  return role === "user" || role === "toolResult" ? { status: "working", at, asks, detached } : { ...turn, asks, detached };
+  if (custom) return typeof customType === "string" && TURN_STARTS.has(customType) ? { status: "working", at, asks, detached, jobs } : { ...turn, jobs };
+  if (role === "assistant") return stopReason === "toolUse" ? { status: "working", at, asks, detached, jobs } : { status: "idle", ...(stopReason === "error" ? { failed: true } : {}), at, asks, detached, jobs };
+  return role === "user" || role === "toolResult" ? { status: "working", at, asks, detached, jobs } : { ...turn, asks, detached, jobs };
 }
 
 /** The turn at the end of a session text. */
@@ -151,8 +157,8 @@ export interface OmoPane { path: string | null; startedAt: number | null }
 export interface OmoFile {
   /** its size, and what tells the file from one put in its place (a session file can be rewritten whole) */
   stat: (path: string) => { size: number; id: string } | null;
-  /** the lines from `from` to `size`, and the offset read to */
-  lines: (path: string, from: number, size: number, each: (line: OmoLine) => void) => number;
+  /** the lines from `from` to `size`, and the offset read to; stop between chunks when no longer current */
+  lines: (path: string, from: number, size: number, each: (line: OmoLine) => void, current: () => boolean) => number | Promise<number>;
 }
 
 export interface OmoStatusDeps {
@@ -193,10 +199,15 @@ interface Tracked extends OmoPane { cwd: string; sessionCwd?: string; offset: nu
 
 const FILES: OmoFile = {
   stat: (path) => { try { const fd = openSync(path, "r"); try { const stat = fstatSync(fd); return { size: stat.size, id: `${stat.dev}:${stat.ino}` }; } finally { closeSync(fd); } } catch { return null; } },
-  lines: (path, from, size, each) => {
+  lines: (path, from, size, each, current) => {
     let fd: number;
     try { fd = openSync(path, "r"); } catch { return from; }
-    try { return readLines(fd, from, size, each); } catch { return from; } finally { closeSync(fd); }
+    try {
+      const read = readOmoLinesCooperatively(fd, from, size, each, current);
+      if (read instanceof Promise) return read.catch(() => from).finally(() => closeSync(fd));
+      closeSync(fd);
+      return read;
+    } catch { closeSync(fd); return from; }
   },
 };
 
@@ -211,8 +222,12 @@ export class OmoStatus {
   private refreshedAt = -Infinity;
   private refreshedFor = "";
   private refreshing: Promise<void> | null = null;
+  /** A pane has at most one read in flight; its unpublished replay is private to that read. */
+  private readonly reading = new Map<Tracked, Promise<void>>();
   /** counts the panes taken from OmO by an event: a lookup started before one says nothing of them */
   private generation = 0;
+  /** stop invalidates every read; a renamed pane invalidates only its own tracked object. */
+  private readGeneration = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticks = 0;
   private readonly file: OmoFile;
@@ -243,8 +258,11 @@ export class OmoStatus {
     const pollMs = this.deps.pollMs ?? 1000;
     const every = Math.max(1, Math.round(this.refreshMs / pollMs));
     this.timer = setInterval(() => {
-      this.poll();
-      if (++this.ticks % every === 0) void this.deps.snapshot().then((snapshot) => this.refresh(snapshot.panes)).catch(() => undefined);
+      void this.poll();
+      const generation = this.generation;
+      if (++this.ticks % every === 0) void this.deps.snapshot().then((snapshot) => {
+        if (generation === this.generation) return this.refresh(snapshot.panes);
+      }).catch(() => undefined);
     }, pollMs);
     this.timer.unref?.();
   }
@@ -252,6 +270,8 @@ export class OmoStatus {
   stop(): void {
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
+    this.generation += 1;
+    this.readGeneration += 1;
   }
 
   /** the pane's own status may replace herdr's only while it is allowed to (omo: once the session is known) */
@@ -274,6 +294,12 @@ export class OmoStatus {
     return this.panes.get(paneId)?.background ?? 0;
   }
 
+  /** The pane's background commands, monitors and detached cells, as the list shows them. */
+  jobsOf(paneId: string): OmoTask[] {
+    const tracked = this.panes.get(paneId);
+    return tracked === undefined ? [] : omoJobTasks(tracked.turn.jobs, tracked.startedAt);
+  }
+
   /** The native session already resolved for this pane; no new process or file lookup. */
   pathOf(paneId: string): string | null {
     return this.panes.get(paneId)?.path ?? null;
@@ -292,11 +318,18 @@ export class OmoStatus {
    * `refreshMs` while the panes stay the same: each pane costs a process lookup.
    */
   async refresh(panes: HerdrPane[]): Promise<void> {
+    const generation = this.generation;
     const key = panes.map((pane) => `${pane.pane_id}\0${pane.agent ?? ""}\0${pane.cwd ?? ""}`).join("\n");
-    if (key === this.refreshedFor && this.now() - this.refreshedAt < this.refreshMs) return;
-    if (this.refreshing) return this.refreshing;
+    if (key === this.refreshedFor && this.now() - this.refreshedAt < this.refreshMs) {
+      await Promise.all(this.reading.values());
+      return;
+    }
+    if (this.refreshing) {
+      await this.refreshing;
+      if (generation === this.generation) await this.poll();
+      return;
+    }
     this.refreshing = (async () => {
-      const generation = this.generation;
       const found = await this.deps.discover(panes);
       if (generation !== this.generation) return;
       const cwds = new Map(panes.map((pane) => [pane.pane_id, pane.cwd ?? ""]));
@@ -328,9 +361,10 @@ export class OmoStatus {
       }
       this.refreshedFor = key;
       this.refreshedAt = this.now();
-      this.poll();
     })().finally(() => { this.refreshing = null; });
-    return this.refreshing;
+    // Discovery must not be held behind replay: a later lookup can replace a session mid-read.
+    await this.refreshing;
+    if (generation === this.generation) await this.poll();
   }
 
   private remember(paneId: string, tracked: Tracked): void {
@@ -353,56 +387,114 @@ export class OmoStatus {
     return true;
   }
 
+  /** Pane end cancels its replay and any discovery begun before the lifecycle event. */
+  ended(paneId: string): void {
+    this.panes.delete(paneId);
+    this.last.delete(paneId);
+    this.generation += 1;
+    this.refreshedFor = "";
+  }
+
   /**
    * Reads what the session files gained; a turn that started or ended is told. A pane found at
    * rest tells nobody; one found in a turn tells it, so that its end is a finish.
    */
-  poll(): void {
+  poll(): Promise<void> {
     const counts = new Map<string, Map<string, number>>();
+    const pending: Promise<void>[] = [];
     for (const [paneId, tracked] of this.panes) {
+      const reading = this.reading.get(tracked);
+      if (reading) { pending.push(reading); continue; }
       if (tracked.path === null) { this.noteAuthority(tracked); continue; }
-      const stat = this.file.stat(tracked.path);
+      const path = tracked.path;
+      const stat = this.file.stat(path);
       tracked.available = stat !== null;
       if (stat === null) { tracked.complete = false; this.noteAuthority(tracked); continue; }
       const { size } = stat;
-      if (tracked.offset <= 0 || size < tracked.offset || stat.id !== tracked.id) this.readFrom(tracked, tracked.path, size);
+      const generation = this.readGeneration;
+      const current = () => generation === this.readGeneration && this.panes.get(paneId) === tracked;
+      let invalidated = false;
+      const readable = () => {
+        if (!current() || invalidated) return false;
+        const latest = this.file.stat(path);
+        invalidated = latest === null || latest.id !== stat.id || latest.size < size;
+        return !invalidated;
+      };
+      // Reducing historical records must not expose intermediate RUN, INPUT or DONE states.
+      const next = { ...tracked };
+      let offset: number | Promise<number> = tracked.offset;
+      if (tracked.offset <= 0 || size < tracked.offset || stat.id !== tracked.id) offset = this.readFrom(next, path, size, readable);
       // also what a read that failed left unread
-      else if (size !== tracked.size || tracked.offset < size) tracked.offset = this.file.lines(tracked.path, tracked.offset, size, (line) => { tracked.turn = this.turnAfter(tracked.turn, line); });
-      tracked.size = size;
-      tracked.id = stat.id;
-      tracked.complete = tracked.offset >= size;
-      // nothing could be read of it (a read that failed): what the pane read before stands until one succeeds
-      if (tracked.turn.status === null && tracked.offset < size) { this.noteAuthority(tracked); continue; }
-      const stale = tracked.turn.status === "working" && tracked.turn.at !== null && tracked.startedAt !== null && tracked.turn.at < tracked.startedAt - STALE_TURN_MS;
-      if (this.staleIsFailure && stale && tracked.turn.asks.length > 0) tracked.turn = { ...tracked.turn, asks: [] };
-      const status: OmoPaneStatus = tracked.turn.asks.length > 0 ? "blocked" : tracked.turn.status === "working" && !stale ? "working" : "idle";
-      const sessionId = omoSessionId(tracked.path);
-      const cwd = tracked.sessionCwd ?? tracked.cwd;
-      if (!counts.has(cwd)) counts.set(cwd, cwd ? this.background(cwd) : new Map());
-      // A resumed file can hold cells from a kernel that died with its previous process.
-      const detached = tracked.turn.detached?.filter((cell) => tracked.startedAt === null || cell.at >= tracked.startedAt).length ?? 0;
-      const background = (sessionId ? counts.get(cwd)!.get(sessionId) ?? 0 : 0) + detached;
-      const failed = status === "idle" && (tracked.turn.failed === true || (this.staleIsFailure && stale));
-      // an answer written after the error that ended the turn (a retry's, or one to a new prompt):
-      // the pane worked meanwhile, though it read READY, and this rest is the finish of that work.
-      // Without the times to tell it newer, it is not taken for one: a finish missed, never made up
-      const answered = tracked.failed && tracked.failedAt !== null && status === "idle" && !failed && tracked.turn.status === "idle"
-        && tracked.turn.at !== null && tracked.turn.at > tracked.failedAt;
-      // an error read from a file found anew is history: it says nothing of a DONE told since
-      const rest: OmoRest | undefined = failed ? (tracked.history ? "failed-before" : "failed") : answered ? "answered" : undefined;
-      const turn = status !== tracked.status || failed !== tracked.failed || (tracked.retell && status !== "idle");
-      tracked.retell = false;
-      const changed = turn || background !== tracked.background;
-      tracked.status = status;
-      tracked.failed = failed;
-      tracked.failedAt = failed ? tracked.turn.at : null;
-      tracked.history = false;
-      tracked.background = background;
-      // a pane whose file said nothing while it was polled had herdr's word stand for it:
-      // its own status, once it holds again, is told so that last word does not keep standing
-      const regained = this.noteAuthority(tracked);
-      if ((changed || regained) && this.ready(tracked)) this.deps.onChange(paneId, status, background, turn || regained, rest);
+      else if (size !== tracked.size || tracked.offset < size) offset = this.file.lines(path, tracked.offset, size, (line) => { next.turn = this.turnAfter(next.turn, line); }, readable);
+      const publish = (offset: number, latest = stat) => {
+        if (!current()) return;
+        tracked.turn = next.turn;
+        tracked.history = next.history;
+        if (next.sessionCwd === undefined) delete tracked.sessionCwd;
+        else tracked.sessionCwd = next.sessionCwd;
+        tracked.offset = offset;
+        tracked.size = size;
+        tracked.id = stat.id;
+        tracked.complete = offset >= latest.size;
+        this.publish(paneId, tracked, counts);
+      };
+      if (offset instanceof Promise) {
+        tracked.complete = false;
+        // GJC yields authority while behind, but a first replay is still a silent baseline.
+        if (tracked.polled) this.noteAuthority(tracked);
+        const reading = offset.then((offset) => {
+          if (!current()) return;
+          const latest = this.file.stat(path);
+          // A replaced or truncated file is another history, not the rest of this replay.
+          if (invalidated || latest === null || latest.id !== stat.id || latest.size < size) {
+            tracked.offset = -1;
+            tracked.available = false;
+            tracked.complete = false;
+            this.noteAuthority(tracked);
+            return;
+          }
+          publish(offset, latest);
+        }).finally(() => { this.reading.delete(tracked); });
+        this.reading.set(tracked, reading);
+        pending.push(reading);
+      } else publish(offset);
     }
+    return Promise.all(pending).then(() => undefined);
+  }
+
+  /** Publish only the final state of a read range, with the existing history and readiness rules. */
+  private publish(paneId: string, tracked: Tracked, counts: Map<string, Map<string, number>>): void {
+    // nothing could be read of it (a read that failed): what the pane read before stands until one succeeds
+    if (tracked.turn.status === null && tracked.offset < tracked.size) { this.noteAuthority(tracked); return; }
+    const stale = tracked.turn.status === "working" && tracked.turn.at !== null && tracked.startedAt !== null && tracked.turn.at < tracked.startedAt - STALE_TURN_MS;
+    if (this.staleIsFailure && stale && tracked.turn.asks.length > 0) tracked.turn = { ...tracked.turn, asks: [] };
+    const status: OmoPaneStatus = tracked.turn.asks.length > 0 ? "blocked" : tracked.turn.status === "working" && !stale ? "working" : "idle";
+    const sessionId = tracked.path === null ? null : omoSessionId(tracked.path);
+    const cwd = tracked.sessionCwd ?? tracked.cwd;
+    if (!counts.has(cwd)) counts.set(cwd, cwd ? this.background(cwd) : new Map());
+    // A resumed file can hold cells from a kernel that died with its previous process.
+    const detached = tracked.turn.detached?.filter((cell) => tracked.startedAt === null || cell.at >= tracked.startedAt).length ?? 0;
+    const background = (sessionId ? counts.get(cwd)!.get(sessionId) ?? 0 : 0) + detached + omoJobCount(tracked.turn.jobs, tracked.startedAt);
+    const failed = status === "idle" && (tracked.turn.failed === true || (this.staleIsFailure && stale));
+    // an answer written after the error that ended the turn (a retry's, or one to a new prompt):
+    // the pane worked meanwhile, though it read READY, and this rest is the finish of that work.
+    // Without the times to tell it newer, it is not taken for one: a finish missed, never made up
+    const answered = tracked.failed && tracked.failedAt !== null && status === "idle" && !failed && tracked.turn.status === "idle"
+      && tracked.turn.at !== null && tracked.turn.at > tracked.failedAt;
+    // an error read from a file found anew is history: it says nothing of a DONE told since
+    const rest: OmoRest | undefined = failed ? (tracked.history ? "failed-before" : "failed") : answered ? "answered" : undefined;
+    const turn = status !== tracked.status || failed !== tracked.failed || (tracked.retell && status !== "idle");
+    tracked.retell = false;
+    const changed = turn || background !== tracked.background;
+    tracked.status = status;
+    tracked.failed = failed;
+    tracked.failedAt = failed ? tracked.turn.at : null;
+    tracked.history = false;
+    tracked.background = background;
+    // a pane whose file said nothing while it was polled had herdr's word stand for it:
+    // its own status, once it holds again, is told so that last word does not keep standing
+    const regained = this.noteAuthority(tracked);
+    if ((changed || regained) && this.ready(tracked)) this.deps.onChange(paneId, status, background, turn || regained, rest);
   }
 
   /**
@@ -419,12 +511,12 @@ export class OmoStatus {
   }
 
   /** Replay from the start once, then consume only appended complete records. */
-  private readFrom(tracked: Tracked, path: string, size: number): void {
+  private readFrom(tracked: Tracked, path: string, size: number, current: () => boolean): number | Promise<number> {
     tracked.turn = noTurn();
     tracked.history = true;
     delete tracked.sessionCwd;
     let first = true;
-    tracked.offset = this.file.lines(path, 0, size, (line) => {
+    return this.file.lines(path, 0, size, (line) => {
       // The existing replay already reads the session header: no extra file read per poll.
       if (first && "text" in line) {
         try {
@@ -434,7 +526,7 @@ export class OmoStatus {
       }
       first = false;
       tracked.turn = this.turnAfter(tracked.turn, line);
-    });
+    }, current);
   }
 
   /**

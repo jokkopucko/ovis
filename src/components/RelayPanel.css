@@ -1,0 +1,40 @@
+/* what the relay is doing now is read, not a footnote: one step above a row's sentence, never above its label */
+.relay-status {
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+/* the relay's or the server's sentence can carry an address */
+.relay-error {
+  overflow-wrap: anywhere;
+}
+
+/* the QR code beside its words, as the Phone group draws an address; one under the other on a phone */
+.relay-pairing {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.relay-pairing-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.relay-pairing-text .phone-actions {
+  margin-top: var(--space-2);
+}
+
+@media (max-width: 640px) {
+  .relay-pairing {
+    flex-direction: column;
+  }
+}
+
+/* the PC's relay id under its QR code, to compare with the one a phone shows for a mismatched key */
+.relay-pairing-id {
+  margin-top: var(--space-3);
+}

@@ -68,6 +68,13 @@
   font-weight: 600;
 }
 
+/* the quiet last row: set apart by a rule, in the dimmer text, and never bold as a chosen agent is */
+.agent-picker-menu .agent-picker-add {
+  margin-top: var(--space-1);
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
 @media (pointer: coarse) {
   .agent-picker-menu .menu-item {
     height: var(--touch-target);

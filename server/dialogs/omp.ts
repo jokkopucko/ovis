@@ -1,5 +1,6 @@
 import type { DialogReader } from "./registry.ts";
 import { pickerPlan } from "./interaction-plan.ts";
+import { piActiveTab } from "./pi-ask-tabs.ts";
 import { type InteractivePromptAnswer } from "../../shared/protocol.ts";
 import { ANSI_RE, KEY, type MenuRow, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, isDivider, own, keySteps, navigationKeys, nearestQuestion, normalizeText, wrapped } from "./shared.ts";
 
@@ -25,7 +26,7 @@ const OMP_QUESTION_ROWS = 4;
 
 const OMP_EXPAND_HINT_RE = /\s\u00b7\s\S+\sexpand(?:\s\u00b7|$)/;
 
-const OMP_TABS_HINT_RE = /(?:tab|⇥).*?(?:←|left).*?(?:→|right)|(?:←|left).*?(?:→|right).*?(?:tab|⇥)/i;
+export const OMP_TABS_HINT_RE = /(?:tab|⇥).*?(?:←|left).*?(?:→|right)|(?:←|left).*?(?:→|right).*?(?:tab|⇥)/i;
 
 /** OMP options have a marker; their descriptions and wrapped labels are indented below them. */
 function parseOmpRows(lines: string[], startDivider: number, endDivider: number): MenuRow[] | null {
@@ -109,6 +110,44 @@ function ompTabRowText(rawLine: string): string {
   return rawLine.replace(ANSI_RE, "").replace(/^\s*│/, "").replace(/│\s*$/, "");
 }
 
+/** Only complete, independently styled TabBar cells prove stops; clipped/plain strips do not. */
+function ompSteps(screen: string, before: number) {
+  const lines = screen.split(/\r?\n/);
+  const top = findLastIndex(lines, (line, index) => index < before && /^\s*╭/.test(line.replace(ANSI_RE, "")));
+  if (top < 0) return null;
+  const strip: string[] = [];
+  for (let at = top + 1; at < before; at++) {
+    const line = lines[at];
+    if (line === undefined || !isOmpTabStripRow(line)) break;
+    strip.push(line.slice(line.indexOf("│") + 1, line.lastIndexOf("│")));
+    if (isOmpSubmitTabRow(line)) break;
+  }
+  const raw = strip.join("\n");
+  const cell = /(?:\x1b\[[0-9;]*m)+ ([^\x1b\r\n]+?) (?:\x1b\[[0-9;]*m)+/g;
+  const cells = [...raw.matchAll(cell)];
+  if (raw.replace(cell, "").replace(ANSI_RE, "").trim()) return null;
+  const labels = cells.map(match => match[1]?.trim() ?? "");
+  if (labels.length < 2 || labels.at(-1) !== "Submit" || labels.some(label => !label || /…|\.\.\./.test(label))
+    || new Set(labels).size !== labels.length) return null;
+  let offset = 0;
+  const plain = raw.replace(ANSI_RE, "");
+  const markers = labels.map(label => {
+    const at = plain.indexOf(` ${label} `, offset) + 1;
+    offset = at + label.length;
+    return at;
+  });
+  const index = piActiveTab(raw, markers);
+  if (index === null) return null;
+  return {
+    // The strip has no answered markers: leave steps unmarked unless review rows prove an answer.
+    // the review (Submit, last) draws no question of the call, so a move to it cannot be checked: questions only
+    steps: labels.map((label, at) => ({ label, answered: false, current: at === index, can_navigate: at !== index && at < labels.length - 1 })),
+    can_step_back: index > 0,
+    can_step_next: index < labels.length - 2,
+    nativeSteps: { identity: JSON.stringify(labels), index, count: labels.length, next: KEY.tab, previous: KEY.backtab },
+  };
+}
+
 const OMP_REVIEW_ROW_RE = /^\d+\.\s+(.*?):(?:\s+(.*))?$/;
 
 const OMP_REVIEW_NOTE_RE = /^Note:\s*(.*)$/;
@@ -151,15 +190,23 @@ function parseOmpSubmit(screen: string): ParsedPrompt | null {
   // without answers read, the panel as it is drawn; with them, only what is not an answer (the
   // unanswered-questions warning)
   const body = (answers ? panel.filter((line) => !OMP_REVIEW_ROW_RE.test(line) && !OMP_REVIEW_NOTE_RE.test(line)) : panel).join("\n");
+  const navigation = ompSteps(screen, heading);
   return finishPrompt("omp", {
     kind: "menu", title: own("Review answers"), question: own("Submit these answers?"), body: body || null,
     ...(answers ? { answers } : {}),
     options: [{ label: own("Submit"), description: null }, { label: own("Cancel"), description: null }],
     multi_select: false, custom_option_index: null,
+    ...(navigation ? {
+      steps: navigation.steps.map(step => ({ ...step, answered: answers?.some(answer => answer.question === step.label
+        && answer.answer !== null && answer.answer !== "unanswered" && !/…|\.\.\./.test(answer.answer)) ?? false })),
+      can_step_back: navigation.can_step_back, can_step_next: navigation.can_step_next,
+    } : {}),
   }, {
+    ...(navigation ? { nativeSteps: navigation.nativeSteps } : {}),
     responder: "omp-submit", menuLabels: ["Submit", "Cancel"], selectedIndex: 0,
     checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: 1,
-  });
+    // where the review stands among the tabs comes and goes with the colours read: not part of the card's id
+  }, { steps: undefined, can_step_back: undefined, can_step_next: undefined });
 }
 
 /** A clipped legacy footer is enough to identify a menu only when every parsed row
@@ -207,13 +254,16 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
   const multiSelect = OMP_MULTI_HINT_RE.test(hint) || OMP_MULTI_CLIPPED_HINT_RE.test(hint);
   const currentMulti = /(?:space|␠|␣)\s+toggle.*(?:enter|⏎)\s+(?:submit|next)/i.test(hint);
   const { text: question, rows: questionRows } = ompQuestionText(lines, startDivider, OMP_TABS_HINT_RE.test(hint));
+  const navigation = OMP_TABS_HINT_RE.test(hint) ? ompSteps(screen, startDivider) : null;
   if (!question || selectedIndex < 0 || optionRows.length === 0 || customIndex !== rows.length - 1
     || (hintIndex === clippedHintIndex && !ompRowsHaveAlignedMarkers(lines, rows))) return null;
   return finishPrompt("omp", {
     kind: "question", title: own(multiSelect ? "Multiple choice" : "Question"), question, body: null,
     options: optionRows.map((row) => ({ label: row.label.replace(/ \(Recommended\)$/i, ""), description: row.description ?? null })),
     multi_select: multiSelect, custom_option_index: multiSelect ? null : optionRows.length,
+    ...(navigation ? { steps: navigation.steps, can_step_back: navigation.can_step_back, can_step_next: navigation.can_step_next } : {}),
   }, {
+    ...(navigation ? { nativeSteps: navigation.nativeSteps } : {}),
     responder: "omp-question", menuLabels: rows.map((row) => row.label), selectedIndex,
     // omp offers `<key> expand` only for a question past its four rows or a description past its two
     // (pi-tui ask-dialog.ts `#expandHint`, 18.12.6 to 18.13.2); a footer cut short shows neither
@@ -243,7 +293,8 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
       keys.push(KEY.enter);
       return keySteps(keys);
     } } : {}),
-  });
+    // the steps come and go with the colours read and the call found: not part of the card's id
+  }, { steps: undefined, can_step_back: undefined, can_step_next: undefined });
 }
 
 /**

@@ -64,6 +64,7 @@ const AUTH_BACKOFF_MAX_MS = 60_000;
 export const AUTH_CLIENTS_MAX = 1024;
 const authAttempts = new Map<string, { failures: number; until: number }>();
 const BEARER_PREFIX = "bearer ";
+const DEVICE_PREFIX = "device ";
 const encoder = new TextEncoder();
 
 /** Malformed pairs are skipped: a junk cookie from another app must not deny the user. */
@@ -96,6 +97,17 @@ export function isAuthenticated(request: Request, token: string): boolean {
   const cookie = tokenCookie(parseCookies(request.headers.get("cookie")));
   if (cookie !== undefined && matches(cookie, token)) return true;
   return bearerMatches(request, token);
+}
+
+/**
+ * A paired device's own token sent as `Authorization: Device <token>`, in place of its cookie: a
+ * script that paired for its token in JSON (#2744). Matched exactly as the cookie is, so the same
+ * role, last-seen and revocation hold; it is never the shared token.
+ */
+export function deviceAuthorizationValue(request: Request): string | undefined {
+  const authorization = request.headers.get("authorization") ?? "";
+  if (authorization.slice(0, DEVICE_PREFIX.length).toLowerCase() !== DEVICE_PREFIX) return undefined;
+  return authorization.slice(DEVICE_PREFIX.length) || undefined;
 }
 
 /** The token came in an `Authorization` header: a proxy or a script sends it with every request, so signing out cannot take it away. */

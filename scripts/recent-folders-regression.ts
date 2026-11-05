@@ -9,6 +9,8 @@ import type { WorkspaceCreated } from "../shared/protocol.ts";
 import { sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { passingFolder } from "../src/lib/recent-directories.ts";
 import { chromePath } from "./chrome-path.ts";
+// machine events stay on SSE here: these checks hold or watch /api/machines/events (the socket transport has its own checks)
+process.env["OVIS_MACHINE_EVENTS_WS"] = "0";
 
 await import("./test-herdr.ts");
 const { createServer } = await import("../server/index.ts");

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import type { ClientConnectionTrace } from "../../shared/protocol.ts";
 import { ConnectionTrace, resumeConnectionTraces } from "./connectionTrace.ts";
+import { nativeTransport, setTransport, type Transport } from "./transport.ts";
 
 const context = () => ({ connection: 1, socket_state: 1, visibility: "visible" as const, online: true });
 // A macrotask turn: every promise continuation of the report has run, whatever its depth.
@@ -163,8 +164,10 @@ describe("client connection breadcrumbs", () => {
     const globals = globalThis as unknown as { window?: unknown; document?: unknown };
     const before = { window: globals.window, document: globals.document };
     const requests: { url: string; init: RequestInit }[] = [];
-    globals.window = { fetch: async (url: string, init: RequestInit) => { requests.push({ url, init }); return { status: 204 }; } };
+    const post = async (url: string, init: RequestInit) => { requests.push({ url, init }); return { status: 204 }; };
+    globals.window = { fetch: post };
     globals.document = { createElement() {} };
+    setTransport({ ...nativeTransport, fetch: post as unknown as Transport["fetch"] });
     try {
       const trace = open("wss://private-host/ws?token=private-credential", context);
       trace.record("pagehide", {}, true); await settle();
@@ -174,7 +177,7 @@ describe("client connection breadcrumbs", () => {
       expect(JSON.stringify(requests)).not.toContain("private-");
       expect(requests[0]!.init.headers).toEqual({ "content-type": "application/json" });
       trace.close();
-    } finally { globals.window = before.window; globals.document = before.document; }
+    } finally { globals.window = before.window; globals.document = before.document; setTransport(nativeTransport); }
   });
 
   it("stops reporting on explicit disposal", async () => {

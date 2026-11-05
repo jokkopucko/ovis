@@ -56,8 +56,28 @@
   transform-origin: 0 0;
 }
 
-.mermaid-lightbox-canvas svg {
+.mermaid-lightbox-canvas svg,
+.mermaid-lightbox-canvas img {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* Installed app with the title bar folded away: as in ImageLightbox.css, the preview opts out of
+   the header's drag region and its bar starts below the title bar band (#2026). The canvas keeps
+   its inset: zooms are taken about stage points, so moving it would shift a zoom's anchor. */
+@media (display-mode: window-controls-overlay) {
+  .mermaid-lightbox-scrim {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+
+  .mermaid-lightbox-bar {
+    top: calc(var(--space-3) + env(titlebar-area-y, 0px) + env(titlebar-area-height, 0px));
+  }
+}
+
+/* a ```svg figure (lib/svgFigure.ts) is an image: contain keeps its aspect ratio, as svg does */
+.mermaid-lightbox-canvas img {
+  object-fit: contain;
 }

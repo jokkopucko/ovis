@@ -31,9 +31,10 @@ const MIME: Record<string, string> = {
 /** Files whose URL never changes but whose contents decide what the app becomes. */
 const REVALIDATED_PATHS = new Set(["/sw.js", "/manifest.webmanifest"]);
 
-const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
+/** The hosted shell's Pages `_headers` (scripts/shell-build.ts) caches by the same rules. */
+export const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 const SHORT_CACHE = "public, max-age=86400";
-const REVALIDATE = "no-cache";
+export const REVALIDATE = "no-cache";
 
 function contentTypeFor(path: string): string {
   const dot = path.lastIndexOf(".");
@@ -116,6 +117,29 @@ const CSP_DIRECTIVES = [
  * serveStatic reads only this checkout's dist/, and sends no policy before that is built.
  */
 export const CONTENT_SECURITY_POLICY = CSP_DIRECTIVES.join("; ");
+
+/**
+ * What the hosted shell (dist-shell/, app.ovis.sh) changes in the policy above, and nothing else:
+ * its server is reached through a relay's WebSocket, not its own origin, so `connect-src` admits
+ * any wss: address (relay.ovis.sh, or a self-hosted relay from OVIS_RELAY_URL), and a video or a
+ * PDF it cannot address by URL (the native app's WebView has no service worker, todo 17) plays or
+ * frames from a blob: URL it fetched over the relay. Every other directive, `style-src
+ * 'unsafe-inline'` and `font-src 'self' data:` among them, stays for the reasons given above.
+ */
+const SHELL_SOURCES: Record<string, string> = {
+  "connect-src": "'self' wss:",
+  "media-src": "'self' blob:",
+  "frame-src": "'self' blob:",
+};
+
+/** The hosted shell's policy: `CONTENT_SECURITY_POLICY` with only the transport-related sources changed (SHELL_SOURCES). */
+export function shellContentSecurityPolicy(): string {
+  return CSP_DIRECTIVES.map((directive) => {
+    const name = directive.slice(0, directive.indexOf(" "));
+    const sources = SHELL_SOURCES[name];
+    return sources === undefined ? directive : `${name} ${sources}`;
+  }).join("; ");
+}
 
 /** A host name or bracketed IPv6 address, nothing that could end or add a directive. */
 const FRAMEABLE_HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/i;

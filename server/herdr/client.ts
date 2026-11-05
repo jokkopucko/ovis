@@ -14,7 +14,7 @@ import type {
 } from "../../shared/protocol.ts";
 import type { AgentInfo, AgentManifestInfo, AgentStartParams, PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, PaneScrollInfo, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
 import type { HerdrMethod, HerdrMethods, SingleHerdrMethod, UntypedHerdrMethod } from "./methods.ts";
-import type { HerdrIdentity } from "../../shared/machines.ts";
+import type { HerdrCoreLayout, HerdrIdentity } from "../../shared/machines.ts";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const diagnostics = new ConnectionDiagnostics("herdr.rpc");
@@ -182,9 +182,11 @@ function readReply(frame: unknown, id: string): Reply | string {
  * The herdr server closes the connection after a single response, so a pooled
  * or reused socket would never see a second reply.
  *
- * `guard`, when given, is asked once more right before the request is written: the
- * connect is awaited, and a caller's right to send can lapse meanwhile. A guard that
- * answers false sends nothing and rejects with `cancelled`.
+ * `guard`, when given, is asked before every write of the request (a large one goes out over
+ * several drains): the connect is awaited, and a caller's right to send can lapse meanwhile. A
+ * guard that answers false before the first byte sends nothing and rejects with `cancelled`;
+ * one that answers false mid-request ends the connection with the request cut short, which
+ * herdr cannot act on, and rejects with `socket_error`.
  */
 export function herdrRpc<M extends HerdrMethod>(
   method: SingleHerdrMethod<M>,
@@ -230,8 +232,10 @@ export async function herdrRpc(
   try {
     const result = await new Promise<unknown>((resolve, reject) => {
       let settled = false;
-      let socket: { end: () => void } | null = null;
+      let socket: { end: () => void; write: (data: Uint8Array) => number } | null = null;
       let timer: ReturnType<typeof setTimeout> | null = null;
+      let request: Buffer | null = null;
+      let written = 0;
 
       const finish = (fn: () => void) => {
         if (settled) return;
@@ -273,12 +277,45 @@ export async function herdrRpc(
 
       const limit = LARGE_REPLY_METHODS.has(method) ? LARGE_REPLY_BYTES : LINE_BYTES;
       const onData = makeLineReader(limit, handleLine, (bytes) => invalid(`over the ${limit}-byte line limit`, bytes));
+      const connectFailed = (err: Error) => finish(() =>
+        reject(new HerdrError("connect_failed", `cannot reach herdr at ${socketPath}: ${err.message}`)));
+      const writeRequest = () => {
+        if (settled || socket === null || request !== null && written === request.length) return;
+        try {
+          // The sender's authority is asked before every write. Before the first byte a revoked
+          // sender cancels. Once a frame has started it is never changed or replayed; if authority
+          // lapses mid-frame the connection ends with the frame cut short, which herdr cannot act
+          // on, and the outcome is reported as uncertain rather than as not sent
+          if (guard && !guard()) {
+            finish(() => reject(written === 0
+              ? new HerdrError("cancelled", `herdr ${method} was not sent: the sender may no longer send`)
+              : new HerdrError("socket_error", `herdr ${method} was cut short: the sender lost the right to send mid-request`)));
+            return;
+          }
+          request ??= Buffer.from(`${JSON.stringify({ id, method, params })}\n`);
+          // Bun sockets are unbuffered: a partial write (or zero) leaves the suffix for drain.
+          // Offsets are UTF-8 bytes, never string indices; -1 means this connection is closed.
+          const accepted = socket.write(request.subarray(written));
+          if (accepted === -1) {
+            finish(() => reject(new HerdrError("closed", `herdr closed the connection before answering ${method}`)));
+            return;
+          }
+          written += accepted;
+        } catch (error) {
+          // A connected failure must not be mistaken for proof that no request was sent:
+          // prompt answers treat connect_failed as permission to retry the same asking.
+          finish(() => reject(new HerdrError("socket_error", (error as Error)?.message ?? "herdr socket error")));
+        }
+      };
 
       Bun.connect({
         unix: socketAddress(socketPath),
         socket: {
           data(_sock, chunk) {
             onData(chunk);
+          },
+          drain() {
+            writeRequest();
           },
           error(_sock, err) {
             finish(() => reject(new HerdrError("socket_error", err?.message ?? "herdr socket error")));
@@ -299,17 +336,8 @@ export async function herdrRpc(
             }
             return;
           }
-          if (guard && !guard()) {
-            finish(() => reject(new HerdrError("cancelled", `herdr ${method} was not sent: the sender may no longer send`)));
-            return;
-          }
-          sock.write(`${JSON.stringify({ id, method, params })}\n`);
-        })
-        .catch((err: Error) => {
-          finish(() =>
-            reject(new HerdrError("connect_failed", `cannot reach herdr at ${socketPath}: ${err.message}`)),
-          );
-        });
+          writeRequest();
+        }, connectFailed);
     });
     diagnostics.recovered(key, fields());
     return result;
@@ -322,11 +350,31 @@ export async function herdrRpc(
   }
 }
 
+/**
+ * Whether herdr may be listening on its socket; sends no request. Only proof says it is stopped: no
+ * socket, or one that refuses the connect (the file a killed herdr leaves behind, #2670). Anything
+ * else, a connect that does not settle within a second too, counts as listening.
+ */
+export function herdrMayListen(socketPath: string = herdrSocketPath()): Promise<boolean> {
+  return new Promise((resolve) => {
+    const settle = (listening: boolean) => { clearTimeout(timer); resolve(listening); };
+    const timer = setTimeout(() => settle(true), 1000);
+    const failed = (error: Error) => settle(!new Set(["ECONNREFUSED", "ENOENT"]).has((error as NodeJS.ErrnoException).code ?? ""));
+    Bun.connect({ unix: socketAddress(socketPath), socket: { open(socket) { socket.end(); settle(true); }, data() {}, connectError(_socket, error) { failed(error); } } })
+      .catch(failed);
+  });
+}
+
 export async function ping(socketPath?: string): Promise<HerdrIdentity> {
   const result = await herdrRpc<{ version: string; protocol: number; capabilities?: Record<string, unknown> }>("ping", {}, socketPath);
   const attach = terminalAttachSupported(result.capabilities);
   // without attach the web server repaints the pane's screen instead (server/mirror.ts)
-  return { version: result.version, protocol: result.protocol, terminal_attach: attach, ...(attach ? {} : { terminal_mirror: true }) };
+  const core = result.capabilities?.["runtime"] === "herdr-core";
+  // herdr-core's layout calls (shared/machines.ts HerdrCoreLayout): each one it did not say yes to is off
+  const offered = result.capabilities?.["layout"];
+  const said = (call: keyof HerdrCoreLayout): boolean => typeof offered === "object" && offered !== null && (offered as Record<string, unknown>)[call] === true;
+  const layout: HerdrCoreLayout = { rename: said("rename"), split: said("split"), move: said("move") };
+  return { version: result.version, protocol: result.protocol, terminal_attach: attach, ...(attach ? {} : { terminal_mirror: true }), ...(core ? { runtime: "herdr-core" as const, layout } : {}) };
 }
 
 export async function sessionSnapshot(socketPath?: string, timeoutMs?: number): Promise<SessionSnapshot> {

@@ -399,8 +399,8 @@ try {
       console.log("PASS observer");
 
       // the terminal is disposed while a replayed OSC is open in it: four other tabs push its pane out
-      // of the cached ones (paneTabCache.ts). A cached terminal has let go of its attach, so no frame can
-      // still be queued then; the disposed terminal keeps no flag, and nothing copies.
+      // of the cached ones (paneTabCache.ts). Eviction releases the attach; the disposed terminal
+      // keeps no flag, and nothing copies.
       await page.locator(`.workspace-select[data-pane="${panes.shell}"]`).click();
       await page.locator(`.pane-frame.is-current[data-layout-pane="${panes.shell}"] .pane-terminal`).waitFor({ state: "attached" });
       await resetCase(page);
@@ -446,7 +446,9 @@ try {
       // parsed: the frame gate (lib/inputRow.ts FrameGate) forgets it, so the new output's frames settle
       { name: "a frame opening a synchronized update queued", steps: [L("pending"), L(`${ESC}[?2026hhalf a frame`)], replayOscOpen: false },
     ];
-    const context = await newContext(browser, url);
+    // These cases exercise retirement on detach. The alongside-herdr setting still detaches
+    // on a pane switch; terminal-switch-regression covers the default live cache.
+    const context = await newContext(browser, url, { extra: { releasePaneAway: true } });
     try {
       const page = await openPage(context, url);
       const acked = (): Promise<string[]> => fixture(page, (state) => state.acks.map((ack) => `${ack.socket}:${ack.stream_id}:${ack.offset}`));

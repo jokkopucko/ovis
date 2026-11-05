@@ -9,6 +9,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchVoiceStatus } from "./api.ts";
+import { getTransport } from "./transport.ts";
 import { LOCALE_TAGS, type Language, type LanguageSetting } from "./i18n.ts";
 import { useSettings, type DictationLanguage } from "./settings.ts";
 import {
@@ -25,7 +26,7 @@ import {
 export type VoiceState = "idle" | "starting" | "recording" | "transcribing";
 export type VoiceEngine = "server" | "browser";
 /** why the last dictation failed, short enough to key a translated message on */
-export type VoiceError = "insecure" | "permission" | "no_mic" | "not_configured" | "provider_auth" | "provider" | "network" | "too_large" | "no_speech";
+export type VoiceError = "insecure" | "permission" | "no_mic" | "speech_unavailable" | "not_configured" | "provider_auth" | "provider" | "network" | "too_large" | "no_speech";
 /** why the mic button is off: the setting, no https, or neither a server key nor browser speech */
 export type VoiceUnavailable = "disabled" | "insecure" | "not_configured" | "unsupported";
 /** `take` numbers each press-to-text run, so a late answer never lands on another run's words */
@@ -298,7 +299,9 @@ export function micErrorReason(name: string): VoiceError {
 /** SpeechRecognition's error string; null for the ones that only mean "nothing was said". */
 export function speechErrorReason(error: string): VoiceError | null {
   if (error === "no-speech" || error === "aborted") return null;
-  if (error === "not-allowed" || error === "service-not-allowed") return "permission";
+  if (error === "not-allowed") return "permission";
+  // the device's own recognizer is off (iOS: Siri & Dictation) or has no model for the language
+  if (error === "service-not-allowed") return "speech_unavailable";
   if (error === "audio-capture") return "no_mic";
   if (error === "network") return "network";
   return "provider";
@@ -690,7 +693,7 @@ export function createVoiceEngine(io: EngineIO) {
     const language = io.language();
     form.append(VOICE_FORM.language, transcribeLanguage(language.locale, language.ui));
     try {
-      const response = await fetch("/api/voice/transcribe", { method: "POST", body: form, credentials: "same-origin", signal });
+      const response = await getTransport().fetch("/api/voice/transcribe", { method: "POST", body: form, credentials: "same-origin", signal });
       if (!response.ok || !response.body) {
         const body = (await response.json().catch(() => null)) as { error?: { code?: unknown } } | null;
         const code = typeof body?.error?.code === "string" ? body.error.code : null;

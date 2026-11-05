@@ -630,7 +630,146 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     console.log("PASS terminal input: desktop mode, owner drafts, reload, IME button, late ack, shortcuts, readiness, explicit send");
   } finally { await context.close(); }
   await checkKeyBarWhileLineComposes(browser, origin, pane);
+  await checkLineImagePaste(browser, origin, pane);
   await checkCanonicalSubmit(browser);
+}
+
+/**
+ * An image pasted into the phone's input line (#801): the long-press Paste hands the line a
+ * file-only clipboard, and the key bar's Paste reads one with clipboard.read(). Either way the
+ * image goes up the same route as a paste into the grid, and its quoted path lands in the line at
+ * the caret, to send or edit. A text paste stays the browser's own. A browser that can read only
+ * text says where an image can be pasted instead of calling the clipboard empty.
+ */
+export async function checkLineImagePaste(browser: Browser, origin: string, pane: string): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.setDefaultTimeout(10_000);
+  await context.addInitScript((pane) => {
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", terminalInputMode: "line" }));
+    localStorage.setItem(`ovis:view:${pane}`, "terminal");
+  }, pane);
+  const uploads: { pane_id?: string; content_type?: string }[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/pane/image") uploads.push(JSON.parse(request.postData() ?? "{}"));
+  });
+  const uploaded = () => page.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/image")
+    .then(async (response) => { assert.equal(response.status(), 200, "the upload is stored"); return ((await response.json()) as { path: string }).path; });
+  const quoted = (path: string) => `'${path.replaceAll("'", "'\\''")}' `;
+  // a paste lands in two steps: the path is written, then the next frame puts the caret behind it
+  // (TerminalInput's place). The line's frame was asked for before the path showed, so one frame
+  // asked for after it runs later: past it, the next fill's select-all is not collapsed to the end
+  // (under load the fill then added to the line instead of replacing it)
+  const landed = async (value: string): Promise<void> => {
+    await page.waitForFunction((expected) => document.querySelector<HTMLTextAreaElement>(".terminal-input-text")?.value === expected, value);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  };
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  try {
+    await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
+    const line = page.locator(".terminal-input-text");
+    const note = page.locator(".terminal-input-note[role=alert]");
+    const paste = page.locator('.key-bar [data-key="paste"]');
+    await line.waitFor();
+    await page.waitForFunction(() => document.querySelector<HTMLButtonElement>('.key-bar [data-key="paste"]')?.disabled === false);
+
+    // a text paste is the browser's own: nothing uploaded, nothing taken from it
+    const textPaste = await line.evaluate((element) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "ls -la");
+      const event = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true });
+      element.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    assert.equal(textPaste, false, "a text paste is left to the browser");
+
+    // the long-press Paste of a screenshot: a file-only clipboard, uploaded and its path put at the caret
+    await line.fill("look at ");
+    const first = uploaded();
+    const filePaste = await line.evaluate((element, png) => {
+      const box = element as HTMLTextAreaElement;
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+      const data = new DataTransfer();
+      data.items.add(new File([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], "image.png", { type: "image/png" }));
+      const event = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true });
+      box.dispatchEvent(event);
+      // Chrome on Android reports a selectionchange just after the paste, the caret where it was
+      document.dispatchEvent(new Event("selectionchange"));
+      return event.defaultPrevented;
+    }, PNG);
+    assert.equal(filePaste, true, "a file-only paste is the line's to handle");
+    const firstPath = await first;
+    assert.match(firstPath, /\.ovis\/paste-[^/]+\.png$/, "the image is stored beside the pane");
+    await landed(`look at ${quoted(firstPath)}`);
+    assert.deepEqual(uploads.map((upload) => [upload.pane_id, upload.content_type]), [[pane, "image/png"]], "one upload, for this pane");
+    console.log(`PASS input line: a pasted screenshot is uploaded and its path inserted (${firstPath})`);
+
+    // a screenshot pasted over a selected word replaces it, though Chrome on Android collapses the
+    // selection to its end just after the paste
+    await line.fill("look at this");
+    const ranged = uploaded();
+    await line.evaluate((element, png) => {
+      const box = element as HTMLTextAreaElement;
+      box.focus();
+      box.setSelectionRange(8, 12);
+      const data = new DataTransfer();
+      data.items.add(new File([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], "image.png", { type: "image/png" }));
+      box.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+      box.setSelectionRange(12, 12);
+      document.dispatchEvent(new Event("selectionchange"));
+    }, PNG);
+    const rangedPath = await ranged;
+    await landed(`look at ${quoted(rangedPath)}`);
+    console.log("PASS input line: a screenshot pasted over a selected word replaces it");
+
+    // the key bar's Paste with an image on the clipboard: read with clipboard.read(), the same upload
+    await line.fill("");
+    await page.evaluate((png) => {
+      const blob = new Blob([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], { type: "image/png" });
+      Object.assign(navigator.clipboard, {
+        // an empty text beside the image, as some apps copy one: the image is what is there
+        read: () => Promise.resolve([new ClipboardItem({ "text/plain": new Blob([""], { type: "text/plain" }), "image/png": blob })]),
+        readText: () => Promise.resolve(""),
+      });
+    }, PNG);
+    const second = uploaded();
+    await paste.tap();
+    const secondPath = await second;
+    await landed(quoted(secondPath));
+    assert.equal(uploads.length, 3, "the key bar's Paste uploaded the image once");
+    assert.equal(await note.count(), 0, "no note: the image was pasted");
+    console.log("PASS key bar Paste: an image read with clipboard.read() is uploaded and its path inserted");
+
+    // a browser with only readText cannot see an image: it says where one can be pasted
+    await line.fill("");
+    await page.evaluate(() => { Object.assign(navigator.clipboard, { read: undefined, readText: () => Promise.resolve("") }); });
+    await paste.tap();
+    await note.waitFor();
+    assert.equal(await note.textContent(), "No text on the clipboard. To paste an image, press and hold the input line, then choose Paste.");
+    assert.equal(uploads.length, 3, "nothing uploaded");
+    console.log("PASS key bar Paste without clipboard.read(): an empty text read says how to paste an image");
+
+    // a path that would be cut at the line's limit names no file: the line stays as it was
+    const full = "x".repeat(await line.evaluate((element) => (element as HTMLTextAreaElement).maxLength) - 4);
+    await line.fill(full);
+    const third = uploaded();
+    await line.evaluate((element, png) => {
+      const box = element as HTMLTextAreaElement;
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+      const data = new DataTransfer();
+      data.items.add(new File([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], "image.png", { type: "image/png" }));
+      box.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    }, PNG);
+    await third;
+    await page.waitForFunction(() => document.querySelector(".terminal-input-note[role=alert]")?.textContent?.startsWith("Not pasted: the line has no room") === true);
+    assert.equal(await line.inputValue(), full, "no half path in the line");
+    assert.deepEqual(errors, []);
+    console.log("PASS input line: a path that would not fit whole is not cut into the line");
+  } finally { await context.close(); }
 }
 
 /**

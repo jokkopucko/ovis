@@ -32,7 +32,6 @@
   padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   background: var(--bg-input);
   border: var(--hairline) solid var(--border);
-  border-left: var(--rail-w) solid var(--accent);
   border-radius: var(--radius-md);
 }
 
@@ -60,4 +59,44 @@
   .phone-address {
     flex-direction: column;
   }
+
+  /* a phone has no room to scroll a hidden line: the whole command shows, wrapped where it must */
+  .phone-command code {
+    overflow-x: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* on a phone the address is read, copied or shared, one line under the other; its QR code waits behind a toggle */
+.phone-address-phone {
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.phone-address-phone .phone-url {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+.phone-share {
+  flex-wrap: wrap;
+}
+
+.qr-reveal {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.qr-reveal-toggle {
+  padding-inline: 0;
+}
+
+.qr-reveal-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
 }

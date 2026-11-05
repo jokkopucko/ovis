@@ -140,6 +140,56 @@ export function outcomeResultText(outcome: CommandOutcome, dismissed: boolean): 
   return outcome.result_text || null;
 }
 
+/** A command that moves the pane to another conversation (server/prompt.ts `sessionChange`). */
+const SESSION_CHANGE = /^\/(?:clear|new|reset|resume)(?:\s|$)/iu;
+
+export function isSessionChange(outcome: CommandOutcome): boolean {
+  return SESSION_CHANGE.test(outcome.text.trim());
+}
+
+/** What the chat knew when it saw a move to another history. */
+export interface HistoryMove {
+  /** the outcomes the chat held */
+  readonly held: readonly CommandOutcome[];
+  /** session changes that brought the chat to the history it left, or came before it: none of them left it */
+  readonly entered: ReadonlySet<string>;
+  /** when the chat saw the move (ms): a session change sent after it did not make it */
+  readonly seenAt: number;
+}
+
+/**
+ * The /clear, /new, /reset or /resume that made a move, once listed: the newest in the held list, else
+ * the oldest in a later one sent before the chat saw the move (a poll begun before the send can answer
+ * first without it). One that brought the chat to the history it left did not leave it. The caller
+ * keeps the first one found: a later one did not move the chat.
+ */
+export function moveCommand(outcomes: readonly CommandOutcome[], move: HistoryMove): CommandOutcome | null {
+  const changes = (list: readonly CommandOutcome[]) => list.filter((outcome) => isSessionChange(outcome) && !move.entered.has(outcome.id))
+    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+  return changes(move.held).at(-1)
+    ?? changes(outcomes).find((outcome) => Date.parse(outcome.created_at) <= move.seenAt + SEND_SKEW_MS) ?? null;
+}
+
+/**
+ * The outcomes of a conversation the chat moved to, without the sends to the one it left. `made` is the
+ * send that made the move (moveCommand). Every send before it, by the server's send times, is the old
+ * conversation's, also one a later poll lists first, except after a /resume: a send whose turn the
+ * resumed conversation recorded before the /resume was sent there. /clear, /new and /reset start an
+ * empty conversation, which records none of them. With no such command (a /clear typed in the
+ * terminal), the held list is all the old conversation's, and a later list stands: it tells no old send
+ * from a new one.
+ */
+export function afterMove(outcomes: readonly CommandOutcome[], move: HistoryMove, made: CommandOutcome | null, turns: readonly ConversationTurn[]): readonly CommandOutcome[] {
+  if (made === null) return outcomes === move.held ? [] : outcomes;
+  const at = Date.parse(made.created_at);
+  const resumed = /^\/resume(?:\s|$)/iu.test(made.text.trim());
+  const before = turns.filter((turn) => turn.ts !== null && Date.parse(turn.ts) < at);
+  const earlier = outcomes.filter((outcome) => Date.parse(outcome.created_at) < at);
+  const recorded = new Set(resumed ? outcomeRows(before, earlier, { beginningLoaded: true })
+    .flatMap((row) => row.kind === "turn" && row.outcome !== null ? [row.outcome.id] : []) : []);
+  return outcomes.filter((outcome) => Date.parse(outcome.created_at) >= at || recorded.has(outcome.id));
+}
+
 /** Calls `invalidate` for each outcome that changed the agent's command list, once: `noted` keeps the ids already acted on. */
 export function noteCatalogChanges(outcomes: readonly CommandOutcome[], noted: Set<string>, invalidate: () => void): void {
   for (const outcome of outcomes) {

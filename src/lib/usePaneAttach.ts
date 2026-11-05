@@ -2,10 +2,10 @@ import { useEffect, useLayoutEffect, type Dispatch, type RefObject, type SetStat
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { HerdrSocket } from "./ws.ts";
-import { EMPTY_DRAFT, restoreDraft, type InputDraft } from "./draft.ts";
+import { EMPTY_DRAFT, holdBefore, restoreDraft, type InputDraft } from "./draft.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
-import { inUse } from "./paneTerminalShared.ts";
+import { holdViews, inUse } from "./paneTerminalShared.ts";
 import { modalOpen } from "./focus.ts";
 import type { PendingMessageView } from "./pendingMessages.ts";
 import { FONT_LOAD_TIMEOUT_MS, type FontSettled } from "./fontFamily.ts";
@@ -14,6 +14,7 @@ export interface PaneAttachDeps {
   activeRef: RefObject<boolean>;
   autoSelected: boolean;
   cached: boolean;
+  watched: boolean;
   coarseRef: RefObject<boolean>;
   deferAttachRef: RefObject<(pane: string) => boolean>;
   fontSettledRef: RefObject<FontSettled>;
@@ -67,7 +68,7 @@ export interface PaneAttachDeps {
 }
 
 export function usePaneAttach(deps: PaneAttachDeps): void {
-  const { activeRef, autoSelected, cached, coarseRef, deferAttachRef, fontSettledRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef } = deps;
+  const { activeRef, autoSelected, cached, watched, coarseRef, deferAttachRef, fontSettledRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef } = deps;
 
   // Reset on a pane or terminal replacement: a herdr restart can keep the pane ID.
   // Old composition timers must never see the new terminal.
@@ -97,7 +98,8 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
     try {
       saved = paneId ? restoreDraft(paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${paneStorageId(machineId, paneId)}`), Date.now()) : EMPTY_DRAFT;
     } catch {}
-    setDraft(saved);
+    // typing a connection ended with unconfirmed while no terminal of this pane was mounted (#2587)
+    setDraft(holdBefore(paneId ? socket.takeUnconfirmedInput(paneId) : [], saved));
     draftPaneRef.current = paneId;
     term.reset();
     retireOutputRef.current();
@@ -126,6 +128,8 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       return leavePane;
     }
     if (deferAttachRef.current(paneId)) return leavePane;
+    // the hidden tabs' views start or stop once this pane drew: herdr serves its attach first (paneTerminalShared.ts)
+    if (presented) holdViews();
     const attach = (): void => {
       // under the keyboard (a pane picked while typing) the fit waits for it to go, and the attach adopts
       // the pane's size meanwhile
@@ -178,5 +182,5 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
 
   // the message the tab kept its pane for has gone (or was held): out of use, it lets go now
   useEffect(() => { releaseRef.current(); }, [pending]);
-  useEffect(() => { presentationRef.current(); }, [cached, presented, mirrored]);
+  useEffect(() => { presentationRef.current(); }, [cached, watched, presented, mirrored]);
 }

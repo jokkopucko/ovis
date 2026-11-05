@@ -467,3 +467,87 @@ describe("an owner counted per pane", () => {
     expect(store.next("p")).toBeNull();
   });
 });
+
+// #511: a saved copy's resend of a message accepted for an agent alone keeps that rule, whatever the copy says
+describe("agent-only pending messages", () => {
+  it("says which held message was accepted for an agent alone, on its own pane only", () => {
+    let id = 0;
+    const store = new PendingInputs<string, string>(() => {}, () => 0, 100, () => `pending-${++id}`);
+    const identity = { agent: "claude", terminalId: "t1", session: null };
+    const only = store.enqueue("a", "p", 1, "> quote\ncomment", "lease", identity, true, true);
+    const plain = store.enqueue("a", "p", 2, "plain", "lease", identity, true);
+    expect(only.message.agent_only).toBe(true);
+    expect(store.agentOnly("p", only.message.id)).toBe(true);
+    expect(store.agentOnly("other", only.message.id)).toBe(false);
+    expect(store.agentOnly("p", plain.message.id)).toBe(false);
+    expect(plain.message.agent_only).toBeUndefined();
+  });
+});
+
+describe("a pane moved to a new ID (#1503)", () => {
+  it("carries its messages to the new ID held for an explicit send, and tells each owner both IDs", async () => {
+    const f = fixture();
+    const queued = f.enqueue(1), other = f.enqueue(2, "b"), elsewhere = f.enqueue(3, "a", "p9");
+    f.queue.status("p1", "idle");
+    f.receipts.length = 0;
+    f.queue.move("p1", "p2", { code: "pane_moved", message: "moved" });
+    expect(f.queue.list("a", "p1")).toEqual([]);
+    expect(f.queue.list("a", "p2")).toMatchObject([{ id: queued.message.id, state: "held", error: { code: "pane_moved" } }]);
+    expect(f.queue.list("b", "p2")).toMatchObject([{ id: other.message.id, state: "held" }]);
+    expect(f.queue.list("a", "p9")).toMatchObject([{ id: elsewhere.message.id, state: "queued" }]);
+    // nothing goes out by itself under the new ID
+    f.queue.status("p2", "idle");
+    expect(f.queue.next("p2")).toBeNull();
+    expect(f.receipts.filter((r) => r.owner === "a" && r.pane === "p1").at(-1)?.messages).toEqual([]);
+    expect(f.receipts.filter((r) => r.owner === "a" && r.pane === "p2").at(-1)?.messages).toHaveLength(1);
+    // an explicit send and its outcome go under the new ID
+    expect(f.queue.claim(queued, false)).toBe(true);
+    f.queue.settle(queued);
+    expect(f.queue.outcome("a", "p2", queued.message.id)).toBe("sent");
+  });
+
+  it("keeps a send in flight across the move uncertain under the new ID", async () => {
+    const f = fixture(), item = f.enqueue(1);
+    expect(f.queue.claim(item, false)).toBe(true);
+    f.queue.move("p1", "p2", { code: "pane_moved", message: "moved" });
+    expect(f.queue.list("a", "p2")).toMatchObject([{ id: item.message.id, state: "uncertain" }]);
+    expect(f.queue.waiting("p1")).toBe(false);
+    expect(await f.queue.resend("p2", item.message.id, "fingerprint", async () => ({ ok: true }))).toMatchObject({ ok: false, code: "pending_uncertain" });
+  });
+
+  it("keeps a withdrawal under the new ID", async () => {
+    const f = fixture(), item = f.enqueue(1);
+    f.queue.hold("a");
+    expect(f.queue.discard(item)).toBe(true);
+    f.queue.move("p1", "p2", { code: "pane_moved", message: "moved" });
+    expect(f.queue.outcome("a", "p2", item.message.id)).toBe("discarded");
+    expect(await f.queue.resend("p2", item.message.id, "fingerprint", async () => ({ ok: true }))).toMatchObject({ ok: false, code: "pending_discarded" });
+  });
+
+  it("never tries a send the move overtook again by itself, even after a retryable refusal", () => {
+    const f = fixture(), item = f.enqueue(1);
+    f.queue.status("p1", "idle");
+    expect(f.queue.claim(item, true)).toBe(true);
+    f.queue.move("p1", "p2", { code: "pane_moved", message: "moved" });
+    f.queue.settle(item, { code: "input_not_ready", message: "not ready" }, false, true);
+    f.queue.status("p2", "idle");
+    expect(f.queue.next("p2")).toBeNull();
+    expect(f.queue.list("a", "p2")).toMatchObject([{ id: item.message.id, state: "held" }]);
+  });
+
+  it.each([["delivered", { ok: true }, "sent"], ["ambiguous", { ok: false, code: "submit_changed", message: "Check the terminal" }, "uncertain"]] as const)(
+    "settles a held copy's send that ends after the move under the new ID: %s", async (_name, reply, expected) => {
+      const f = fixture(), item = f.enqueue(1);
+      f.queue.hold("a");
+      const answer = Promise.withResolvers<{ ok: boolean; code?: string; message?: string }>();
+      const sent = f.queue.resend("p1", item.message.id, "fingerprint", () => answer.promise);
+      f.queue.move("p1", "p2", { code: "pane_moved", message: "moved" });
+      answer.resolve(reply);
+      await sent;
+      if (expected === "sent") expect(f.queue.outcome("a", "p2", item.message.id)).toBe("sent");
+      else {
+        expect(f.queue.list("a", "p2")).toMatchObject([{ id: item.message.id, state: "uncertain" }]);
+        expect(f.queue.discard(item, true)).toBe(false);
+      }
+    });
+});

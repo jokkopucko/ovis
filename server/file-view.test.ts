@@ -56,6 +56,27 @@ describe("file view", () => {
   });
   const temp = () => { const root = mkdtempSync(join(tmpdir(), "herdr-file-view-")); roots.push(root); return root; };
 
+  it("streams relay files with a length and bounded chunks without Bun.serve sizing the body", async () => {
+    const root = temp();
+    const path = join(root, "relay.bin");
+    writeFileSync(path, new Uint8Array(STREAM_CHUNK_BYTES * 3 + 1));
+    const info = fileInfo(path);
+    if (!info) throw new Error("fixture missing");
+    const response = await fileResponse(info, false, false, null, null, undefined, null, true);
+    expect(response.headers.get("content-length")).toBe(String(info.size));
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("file body missing");
+    let bytes = 0;
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      expect(next.value.byteLength).toBeLessThanOrEqual(STREAM_CHUNK_BYTES);
+      bytes += next.value.byteLength;
+    }
+    reader.releaseLock();
+    expect(bytes).toBe(info.size);
+  });
+
   it("resolves absolute, ~ and pane-relative paths", () => {
     expect(resolveFilePath("/a/b.txt", "/work")).toBe("/a/b.txt");
     expect(resolveFilePath("~/x.png", null)).toBe(join(homedir(), "x.png"));

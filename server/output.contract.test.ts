@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { herdrRpc, paneSendText, paneSendKeys } from "./herdr/client.ts";
+import { nodeSidecarAvailable } from "./pty/sidecar.ts";
 import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS } from "./output-window.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../shared/terminal-flow.ts";
 import type { ClientMessage, ServerMessage } from "../shared/protocol.ts";
@@ -71,16 +72,31 @@ async function connect(paneId: string, ack = true, observer = false, port = serv
   return { ws, state, send, acknowledge };
 }
 
-/** Bun.spawn throws synchronously for the pty sidecar while `node` is not on PATH (herdr itself stays found). */
+/**
+ * Makes the pty spawn fail on both hosts (herdr itself stays found). The Rust host is picked by
+ * absolute path, so it is pointed at one that does not exist. The Node sidecar it falls back to finds
+ * no Node, so the attach throws before spawning: none on PATH, and an empty HOME hides the one
+ * install.sh puts under ~/.local/share. Node's availability is taken first, so a run on the Rust host
+ * does not cache it as missing for the tests after this one.
+ */
 function breakPath(): () => void {
+  nodeSidecarAvailable();
   const previous = process.env["PATH"];
+  const previousHome = process.env["HOME"];
   const previousHerdr = process.env["OVIS_HERDR_BIN"];
+  const previousHost = process.env["OVIS_PTY_SIDECAR_BIN"];
   process.env["OVIS_HERDR_BIN"] = Bun.which(previousHerdr || "herdr", { PATH: previous ?? "" }) ?? previousHerdr ?? "herdr";
+  process.env["OVIS_PTY_SIDECAR_BIN"] = "/nonexistent/ovis-pty-sidecar";
+  process.env["HOME"] = mkdtempSync(join(root, "home-"));
   process.env["PATH"] = "/nonexistent";
   return () => {
     process.env["PATH"] = previous;
+    if (previousHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = previousHome;
     if (previousHerdr === undefined) delete process.env["OVIS_HERDR_BIN"];
     else process.env["OVIS_HERDR_BIN"] = previousHerdr;
+    if (previousHost === undefined) delete process.env["OVIS_PTY_SIDECAR_BIN"];
+    else process.env["OVIS_PTY_SIDECAR_BIN"] = previousHost;
   };
 }
 

@@ -10,7 +10,11 @@ const root = mkdtempSync(join(tmpdir(), "herdr-chat-selection-copy-"));
 const longCode = Array.from({ length: FOLD_CODE_AFTER_LINES + 1 }, (_, index) => `line ${index + 1}`).join("\n");
 const shownCode = longCode.split("\n").slice(0, FOLDED_CODE_LINES).join("\n");
 const reply = "Outside **selection** and [docs](https://example.com).\n\n- First item\n- Second item\n- Third item\n\nKeep `src/main.ts` and `worker` here.\n\nNext paragraph.\n\n```sh\n  first\n\n  second  \n```\n\n| Name | Value |\n| --- | --- |\n| alpha | 1 |\n| beta | 2 |\n\n```\n" + longCode + "\n```\n\nOutside end.";
+const snapshot = "❯ Thought TPS Todo are my words\n\nThought: 1s\n\nTPS 12\n\nTodo\n[ ] task\nContext 20%\n──────\n  spaces preserved  \n" + "long-path-".repeat(100) + "\n";
 const safari = process.env.COPY_WEBKIT === "1";
+let snapshotMode = false;
+let snapshotReads = 0;
+let growing = false;
 
 async function readClipboard(page: Page): Promise<string> {
   const copied = safari ? null : await page.evaluate(() => navigator.clipboard.readText());
@@ -34,7 +38,15 @@ try {
     const path = new URL(request.url).pathname;
     if (path === "/favicon.ico") return new Response(null, { status: 204 });
     if (path.endsWith("/pane/commands")) return Response.json({ commands: [] });
-    if (path.endsWith("/pane/conversation")) return Response.json({ source: "claude-transcript", history_id: "copy-fixture", cursor: null, turns: [{ role: "assistant", ts: null, parts: [{ kind: "text", text: reply }] }] });
+    if (path.endsWith("/pane/conversation")) return Response.json(snapshotMode
+      ? { source: "scrollback", turns: [] }
+      : { source: "claude-transcript", history_id: "copy-fixture", cursor: null, turns: [{ role: "assistant", ts: null, parts: [{ kind: "text", text: reply }] }] });
+    if (path.endsWith("/pane/read")) {
+      snapshotReads++;
+      // each read adds 30 lines, so a pane at its end has to follow a taller snapshot
+      const progress = Array.from({ length: snapshotReads * 30 }, (_, line) => `progress ${Math.floor(line / 30) + 1}.${line % 30 + 1}\n`).join("");
+      return Response.json({ read: { text: growing ? snapshot + progress : snapshot, truncated: false } });
+    }
     if (path === "/") return new Response('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/chat-virtual-fixture.css"></head><body><p id="outside">Before the chat</p><div id="root"></div><script type="module" src="/chat-virtual-fixture.js"></script></body></html>', { headers: { "content-type": "text/html" } });
     return new Response(Bun.file(join(root, path.slice(1))));
   } });
@@ -197,6 +209,76 @@ try {
         assert.equal(await readClipboard(page), "Outside selection and docs.\n\n- First item\n- Second item\n- Third item\n\nKeep src/main.ts and worker here.\n\nNext paragraph.\n\n  first\n\n  second  \n\n\n| Name | Value |\n| --- | --- |\n| alpha | 1 |\n| beta | 2 |\n\n" + longCode + "\n\n\nOutside end.", "per-message Plain text Copy keeps text and line breaks");
         await context.close();
         console.log(`PASS ${width}: selections copy as shown with safe rich HTML; explicit MD/TXT copy is unchanged`);
+      }
+      snapshotMode = true;
+      for (const width of [360, 393, 430]) {
+        const context = await browser.newContext({ viewport: { width, height: 800 }, locale: "en-US", hasTouch: true, isMobile: true, permissions: safari ? [] : ["clipboard-read", "clipboard-write"] });
+        const page = await context.newPage();
+        page.setDefaultTimeout(10_000);
+        await page.goto(`http://127.0.0.1:${server.port}/`);
+        const terminal = page.locator(".chat-terminal-snapshot");
+        await terminal.waitFor();
+        assert.equal(await terminal.locator("pre").textContent(), snapshot, "the terminal read is not split or filtered");
+        assert.equal(await page.locator(".chat-turn-agent, .chat-agent-meta").count(), 0, "terminal output is not presented as assistant turns");
+        assert.equal(await terminal.getByRole("button", { name: "Copy as plain text" }).count(), 1);
+        await terminal.getByRole("button", { name: "Copy as plain text" }).click();
+        assert.equal(await readClipboard(page), snapshot, "the single copy action preserves the snapshot");
+        const layout = await page.evaluate(() => {
+          const stack = document.querySelector<HTMLElement>(".terminal-stack")!;
+          const view = document.querySelector<HTMLElement>(".chat-view")!;
+          stack.style.setProperty("--composer-over", "150px");
+          view.scrollTop = view.scrollHeight;
+          return { bodyWidth: document.documentElement.scrollWidth, viewport: window.innerWidth,
+            preWidth: document.querySelector<HTMLElement>(".chat-terminal-snapshot pre")!.scrollWidth,
+            preClient: document.querySelector<HTMLElement>(".chat-terminal-snapshot pre")!.clientWidth,
+            padding: parseFloat(getComputedStyle(view).paddingBottom) };
+        });
+        assert.ok(layout.bodyWidth <= layout.viewport && layout.preWidth <= layout.preClient, `snapshot overflows at ${width}: ${JSON.stringify(layout)}`);
+        assert.ok(layout.padding >= 150, `composer clearance is missing at ${width}: ${JSON.stringify(layout)}`);
+        // output that keeps coming must not take away a selection made in the snapshot
+        growing = true;
+        try {
+          const pre = terminal.locator("pre");
+          const view = page.locator(".chat-view");
+          // at the end, a growing read is followed in the same commit: nothing new stays below the fold
+          await view.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+          const before = (await pre.textContent())!;
+          await page.evaluate(() => window.chatQa.refresh());
+          await page.waitForFunction((previous) => {
+            const node = document.querySelector<HTMLElement>(".chat-view")!;
+            const text = document.querySelector(".chat-terminal-snapshot pre")!.textContent!;
+            return text !== previous && text.length > previous.length && node.scrollHeight - node.scrollTop - node.clientHeight <= 2;
+          }, before);
+          // a selection in the snapshot pins the text on screen; the newer read waits until it lets go
+          const selected = await pre.evaluate((node) => new Promise<string>((resolve) => {
+            const text = node.firstChild!;
+            const at = text.textContent!.indexOf("spaces preserved");
+            const range = document.createRange();
+            range.setStart(text, at);
+            range.setEnd(text, at + "spaces preserved".length);
+            document.addEventListener("selectionchange", () => resolve(getSelection()!.toString()), { once: true });
+            getSelection()!.removeAllRanges();
+            getSelection()!.addRange(range);
+          }));
+          const pinned = (await pre.textContent())!;
+          await view.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+          await page.evaluate(() => window.chatQa.refresh());
+          await page.locator(".chat-terminal-snapshot[data-newer-read]").waitFor();
+          assert.equal(await page.evaluate(() => getSelection()!.toString()), selected, "a newer read keeps the selection");
+          assert.equal(await pre.textContent(), pinned, "the newer read waits while the snapshot is selected");
+          await page.evaluate(() => getSelection()!.removeAllRanges());
+          // measured in the frame the newer read is drawn: a later poll's own follow must not hide a missed one
+          const released = await (await page.waitForFunction(() => {
+            const snapshot = document.querySelector(".chat-terminal-snapshot");
+            if (snapshot === null || snapshot.hasAttribute("data-newer-read")) return null;
+            const node = document.querySelector<HTMLElement>(".chat-view")!;
+            return { length: snapshot.querySelector("pre")!.textContent!.length, gap: node.scrollHeight - node.scrollTop - node.clientHeight };
+          }, undefined, { polling: "raf" })).jsonValue() as { length: number; gap: number };
+          assert.ok(released.length > pinned.length, "the newer read shows once the selection lets go");
+          assert.ok(released.gap <= 2, `the chat at its end follows the read drawn when the selection lets go: ${JSON.stringify(released)}`);
+        } finally { growing = false; }
+        await context.close();
+        console.log(`PASS ${width}: terminal snapshot wraps, copies verbatim and keeps composer clearance`);
       }
     } finally { await browser.close(); }
   } finally { await server.stop(true); }

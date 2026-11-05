@@ -40,10 +40,18 @@ jobs:
   validate:
     needs: preflight
     uses: ./.github/workflows/ci.yml
-  # the Rust PTY host for Linux and macOS, attached when the release is created: installs read it by tag
+    permissions:
+      contents: read
+      actions: read
+  # the Rust PTY host for Linux and macOS, attached when the release is created: installs read it by tag.
+  # Its attest job signs each binary's build provenance, which needs these permissions.
   pty-sidecar:
     needs: preflight
     uses: ./.github/workflows/pty-sidecar.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     with:
       ref: ${{ github.sha }}
   publish:
@@ -80,15 +88,218 @@ jobs:
           # shellcheck disable=SC2016 # JavaScript, not shell
           test "$(bun -e 'console.log((await Bun.file(process.argv[1]).json()).version)' "$RUNNER_TEMP/pty-sidecar/ovis-pty-sidecar.json")" = "$RELEASE_VERSION"
           gh release create "v$RELEASE_VERSION" "$RUNNER_TEMP"/pty-sidecar/* --target "$GITHUB_SHA" --title "Ovis v$RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false
-  windows-app:
+  # The hosted shell (https://app.ovis.sh/) is built from the release tag and nothing else. shell-build
+  # builds and packs it without any secret; shell-deploy waits for the `production` environment's
+  # reviewer and runs no repository code: it checks the tarball against shell-build's SHA-256 and runs
+  # the wrangler pinned by .github/deploy-tools/bun.lock. It passes with a notice while the Cloudflare
+  # secrets are unset (docs/development.md#releasing); shell-attach then attaches the tarball and its SHA-256.
+  shell-build:
     needs: publish
+    if: github.repository == 'devswha/ovis' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/v${{ inputs.version }}
+          persist-credentials: false
+      # install scripts run here: restore the dependency cache, never save one other jobs trust
+      - uses: ./.github/actions/setup-ci
+        with:
+          cache: restore
+      - name: Require the release tag's commit
+        env:
+          RELEASE_TAG: v${{ inputs.version }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$RELEASE_TAG' is not a release tag (vX.Y.Z)." >&2
+            exit 1
+          fi
+          tagged=$(git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG^{commit}") || { echo "::error::$RELEASE_TAG is not a tag in this checkout." >&2; exit 1; }
+          test "$tagged" = "$RELEASE_SHA" || { echo "::error::$RELEASE_TAG points at $tagged, not the commit this release published." >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA" || { echo "::error::The checkout is not the commit this release published." >&2; exit 1; }
+      - run: bun install --frozen-lockfile
+      - name: Build the shell
+        run: bun run build:shell
+      - name: Require the built shell
+        run: |
+          for file in index.html build.json; do
+            test -s "dist-shell/$file" || { echo "::error::bun run build:shell left no dist-shell/$file." >&2; exit 1; }
+          done
+      - name: Pack the shell
+        id: pack
+        run: |
+          mkdir "$RUNNER_TEMP/shell"
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C dist-shell . | gzip -n > "$RUNNER_TEMP/shell/dist-shell.tar.gz"
+          cd "$RUNNER_TEMP/shell"
+          sha256sum dist-shell.tar.gz > dist-shell.tar.gz.sha256
+          cat dist-shell.tar.gz.sha256
+          echo "sha256=$(cut -d ' ' -f 1 dist-shell.tar.gz.sha256)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-shell
+          path: ${{ runner.temp }}/shell
+          if-no-files-found: error
+  # No checkout and no local action: nothing from the build's dependencies runs next to the token.
+  shell-deploy:
+    needs: shell-build
+    if: github.repository == 'devswha/ovis' && github.ref == 'refs/heads/main'
+    # GitHub-hosted only: the Cloudflare token never reaches the shared self-hosted runners
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://app.ovis.sh/
+    permissions:
+      contents: read
+    steps:
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.2'
+          no-cache: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-shell
+          path: ${{ runner.temp }}/shell
+      - name: Check and unpack the shell
+        env:
+          EXPECTED_SHA256: ${{ needs.shell-build.outputs.sha256 }}
+        run: |
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::shell-build passed no SHA-256 for the tarball." >&2; exit 1; }
+          cd "$RUNNER_TEMP"
+          echo "$EXPECTED_SHA256  shell/dist-shell.tar.gz" | sha256sum --check --strict
+          # Pages runs a _worker.js or functions/ it is given as server code, bundled next to the token:
+          # before anything is extracted, refuse every entry but plain files and directories inside the
+          # tarball, and anything Pages would treat as code or routing
+          tar -tvzf shell/dist-shell.tar.gz > shell/listing
+          tar -tzf shell/dist-shell.tar.gz > shell/names
+          if grep -qv '^[-d]' shell/listing; then
+            echo "::error::the tarball holds a link or a special file:" >&2
+            grep -v '^[-d]' shell/listing >&2
+            exit 1
+          fi
+          if grep -E '^/|(^|/)\.\.(/|$)|(^|/)_worker\.js(/|$)|(^|/)functions(/|$)|(^|/)_routes\.json$' shell/names > shell/refused; then
+            echo "::error::the tarball holds a path outside it or Pages server code:" >&2
+            cat shell/refused >&2
+            exit 1
+          fi
+          mkdir dist-shell
+          tar -xzf shell/dist-shell.tar.gz -C dist-shell --no-same-owner --no-same-permissions
+          if [ -n "$(find dist-shell ! -type f ! -type d)" ] || [ -e functions ]; then
+            echo "::error::the unpacked shell holds something other than files and directories." >&2
+            exit 1
+          fi
+          for file in index.html build.json; do
+            test -s "dist-shell/$file" || { echo "::error::the tarball holds no $file." >&2; exit 1; }
+          done
+      # the manifest and lockfile of this commit, from GitHub rather than from the build job
+      - name: Install the pinned wrangler
+        run: |
+          mkdir "$RUNNER_TEMP/deploy-tools"
+          cd "$RUNNER_TEMP/deploy-tools"
+          for file in package.json bun.lock; do
+            curl --fail --silent --show-error --location --retry 3 --max-time 30 -o "$file" "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/.github/deploy-tools/$file"
+          done
+          bun install --frozen-lockfile --ignore-scripts
+          test -x node_modules/.bin/wrangler
+      - name: Check the Cloudflare secrets
+        id: cloudflare
+        env:
+          HAS_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAS_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+          RELEASE_TAG: v${{ inputs.version }}
+        run: |
+          missing=""
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            has="HAS_$name"; [ "${!has}" = true ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::notice title=Hosted shell not deployed::$RELEASE_TAG did not update https://app.ovis.sh/: these secrets are not set in the production environment:$missing. Set them (docs/development.md#releasing), then deploy the attached dist-shell.tar.gz or run a new release."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: Deploy the shell to Cloudflare Pages
+        if: steps.cloudflare.outputs.ready == 'true'
+        working-directory: ${{ runner.temp }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: deploy-tools/node_modules/.bin/wrangler pages deploy dist-shell --project-name ovis-app --branch main --no-bundle
+      - name: Verify app.ovis.sh serves this revision
+        if: steps.cloudflare.outputs.ready == 'true'
+        env:
+          SHELL_BUILD_URL: https://app.ovis.sh/build.json
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          # a redirect or an error page is not the shell: only a 2xx whose build.json names this commit passes
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            code=$(curl -sS -o "$RUNNER_TEMP/build.json" -w '%{http_code}' --max-time 20 -H 'Cache-Control: no-cache' "$SHELL_BUILD_URL?rev=$EXPECTED_REVISION") || code=000
+            # the top-level "revision" field, parsed, not a substring of the response; anything unparsable reads as empty
+            # shellcheck disable=SC2016 # JavaScript, not shell
+            revision=$(bun -e 'const body = JSON.parse(await Bun.file(process.argv[1]).text()); if (typeof body?.revision === "string") console.log(body.revision)' "$RUNNER_TEMP/build.json" 2>/dev/null) || revision=""
+            if [[ "$code" =~ ^2[0-9][0-9]$ ]] && [ "$revision" = "$EXPECTED_REVISION" ]; then
+              echo "app.ovis.sh serves $EXPECTED_REVISION"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $code, not revision $EXPECTED_REVISION yet" >&2
+            sleep 5
+          done
+          echo "::error::$SHELL_BUILD_URL did not serve revision $EXPECTED_REVISION (last HTTP $code)." >&2
+          exit 1
+  # the write token stays out of the jobs that build and deploy; it attaches only after a deploy that
+  # did not fail (one skipped for unset secrets passes), and only the tarball shell-build hashed
+  shell-attach:
+    needs: [shell-build, shell-deploy]
+    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-shell
+          path: ${{ runner.temp }}/shell
+      - name: Attach the shell tarball and its SHA-256 to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: v${{ inputs.version }}
+          EXPECTED_SHA256: ${{ needs.shell-build.outputs.sha256 }}
+        run: |
+          cd "$RUNNER_TEMP/shell"
+          echo "$EXPECTED_SHA256  dist-shell.tar.gz" | sha256sum --check --strict
+          gh release upload "$RELEASE_TAG" dist-shell.tar.gz dist-shell.tar.gz.sha256 --clobber
+  # after desktop: either app job may make the release latest, and releases/latest/download must then
+  # hold the desktop installers and feeds too; a failed desktop job holds them back until it is rerun
+  windows-app:
+    needs: [publish, desktop]
     uses: ./.github/workflows/windows-app.yml
     with:
       tag: v${{ inputs.version }}
     permissions:
       contents: write
-  mac-dmg:
+  # the desktop app (app/electron): AppImages, dmg and zip, and the feed files it updates from
+  desktop:
     needs: publish
+    uses: ./.github/workflows/desktop.yml
+    with:
+      tag: v${{ inputs.version }}
+    secrets:
+      MAC_DEVELOPER_ID_P12: ${{ secrets.MAC_DEVELOPER_ID_P12 }}
+      MAC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD }}
+      MAC_NOTARY_KEY_P8: ${{ secrets.MAC_NOTARY_KEY_P8 }}
+      MAC_NOTARY_KEY_ID: ${{ secrets.MAC_NOTARY_KEY_ID }}
+      MAC_NOTARY_ISSUER: ${{ secrets.MAC_NOTARY_ISSUER }}
+    permissions:
+      contents: write
+  mac-dmg:
+    needs: [publish, desktop]
     uses: ./.github/workflows/mac-dmg.yml
     with:
       tag: v${{ inputs.version }}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { ConversationTurn } from "../../shared/protocol.ts";
-import { appendChatRowSlots, continuesHistory, createChatRowSlots, insertChatRowSlots, prependChatRowSlots } from "./chatRows.ts";
+import { appendChatRowSlots, continuesHistory, createChatRowSlots, growChatRowSlots, insertChatRowSlots, insertedTurns, prependChatRowSlots } from "./chatRows.ts";
 
 const scope = { machineId: "local", paneId: "pane-a", historyId: "history-a", incarnation: 0 };
 const keys = (rows: readonly { readonly key: string }[]) => rows.map((row) => row.key);
@@ -106,5 +106,52 @@ describe("continuesHistory", () => {
     expect(continuesHistory(page([]), shown)).toBeFalse();
     const untimed = page([turn("user", null), turn("assistant", null)]);
     expect(continuesHistory(untimed, untimed)).toBeFalse();
+  });
+});
+
+describe("insertedTurns", () => {
+  it("finds a notice Claude Code wrote before the turn at work, so the turn keeps its row", () => {
+    // noticeAt (server/claude-transcript.ts): a notice or a subagent's result goes before the running turn
+    expect(insertedTurns(["u1", "a1", "u2", "a2"], ["u1", "a1", "u2", "notice", "a2"])).toEqual([3]);
+    expect(insertedTurns(["u1", "a1"], ["u1", "result-1", "result-2", "a1"])).toEqual([1, 2]);
+  });
+
+  it("inserts nothing for turns appended after the last one shown, or for a turn changed in place", () => {
+    expect(insertedTurns(["u1", "a1"], ["u1", "a1", "u2", "a2"])).toEqual([]);
+    // a cancelled prompt replaced by its re-send, a notice joined with the next line: same place, new words
+    expect(insertedTurns(["u1", "a1", "u2"], ["u1", "a1", "u2-again", "a2"])).toEqual([]);
+    expect(insertedTurns([], ["u1", "a1"])).toEqual([]);
+  });
+});
+
+describe("growChatRowSlots", () => {
+  const prompt = (text: string, ts: string): ConversationTurn => ({ role: "user", ts, parts: [{ kind: "text", text }] });
+  const held: ConversationTurn = { role: "user", ts: "10:05", parts: [{ kind: "notice", text: "Message held", source: "informational" }] };
+  // Claude Code's turn at work opens with a tool: its result lands inside the first 80 characters of its anchor
+  const atWork = (output: string): ConversationTurn => ({ role: "assistant", ts: "10:01", parts: [{ kind: "tool", name: "Bash", summary: "ls", input: "{}", output }] });
+  const answer = (ts: string): ConversationTurn => ({ role: "assistant", ts, parts: [{ kind: "text", text: `answer at ${ts}` }] });
+
+  it("gives a notice before the turn at work its own row while that turn's first tool answers", () => {
+    const slots = createChatRowSlots(scope, 2);
+    const [asked, working] = keys(slots.rows);
+
+    const grown = growChatRowSlots(slots, 0, [prompt("list the files", "10:00"), atWork("")], [], [prompt("list the files", "10:00"), held, atWork("a.ts\nb.ts")]);
+
+    expect(keys(grown.rows)[0]).toBe(asked!);
+    expect(keys(grown.rows)[2]).toBe(working!);
+    expect(new Set(keys(grown.rows)).size).toBe(3);
+  });
+
+  it("matches the turns that left the newest page too: a notice among them takes no shown turn's row", () => {
+    const shown = [prompt("one", "10:00"), atWork("a.ts")];
+    const slots = createChatRowSlots(scope, 2);
+    const [asked, working] = keys(slots.rows);
+
+    // since the last read, a notice went in before the turn at work, and the newest page moved past both
+    const grown = growChatRowSlots(slots, 0, shown, [prompt("one", "10:00"), held, atWork("a.ts")], [prompt("two", "10:06"), answer("10:07")]);
+
+    expect(keys(grown.rows)[0]).toBe(asked!);
+    expect(keys(grown.rows)[2]).toBe(working!);
+    expect(new Set(keys(grown.rows)).size).toBe(5);
   });
 });

@@ -15,7 +15,8 @@
  * the environment a new tab inherits exports none either (claude-store.ts herdrLaunchSource).
  */
 import type { SessionHistoryResponse, SessionResumeResponse, SessionSnapshot } from "../shared/protocol.ts";
-import { claudeRecordOnlyIn, claudeStoreOf, herdrLaunchSource, isClaudeProcess, paneClaudeSource, type ClaudeSource, type PaneProcess } from "./claude-store.ts";
+import { claudeRecordOnlyIn, claudeStoreOf, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processLaunchSource, type ClaudeSource, type PaneProcess } from "./claude-store.ts";
+import { coreConnection, servingCore } from "./herdr-core/runtime.ts";
 import { agentLaunch } from "./agent-launch.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
 import { herdrSocketPath, paneProcessInfo, sessionSnapshot, tabClose, tabCreate } from "./herdr/client.ts";
@@ -23,6 +24,7 @@ import { badRequest, errorResponse, jsonResponse, readJsonObject } from "./http.
 import { isSessionHistoryAgent, listSessions, type SessionHistoryOptions } from "./session-history.ts";
 import { descendantProcesses, type ProcessRow } from "./windows-processes.ts";
 import { userHome } from "./user-home.ts";
+import { PiMetadataBusy } from "./pi-session-metadata.ts";
 
 export const SESSION_HISTORY_PATH = "/api/sessions/history";
 export const SESSION_RESUME_PATH = "/api/sessions/resume";
@@ -56,7 +58,15 @@ const herdrPaneProcesses = (paneId: string): Promise<PaneProcesses | undefined> 
 
 /** Whether a source with none exported would be started with none exported in a new tab. */
 const launchKeepsAbsence = async (options: StoreOptions): Promise<boolean> =>
-  (await (options.launchSource ?? (() => herdrLaunchSource(herdrSocketPath())))()).state === "absent";
+  (await (options.launchSource ?? defaultLaunchSource)()).state === "absent";
+
+/** herdr's server hands a new tab its environment; on herdr-core the core process does, not this server. */
+async function defaultLaunchSource(): Promise<ClaudeSource> {
+  if (!servingCore()) return herdrLaunchSource(herdrSocketPath());
+  // hc not answering: no proof of what a new terminal gets, so no resume offered from it
+  const status = await coreConnection().call("server.status", {}).catch(() => null);
+  return typeof status?.pid === "number" ? processLaunchSource(status.pid) : { state: "unreadable" };
+}
 
 /**
  * A workspace's folder: its worktree checkout when herdr names one, else the folder of its
@@ -187,7 +197,14 @@ export async function handleSessionHistoryRequest(request: Request, url: URL, op
     const source = repeatable ? { pane_id: paneId, store_key: store.key } : null;
     sessions = listSessions("claude", cwd, inStore(options.stores, store.dir)).map((row) => row.resume === null || source === null ? row : { ...row, resume: { ...row.resume, source } });
   } else {
-    sessions = listSessions(agent, cwd, options.stores);
+    try { sessions = await listSessions(agent, cwd, options.stores); }
+    catch (error) {
+      if (!(error instanceof PiMetadataBusy)) throw error;
+      const response = refuse(503, "session_history_busy", error.message);
+      response.headers.set("retry-after", "1");
+      response.headers.set("cache-control", "no-store");
+      return response;
+    }
   }
   const answer: SessionHistoryResponse = { workspace_id: workspaceId, agent, cwd, sessions };
   const response = jsonResponse(answer);

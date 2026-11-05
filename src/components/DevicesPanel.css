@@ -29,8 +29,10 @@
 }
 
 /* one pill: beside a name that fills the line it moves to the next line whole, never split across two lines.
-   Its own words wrap inside it only in a column narrower than the pill (a phone's row with Revoke? open) */
-.devices-current {
+   Its own words wrap inside it only in a column narrower than the pill (a phone's row with Revoke? open).
+   `via relay` is the same pill in neutral tones: a category, not this device's own mark */
+.devices-current,
+.devices-via-relay {
   display: inline-block;
   margin-left: var(--space-2);
   padding: 0 var(--space-2);
@@ -42,6 +44,11 @@
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   vertical-align: middle;
+}
+
+.devices-via-relay {
+  background: var(--bg-input);
+  color: var(--text-dim);
 }
 
 .devices-actions,
@@ -67,7 +74,6 @@
   padding: var(--space-4);
   background: var(--bg-elevated);
   border: var(--hairline) solid var(--border);
-  border-left: var(--rail-w) solid var(--accent);
   border-radius: var(--radius-md);
 }
 
@@ -121,4 +127,20 @@
 
 .devices-link a {
   color: var(--accent);
+}
+
+/* a wallet address or an email is one long word */
+.devices-portal {
+  overflow-wrap: anywhere;
+}
+
+/* on the phone itself the code is what the other device types: as large as the screen allows, read at a glance */
+.devices-pairing-phone {
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.devices-code-large {
+  margin: 0;
+  font-size: calc(var(--fs-pairing) * 1.25);
 }

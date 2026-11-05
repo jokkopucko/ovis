@@ -25,6 +25,12 @@ export async function canBind(hostname: string, port: number): Promise<boolean> 
   }
 }
 
+/** Whether the server could open every listener it starts here: with OVIS_IPV6_LOOPBACK=1, `::1` beside `127.0.0.1` too. */
+export async function canServe(hostname: string, port: number, ipv6Loopback: boolean): Promise<boolean> {
+  if (!await canBind(hostname, port)) return false;
+  return !ipv6Loopback || hostname !== "127.0.0.1" || canBind("::1", port);
+}
+
 /** The first port that opens, other than the one that just failed: the default, then the fallbacks. */
 export async function freePort(failed: number, defaultPort: number, opens: (port: number) => Promise<boolean>): Promise<number | null> {
   for (const port of [defaultPort, ...FALLBACK_PORTS]) {

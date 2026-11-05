@@ -1,7 +1,7 @@
 {
   "name": "ovis",
   "private": true,
-  "version": "0.4.19",
+  "version": "0.4.22",
   "type": "module",
   "description": "Ovis, the browser and phone client for herdr - live herdr workspaces, panes and agents in a web UI",
   "license": "MIT",
@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "bun --bun vite",
     "build": "bun --bun vite build",
+    "build:shell": "bun --bun vite build --mode shell",
     "server": "bun run server/index.ts",
     "start": "bun run build && bun run server/managed.ts",
     "typecheck": "bun scripts/typecheck.ts",
@@ -31,12 +32,16 @@
   "dependencies": {
     "@legendapp/list": "3.3.5",
     "@lydell/node-pty": "1.1.0",
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
     "@pierre/diffs": "1.5.2",
     "@tanstack/highlight": "^1.0.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-unicode-graphemes": "0.4.0",
     "@xterm/addon-web-links": "0.12.0",
     "@xterm/xterm": "6.0.0",
+    "base64-js": "1.5.1",
     "jsonc-parser": "3.3.1",
     "katex": "^0.18.9",
     "lucide-react": "^1.47.0",
@@ -44,6 +49,7 @@
     "qrcode-generator": "^2.0.4",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "tweetnacl": "1.0.3",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
@@ -62,7 +68,8 @@
   },
   "patchedDependencies": {
     "@legendapp/list@3.3.5": "patches/@legendapp%2Flist@3.3.5.patch",
-    "@xterm/xterm@6.0.0": "patches/@xterm%2Fxterm@6.0.0.patch"
+    "@xterm/xterm@6.0.0": "patches/@xterm%2Fxterm@6.0.0.patch",
+    "@tanstack/highlight@1.0.0": "patches/@tanstack%2Fhighlight@1.0.0.patch"
   },
   "packageManager": "bun@1.4.2",
   "overrides": {

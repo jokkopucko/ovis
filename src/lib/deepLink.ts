@@ -74,6 +74,16 @@ export function slugOf(label: string | null | undefined): string {
   return (end > SLUG_MAX / 2 ? cut.slice(0, end) : words.slice(0, SLUG_MAX)).replace(/-+$/, "");
 }
 
+/** Settings pages merged into another: a link or history entry naming one opens the page it went to. */
+const MOVED_SETTINGS: Readonly<Record<string, string>> = { usage: "agents", integrations: "agents" };
+
+/** The Settings page a link or history entry names, as this version calls it. */
+export function currentSettingsPage(page: string): string;
+export function currentSettingsPage(page: string | null): string | null;
+export function currentSettingsPage(page: string | null): string | null {
+  return page === null ? null : MOVED_SETTINGS[page] ?? page;
+}
+
 const named = (value: string | null): string | null => {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
@@ -91,7 +101,7 @@ export function readLink(search: string): AppLink {
   // herdr's ids hold no hyphen: the first one starts the slug
   const ws = named(query.get("ws"));
   const cut = ws?.indexOf("-") ?? -1;
-  const settings = named(query.get("settings"));
+  const settings = currentSettingsPage(named(query.get("settings")));
   return {
     machine: named(query.get("machine")) ?? LOCAL,
     workspace: ws && cut > 0 ? ws.slice(0, cut) : ws,

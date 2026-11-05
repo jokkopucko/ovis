@@ -1,0 +1,22 @@
+/*
+ * A relay id in groups of four (KeyId.tsx): monospace so the groups line up between two ids, four
+ * to a row on a phone and all eight on one line where they fit. Only tokens from the styles.css
+ * :root block.
+ */
+
+.key-id {
+  display: grid;
+  grid-template-columns: repeat(4, max-content);
+  gap: var(--space-1) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  color: var(--text-strong);
+}
+
+.key-id-differs {
+  font-weight: var(--fw-bold);
+  color: var(--danger-text);
+  text-decoration: underline;
+  text-decoration-thickness: var(--hairline);
+  text-underline-offset: var(--space-1);
+}

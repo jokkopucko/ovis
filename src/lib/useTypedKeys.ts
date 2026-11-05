@@ -80,7 +80,7 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     const now = Date.now();
     const key = stopKey(agent, () => {
       const buffer = term.buffer.active;
-      return Array.from({ length: term.rows }, (_, row) => buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? "");
+      return Array.from({ length: term.rows }, (_, row) => buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "");
     }, hermesStopSentRef.current, hermesCtrlCAtRef.current, now);
     if (key === null) {
       const t = tRef.current;

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ovis</title>
+  <link rel="stylesheet" href="connect.css">
+</head>
+<body>
+  <!-- data-ko: the element's Korean text, put in by connect.js when the system language is Korean -->
+  <main>
+    <img class="logo" src="ovis-logo.png" alt="Ovis" width="152" height="54">
+    <h1 id="title" data-ko="Ovis를 시작하는 중…">Starting Ovis…</h1>
+    <ul class="steps">
+      <li id="core" data-state="pending">
+        <span class="mark" aria-hidden="true"></span>
+        <span class="name"><span data-ko="터미널">Terminals</span> <span class="version" id="hc-version"></span></span>
+        <span class="state" id="core-state"></span>
+      </li>
+      <li id="server" data-state="pending">
+        <span class="mark" aria-hidden="true"></span>
+        <span class="name" data-ko="Ovis 서버">Ovis server</span>
+        <span class="state" id="server-state"></span>
+      </li>
+    </ul>
+    <pre class="detail" id="detail" hidden></pre>
+    <div class="row">
+      <button type="button" class="primary" id="retry" hidden data-ko="다시 시도">Try again</button>
+      <button type="button" id="logs" data-ko="로그 보기">Show logs</button>
+    </div>
+  </main>
+  <script src="connect.js"></script>
+</body>
+</html>

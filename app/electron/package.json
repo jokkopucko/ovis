@@ -1,0 +1,29 @@
+{
+  "name": "ovis-desktop",
+  "productName": "Ovis",
+  "desktopName": "ovis.desktop",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Ovis for the desktop: the Ovis server, herdr-core and Bun in one app (README.md)",
+  "author": "devswha",
+  "license": "MIT",
+  "homepage": "https://ovis.sh",
+  "main": "out/main.js",
+  "scripts": {
+    "stage": "bun scripts/build.ts stage",
+    "start": "bun scripts/build.ts bundle && electron .",
+    "dist": "bun scripts/build.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "bun test"
+  },
+  "trustedDependencies": [
+    "electron"
+  ],
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "electron": "45.2.2",
+    "electron-builder": "26.18.0",
+    "electron-updater": "6.8.11",
+    "typescript": "^7.0.2"
+  }
+}

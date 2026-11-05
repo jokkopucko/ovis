@@ -1,9 +1,21 @@
 import { authenticatedWebSocket } from "./remote-websocket.ts";
-import type { ServerWebSocket } from "bun";
 import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS } from "./output-window.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../shared/terminal-flow.ts";
 import type { MachineManager } from "./machines.ts";
 import type { ServerMessage, SessionSnapshot } from "../shared/protocol.ts";
+import { LARGE_REPLY_BYTES } from "./herdr/client.ts";
+
+/**
+ * The browser's socket as the core hands it over (connections.ts `relayClient`): `send` holds it to this PC's
+ * transport budget and closes it past that, and `getBufferedAmount` is what counts against it, without what is
+ * left of a large frame still draining (#2573), which `large` tells.
+ */
+interface RelayClient {
+  send(data: string): number;
+  getBufferedAmount(): number;
+  large?(): number;
+  close(code?: number, reason?: string): void;
+}
 
 /**
  * The relay's backstop against its own sockets backing up, with this PC's rule (reconcileOutput):
@@ -31,9 +43,11 @@ export function upstreamCloseCode(code: number): number {
 /** Relay ACK frames unchanged: only xterm parsing releases remote output credit. */
 export class MachineRelay {
   private upstream: WebSocket;
-  private client?: ServerWebSocket<unknown>;
+  private client?: RelayClient;
   private waiting: string[] = [];
   private bytes = 0;
+  /** what waits of frames larger than the budget, a large session's snapshot (#2573): held to herdr's largest reply */
+  private large = 0;
   private closed = false;
   private untrack: () => void;
   private timer: ReturnType<typeof setInterval>;
@@ -62,8 +76,10 @@ export class MachineRelay {
       const raw = this.told(String(event.data));
       if (this.closed) return;
       if (!this.client) {
-        this.bytes += Buffer.byteLength(raw);
-        if (this.bytes > OUTPUT_HARD_BYTES) this.close(OUTPUT_STALLED_CLOSE_CODE, "output overflow");
+        // a frame larger than the budget waits apart, as the browser's socket excuses it (connections.ts `send`)
+        const bytes = Buffer.byteLength(raw);
+        if (bytes > OUTPUT_HARD_BYTES) this.large += bytes; else this.bytes += bytes;
+        if (this.bytes > OUTPUT_HARD_BYTES || this.large > LARGE_REPLY_BYTES) this.close(OUTPUT_STALLED_CLOSE_CODE, "output overflow");
         else this.waiting.push(raw);
       } else this.send(raw);
     };
@@ -86,19 +102,20 @@ export class MachineRelay {
   /** One stall-clock sample of both sockets' queues; the 100 ms timer calls it, and tests inject `now`. */
   tick(now = Date.now()): void {
     if (this.closed) return;
-    const buffered = Math.max(this.client?.getBufferedAmount() ?? 0, this.upstream.bufferedAmount);
+    // what queues behind a large frame still draining cannot move before it: that frame's own deadline answers for it
+    const client = this.client?.large?.() ? 0 : this.client?.getBufferedAmount() ?? 0;
+    const buffered = Math.max(client, this.upstream.bufferedAmount);
     const code = this.stall.sample(buffered, now);
     if (code) this.close(code, "terminal transport stalled");
   }
-  bind(client: ServerWebSocket<unknown>): void {
+  bind(client: RelayClient): void {
     this.client = client;
     if (this.closed) { client.close(1012, "Remote connection ended"); return; }
     for (const raw of this.waiting) this.send(raw);
-    this.waiting = []; this.bytes = 0;
+    this.waiting = []; this.bytes = 0; this.large = 0;
   }
   private send(raw: string): void {
     if (this.closed || !this.client) return;
-    if (this.client.getBufferedAmount() + Buffer.byteLength(raw) > OUTPUT_HARD_BYTES) { this.close(OUTPUT_STALLED_CLOSE_CODE, "output overflow"); return; }
     if (this.client.send(raw) === 0) this.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed");
   }
   message(raw: string | Buffer): void {
@@ -122,7 +139,7 @@ export class MachineRelay {
   close(code = 1000, reason = "Closed"): void {
     if (this.closed) return;
     this.closed = true; clearInterval(this.timer); this.untrack();
-    this.waiting = []; this.bytes = 0;
+    this.waiting = []; this.bytes = 0; this.large = 0;
     const boundedReason = Buffer.from(reason).subarray(0, 100).toString("utf8");
     this.upstream.close(code, boundedReason); this.client?.close(code, boundedReason);
   }

@@ -5,8 +5,9 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InteractivePrompt } from "../../shared/protocol.ts";
-import { handlePromptRequest, promptWaitEnded } from "../prompt.ts";
+import { handlePromptRequest, type PromptRequestOptions, promptWaitEnded } from "../prompt.ts";
 import { socketAddress } from "../herdr/client.ts";
+import * as client from "../herdr/client.ts";
 import fixtures from "../fixtures/pi-ask-2.13.9.json";
 import navigation from "../fixtures/pi-ask-navigation.json";
 import system from "../fixtures/pi-ask-system-theme.json";
@@ -17,7 +18,7 @@ async function withPane(initial: string, run: (pane: {
   screen: string; status: string; sent: string[]; visible?: string; scroll: number; onSent?: (key: string) => void;
   bind(questions: OmoAsk["questions"]): void;
   card(): Promise<InteractivePrompt>; read(): Promise<InteractivePrompt | null>;
-  answer(id: string, choice: object, signal?: AbortSignal): Promise<number>;
+  answer(id: string, choice: object, signal?: AbortSignal, options?: PromptRequestOptions): Promise<number>;
 }) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "ovis-pi-ask-"));
   const endpoint = socketAddress(join(root, "herdr.sock"));
@@ -43,11 +44,11 @@ async function withPane(initial: string, run: (pane: {
       expect(prompt).not.toBeNull();
       return prompt!;
     },
-    answer: async (prompt: string, choice: object, signal?: AbortSignal) => {
+    answer: async (prompt: string, choice: object, signal?: AbortSignal, options?: PromptRequestOptions) => {
       const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
       const response = (await handlePromptRequest(new Request(url, {
         method: "POST", signal, body: JSON.stringify({ pane_id: id, prompt_id: prompt, ...choice }),
-      }), url))!;
+      }), url, options))!;
       return response.status;
     },
   };
@@ -64,7 +65,8 @@ async function withPane(initial: string, run: (pane: {
       if (request.method === "session.snapshot") return reply({ snapshot: { panes: [{ pane_id: id, agent: "pi", agent_status: pane.status, terminal_id: id, focused: false }], layouts: [] } });
       if (request.method === "pane.read") return reply({ read: { text: request.params.format === "ansi" ? pane.visible ?? pane.screen : pane.screen.replace(ANSI_RE, "") } });
       if (request.method === "pane.get") return reply({ pane: { pane_id: id, scroll: { offset_from_bottom: pane.scroll } } });
-      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: [] } });
+      // pi holds the pane's input: its key-driven cards answer only then
+      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: [{ pid: 2147483646, argv: ["pi"] }] } });
       if (request.method === "agent.get") return reply({ agent: nativeCall ? { agent: "pi", agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: session } } : {} });
       if (request.method === "pane.send_keys" || request.method === "pane.send_text") {
         for (const key of request.params.keys ?? [`text:${request.params.text}`]) {
@@ -204,6 +206,17 @@ test("Pi ask answer route goes back without sending Enter and permits answering 
   });
 });
 
+test("Pi ask tab moves are held to the request's deadline: a look before the key that outlasts it sends nothing", async () => {
+  await withPane(navigation.first, async pane => {
+    const card = await pane.card();
+    pane.onSent = key => { if (key === "right") pane.screen = navigation["second-unanswered"]; };
+    // the look before the key (pi-ask's) never comes back: the deadline ends it, 300 ms here, 4 s in the server
+    const beforeKey = (): Promise<void> => new Promise<void>(() => undefined);
+    expect(await pane.answer(card.id, { step_index: 1 }, undefined, { answerDeadlineMs: 300, beforeKey })).toBe(409);
+    expect(pane.sent).toEqual([]);
+  });
+});
+
 test("Pi ask answer route switches to unanswered tabs and returns from review", async () => {
   await withPane(navigation.first, async pane => {
     let card = await pane.card();
@@ -218,6 +231,40 @@ test("Pi ask answer route switches to unanswered tabs and returns from review", 
     expect(await pane.answer(card.id, { step_index: 0 })).toBe(200);
     expect(pane.sent).toEqual(["right", "left", "left"]);
     expect((await pane.card()).title).toBe("单元格内容");
+  });
+});
+
+test("Pi ask Next reaches an unanswered question using only Right", async () => {
+  await withPane(navigation.first, async pane => {
+    const first = await pane.card();
+    expect(first.can_step_next).toBe(true);
+    expect(await pane.answer(first.id, { step_next: true, step_back: true })).toBe(400);
+    expect(await pane.answer(first.id, { step_next: true, option_index: 0 })).toBe(400);
+    expect(await pane.answer(first.id, { step_next: true, draft: { option_indices: [], custom_text: "unsent" } })).toBe(400);
+    pane.onSent = key => { if (key === "right") pane.screen = navigation["second-unanswered"]; };
+    expect(await pane.answer(first.id, { step_next: true })).toBe(200);
+    expect(pane.sent).toEqual(["right"]);
+    const second = await pane.card();
+    expect(second.steps?.map(step => step.answered)).toEqual([false, false, false]);
+    expect(second.steps?.findIndex(step => step.current)).toBe(1);
+    expect(second.can_step_next ?? false).toBe(false);
+  });
+});
+
+test("Pi ask Next cancelled just before herdr writes sends no key", async () => {
+  await withPane(navigation.first, async pane => {
+    const card = await pane.card();
+    const abort = new AbortController();
+    const original = client.paneSendKeys;
+    const send = spyOn(client, "paneSendKeys").mockImplementation(async (...args) => {
+      abort.abort();
+      await original(...args);
+    });
+    try {
+      expect(await pane.answer(card.id, { step_next: true }, abort.signal)).toBe(409);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(pane.sent).toEqual([]);
+    } finally { send.mockRestore(); }
   });
 });
 

@@ -8,8 +8,11 @@ import { WORKSPACE_KO } from "./i18n/workspace.ko.ts";
 import { FILES_KO } from "./i18n/files.ko.ts";
 import { DEVICES_KO } from "./i18n/devices.ko.ts";
 import { USAGE_KO } from "./i18n/usage.ko.ts";
+import { SETUP_KO } from "./i18n/setup.ko.ts";
+import { GUIDE_KO } from "./i18n/guide.ko.ts";
 import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
+import { RELAY_KO } from "./i18n/relay.ko.ts";
 
 /**
  * Korean for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -21,6 +24,9 @@ import { PALETTE_KO } from "./i18n/palette.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Remove": "제거",
+  "Remove {name}": "{name} 제거",
+  "Save": "저장",
   "Goal": "목표",
   "Waiting for your answer": "답변을 기다리는 중",
   "Back": "뒤로",
@@ -41,7 +47,6 @@ const BASE: Record<string, string> = {
   "Agent default": "에이전트 기본값",
   "Phone & devices": "폰 및 기기",
   "Access token": "접속 토큰",
-  "Install app": "앱 설치",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
   "Command palette": "명령 팔레트",
@@ -51,6 +56,10 @@ const BASE: Record<string, string> = {
   "New workspace": "새 워크스페이스",
   "Previous pane": "이전 패널",
   "Next pane": "다음 패널",
+  "Previous tab": "이전 탭",
+  "Next tab": "다음 탭",
+  "Previous workspace": "이전 워크스페이스",
+  "Next workspace": "다음 워크스페이스",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "대기",
@@ -78,6 +87,7 @@ const BASE: Record<string, string> = {
   "soon": "준비 중",
   "Terminal": "터미널",
   "herdr {version} · protocol {protocol}": "herdr {version} · 프로토콜 {protocol}",
+  "herdr-core {version} · protocol {protocol}": "herdr-core {version} · 프로토콜 {protocol}",
   "live": "연결됨",
   "disconnected": "끊김",
   "reconnecting": "재연결 중",
@@ -85,13 +95,18 @@ const BASE: Record<string, string> = {
   "herdr offline": "herdr 꺼짐",
   "Status unknown": "상태 알 수 없음",
   "herdr unavailable": "herdr 응답 없음",
+  "Open the Herdr app on this PC, or check HC_SESSION and HC_SOCKET.": "이 PC에서 Herdr 앱을 열거나 HC_SESSION과 HC_SOCKET을 확인하세요.",
+  "herdr-core unavailable": "herdr-core 사용 불가",
   "The last health check failed. Last seen: herdr {version} · protocol {protocol}": "마지막 상태 확인에 실패했습니다. 마지막으로 확인한 상태: herdr {version} · 프로토콜 {protocol}",
+  "The last health check failed. Last seen: herdr-core {version} · protocol {protocol}": "마지막 상태 확인에 실패했습니다. 마지막으로 확인한 상태: herdr-core {version} · 프로토콜 {protocol}",
   "The health check failed": "상태 확인에 실패했습니다",
   "Start herdr on this PC, or check HERDR_SOCKET.": "이 PC에서 herdr를 시작하거나 HERDR_SOCKET을 확인하세요.",
   "The other PC's answer was larger than this app accepts": "다른 PC의 응답이 이 앱이 받을 수 있는 크기보다 큽니다",
   "The other PC's answer could not be read": "다른 PC의 응답을 읽을 수 없습니다",
   "Browse files": "파일 찾아보기",
   "Copy link": "링크 복사",
+  "Share link": "링크 공유",
+  "Copy address": "주소 복사",
   "Link copied": "링크를 복사했습니다",
   "That agent has closed: its workspace is open": "그 에이전트는 닫혔습니다. 대신 워크스페이스를 열었습니다",
   "That link's workspace is closed": "그 링크의 워크스페이스는 닫혔습니다",
@@ -126,6 +141,16 @@ const BASE: Record<string, string> = {
   "Filter workspaces and agents": "워크스페이스와 에이전트 필터",
   "Connecting…": "연결 중…",
   "Connected": "연결됨",
+  "relay": "릴레이",
+  "direct": "직접",
+  "local": "로컬",
+  "Via a loopback address: this PC, or a tunnel to it": "루프백 주소로 연결: 이 PC, 또는 이 PC로 오는 터널",
+  "Via the Ovis relay": "Ovis 릴레이를 거쳐 연결",
+  "Via the Portal relay": "Portal 릴레이를 거쳐 연결",
+  "Via Tailscale": "Tailscale을 거쳐 연결",
+  "Via Tailscale, or Funnel from the internet": "Tailscale을 거쳐 연결, 또는 인터넷에서 Funnel로 연결",
+  "Via the local network": "로컬 네트워크를 거쳐 연결",
+  "Straight to this address": "이 주소로 바로 연결",
   "Reconnecting…": "재연결 중…",
   "Add PC": "PC 추가",
   "Connect": "연결",
@@ -139,6 +164,10 @@ const BASE: Record<string, string> = {
   // ---- new workspace ----
   "Browse": "찾아보기",
   "Cancel": "취소",
+  "Install": "설치",
+  "Installed": "설치됨",
+  "Not installed": "설치되지 않음",
+  "Sign in": "로그인",
   "Starting…": "시작 중…",
   "Start": "시작",
   // the launch's model, effort, first message and skills (lib/agentLaunchMode.ts, lib/newSession.ts)
@@ -165,6 +194,17 @@ const BASE: Record<string, string> = {
   // ---- prompt card ----
   "Submit": "제출",
   "Recommended": "추천",
+  "Agents": "에이전트",
+  "Check again": "다시 확인",
+  "Setup guide": "설정 안내",
+  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "이 브라우저의 페어링을 확인할 수 없습니다. 쿠키가 허용되어 있는지 확인한 뒤 다시 시도하세요.",
+  "New code": "새 코드",
+  "Paired: {name}.": "페어링됨: {name}.",
+  "QR code that pairs a phone with code {code}": "코드 {code}로 폰을 페어링하는 QR 코드",
+  "Connect a phone": "폰 연결",
+  "Pairing code": "페어링 코드",
+  "Open this address on your phone": "폰에서 이 주소를 여세요",
+  "{agent} is ready": "{agent} 준비 완료",
 
 
   // ---- composer ----
@@ -254,6 +294,8 @@ const BASE: Record<string, string> = {
   "{n} background task": "백그라운드 작업 {n}개",
   "{n} background tasks": "백그라운드 작업 {n}개",
   "Try again": "다시 시도",
+  "The relay did not start: {message}": "릴레이를 시작하지 못했습니다: {message}",
+  "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "릴레이를 켜면 기기 게이트가 닫힙니다. 그 뒤 새 브라우저는 페어링 코드나 접속 토큰이 필요합니다.",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "새 탭",
   "Rename tab": "탭 이름 바꾸기",
@@ -281,6 +323,7 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "PC 바꾸기",
+  "Forget this PC": "이 PC 잊기",
   "Selected": "선택됨",
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text": "보내지 않은 글",
@@ -291,6 +334,22 @@ const BASE: Record<string, string> = {
   "Terminal line": "터미널 입력 줄",
   "Held message": "보관한 메시지",
   "Held input": "보관한 입력",
+  "Other accounts": "다른 계정",
+  "Plan limits": "요금제 한도",
+  "Auto": "자동",
+  "Hub request failed": "허브 요청에 실패했어요",
+  "On this PC": "이 PC",
+  "Hub": "허브",
+  "Add account": "계정 추가",
+  "Check the hub connection": "허브 연결을 확인하세요",
+  "Meters show": "미터 표시",
+  "Limit shown": "표시할 한도",
+  "Show plan limits": "요금제 한도 표시",
+  "Session": "세션",
+  "Weekly": "주간",
+  "Open terminal": "터미널 열기",
+  "Sign in to {agent}": "{agent}에 로그인",
+  "differs": "다름",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
@@ -306,8 +365,11 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   files: FILES_KO,
   devices: DEVICES_KO,
   usage: USAGE_KO,
+  setup: SETUP_KO,
+  guide: GUIDE_KO,
   updates: UPDATES_KO,
   palette: PALETTE_KO,
+  relay: RELAY_KO,
 };
 
 export const KO: Record<string, string> = Object.assign({}, ...Object.values(KO_PARTS));

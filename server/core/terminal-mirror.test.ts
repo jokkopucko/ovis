@@ -77,7 +77,7 @@ function recorder() {
       return raw.length;
     },
     close() {},
-  } as unknown as Client;
+  };
   /** resolves once `count` pty-data frames arrived; rejects at a bounded deadline */
   const until = (count: number): Promise<Frame[]> => {
     if (frames.length >= count) return Promise.resolve(frames);

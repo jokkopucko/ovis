@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type BrowserContext, type Page, type Response } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
+// machine events stay on SSE here: these checks hold or watch /api/machines/events (the socket transport has its own checks)
+process.env["OVIS_MACHINE_EVENTS_WS"] = "0";
 
 await import("./test-herdr.ts");
 const { createServer } = await import("../server/index.ts");

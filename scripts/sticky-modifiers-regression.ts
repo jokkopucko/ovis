@@ -53,7 +53,13 @@ try {
         if (message.type === "error") console.log("terminal error", message);
         socket.send(raw);
       });
-      socket.onMessage((raw) => { frames.push(JSON.parse(String(raw))); remote.send(raw); });
+      // the typing frames each key produced, in order: a ping that confirms typing (#2587) can go out
+      // after any of them, once the pong of the one before comes back
+      socket.onMessage((raw) => {
+        const frame = JSON.parse(String(raw));
+        if (frame.type === "input" || frame.type === "keys") frames.push(frame);
+        remote.send(raw);
+      });
     });
     await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
     const settingsShortcut = await page.evaluate(() => /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent))

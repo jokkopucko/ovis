@@ -9,11 +9,12 @@ import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { readUpdateIpcRequest } from "../shared/update.ts";
+import { restoreRuntime } from "./herdr-core/runtime-file.ts";
 import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
-import { herdrSocketPath } from "./herdr/client.ts";
+import { herdrMayListen, herdrSocketPath } from "./herdr/client.ts";
 import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
-import { runCommand, Updater, type Release } from "./updater.ts";
+import { runCommand, updateChannel, Updater, type Release } from "./updater.ts";
 
 /** After a try at the Rust PTY host, the next supervisor start waits this long before another (as the unshallow fetch does, #1252). */
 const RUST_HOST_RETRY_MS = 6 * 60 * 60_000;
@@ -70,7 +71,8 @@ async function boundedStop(try_: Promise<void>, directory: string): Promise<void
 
 export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   root = resolve(root);
-  const port = Number(process.env["PORT"] ?? DEFAULT_PORT);
+  // as the server reads it (server/index.ts): an empty PORT is the default, and both name the same saved runtime file
+  const port = Number(process.env["PORT"] || DEFAULT_PORT);
   const host = process.env["HOST"] ?? "127.0.0.1";
   const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "[::1]" : host.includes(":") ? `[${host}]` : host;
   const origin = `http://${probeHost}:${port}`;
@@ -92,6 +94,8 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   let child: ReturnType<typeof Bun.spawn> | null = null;
   let active: Release | null = null;
   let switching = true, stopping = false;
+  // a switch a bridge saved while an update replaced it: the update's start runs on that choice, and its rollback puts it back
+  let replacedSwitch: string | null = null;
   // The bridge answers before its first health check has passed here. An install taken in that
   // gap stopped the bridge under the check, and the start failed: commands wait for the start.
   const started = Promise.withResolvers<void>();
@@ -109,10 +113,18 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     await prior.exited;
     clearTimeout(timer);
   }
+  /**
+   * Starts a bridge and waits for it: its own answer first (`?scope=bridge`, which never asks
+   * herdr), then the whole health answer when the runtime it says it serves must answer too:
+   * herdr-core, or herdr's TUI while its socket may be listening (herdrMayListen). A herdr TUI that
+   * is stopped is no failed start: Settings offers it, and the user starts herdr later. The bridge
+   * is told once it is taken.
+   */
   async function launch(release: Release | null) {
     if (stopping) throw new Error("Server is stopping");
     const bootId = crypto.randomUUID();
-    const settings = { OVIS_MANAGED: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release?.revision ?? "" };
+    // OVIS_RUNTIME_SWITCH: this launcher restarts the bridge on a runtime chosen in Settings (restartForRuntime)
+    const settings = { OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release?.revision ?? "" };
     const candidate = Bun.spawn([process.execPath, "server/index.ts"], {
       cwd: release?.directory ?? root, windowsHide: true, stdin: "ignore", stdout: "inherit", stderr: "inherit",
       // a launcher from before the rename runs from a checkout from before it, where a release that
@@ -120,6 +132,18 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
       env: { ...process.env, ...(legacyStateDir === null ? settings : withLegacyNames(settings)), HERDR_SOCKET: socketPath },
       ipc(message) {
         if (message?.type === "update-status-request") publish();
+        // Settings saved another runtime (server/herdr-core/runtime-choice.ts): the bridge starts again on it
+        if (message?.type === "runtime-restart" && typeof message.id === "string") {
+          const id: string = message.id;
+          // a bridge an update replaced meanwhile already started on the saved choice: only the asking one restarts
+          void started.promise.then(() => {
+            if (child === candidate) void restartForRuntime(id);
+            else {
+              if (switching) replacedSwitch = id;
+              console.log("A runtime switch came from a bridge already replaced; the bridge now running started on the saved choice.");
+            }
+          });
+        }
         // an unbound `install` (an older bridge's) is refused: an install names the revision offered
         const request = readUpdateIpcRequest(message);
         if (request) {
@@ -137,21 +161,79 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     });
     child = candidate;
     const deadline = Date.now() + 20_000;
+    const ours = (body: { web_ui?: { boot_id?: string } }) => body.web_ui?.boot_id === bootId;
     while (Date.now() < deadline && !stopping && candidate.exitCode === null) {
       try {
-        const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1000) });
-        const body = await response.json() as { web_ui?: { boot_id?: string } };
-        if (response.ok && body.web_ui?.boot_id === bootId) { publish(); return; }
+        const bridge = await fetch(`${origin}/api/health?scope=bridge`, { signal: AbortSignal.timeout(1000) });
+        const own = await bridge.json() as { web_ui?: { boot_id?: string }; runtime?: string };
+        // a bridge from before its own answer carried the boot id (an older checkout a release falls back
+        // to): the whole health answer is the only check it can pass, as it always was
+        const older = bridge.ok && own.web_ui === undefined;
+        if (older || bridge.ok && ours(own)) {
+          let ready = !older && own.runtime !== "herdr-core" && !await herdrMayListen(socketPath);
+          if (!ready) {
+            const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1000) });
+            ready = response.ok && ours(await response.json() as { web_ui?: { boot_id?: string } });
+          }
+          if (ready) {
+            try { candidate.send({ type: "bridge-accepted" }); } catch { /* it reads as not taken, and a page waits on */ }
+            publish();
+            return;
+          }
+        }
       } catch { /* wait for this exact bridge, never mistake another port owner for it */ }
       await Bun.sleep(100);
     }
     await stopChild();
     throw new Error("The new bridge failed its startup health check.");
   }
+  /** One bridge change at a time: a runtime switch and an update's activation wait for each other, neither is dropped. */
+  let lane: Promise<unknown> = Promise.resolve();
+  function exclusive<T>(change: () => Promise<T>): Promise<T> {
+    const run = lane.then(change, change);
+    lane = run.catch(() => {});
+    return run;
+  }
+  /** A bridge that exited while a change held `switching` was not seen by onExit: it is now. */
+  function checkBridge() {
+    // a change that failed outright cleared `child` (stopChild): no bridge is as gone as an exited one
+    if (!stopping && (child === null || child.exitCode !== null)) {
+      console.error(child === null ? "No bridge is running after a failed change." : `Bridge exited unexpectedly (${child.exitCode}).`);
+      void shutdown(1);
+    }
+  }
+  /**
+   * One server, one runtime: the bridge stops, and the next one reads the saved choice as it starts,
+   * on the same port and state. A switch to herdr-core waits for the core to answer; a switch to
+   * herdr only for the bridge, as Settings offers it while herdr's TUI is stopped. One that fails
+   * its health check puts back the runtime the switch `id` replaced, never a later choice, and starts
+   * again on it, so a switch never leaves the PC without a bridge.
+   */
+  function restartForRuntime(id: string) {
+    return exclusive(async () => {
+      if (stopping) { console.error("Not switching the runtime: Ovis is stopping."); return; }
+      switching = true;
+      try {
+        await stopChild();
+        try { await launch(active); }
+        catch (error) {
+          // a stop that cut the wait short is no failed start: the choice stays for the next start
+          if (stopping || !restoreRuntime(appStateDir, port, id)) throw error;
+          console.error(`The bridge failed to start on the chosen runtime (${error instanceof Error ? error.message : error}); going back to the previous one.`);
+          await stopChild();
+          await launch(active);
+        }
+      } catch (error) {
+        console.error(error);
+        await shutdown(1);
+      } finally { switching = false; checkBridge(); }
+    });
+  }
   const pluginRoot = process.env["HERDR_PLUGIN_ROOT"];
   // only a launcher-started supervisor can hand over: run directly, it keeps serving the update itself
   const launched = typeof process.send === "function";
   const updater = new Updater({ root, stateDir, autoUpdate: process.env["OVIS_AUTO_UPDATE"] === "1", publish,
+    channel: () => updateChannel(process.env, appStateDir),
     pluginCheckout: pluginRoot !== undefined && resolve(pluginRoot) === root,
     notice: process.env["OVIS_SUPERVISOR_FALLBACK"]
       ? "The updated supervisor failed to start, so the previous one is running this version. The next update tries again."
@@ -162,18 +244,23 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
       console.log("Update installed; handing over to the new supervisor.");
       await shutdown(HANDOVER_EXIT);
     },
-    async activate(next, commit) {
-      switching = true;
-      try {
-        await stopChild();
-        try { await launch(next); commit(); }
-        catch (error) {
+    activate(next, commit) {
+      return exclusive(async () => {
+        switching = true;
+        replacedSwitch = null;
+        try {
           await stopChild();
-          await launch(active);
-          throw new Error(`${error instanceof Error ? error.message : error} Previous version restored.`);
-        }
-        active = next;
-      } finally { switching = false; }
+          try { await launch(next); commit(); }
+          catch (error) {
+            await stopChild();
+            // the update's start may have failed on a runtime switched to meanwhile: the previous version starts on the one before it
+            if (replacedSwitch !== null && restoreRuntime(appStateDir, port, replacedSwitch)) console.error("Going back to the runtime from before the switch made during the update.");
+            await launch(active);
+            throw new Error(`${error instanceof Error ? error.message : error} Previous version restored.`);
+          }
+          active = next;
+        } finally { replacedSwitch = null; switching = false; checkBridge(); }
+      });
     },
   });
   // a Rust PTY host install runs in a process group of its own: it stops with this supervisor

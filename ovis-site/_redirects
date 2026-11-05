@@ -1,9 +1,9 @@
 # The one-line installers and the browser demo are built with the app into GitHub Pages
-# (site/, herdrweb.dev); ovis.sh hands them on, so every link can name ovis.sh.
+# (site/, herdrweb.dev); ovis.sh hands the installers on, so every link can name ovis.sh. The demo
+# is fetched from there by _worker.js instead (its routes are in _routes.json), so a visitor stays
+# on ovis.sh/demo/.
 /install.sh https://herdrweb.dev/install.sh 302
 /install.ps1 https://herdrweb.dev/install.ps1 302
-/demo https://herdrweb.dev/demo/ 302
-/demo/* https://herdrweb.dev/demo/:splat 302
 # Ovis for Mac: the newest release's signed Ovis.dmg (.github/workflows/mac-dmg.yml attaches it).
 /Ovis.dmg https://github.com/devswha/ovis/releases/latest/download/Ovis.dmg 302
 # Ovis for Windows: the newest release's Ovis.exe (.github/workflows/windows-app.yml attaches it).

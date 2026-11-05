@@ -180,6 +180,13 @@
   gap: var(--space-1);
 }
 
+
+/* the in-place way out of a refused (not expired) Claude sign-in */
+.usage-offer {
+  justify-self: start;
+  font-size: var(--fs-sm);
+}
+
 /* label, reset time and percent on one line, the bar under them */
 .usage-row {
   display: grid;

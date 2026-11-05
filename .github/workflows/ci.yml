@@ -29,6 +29,10 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # actions: read lets the route count the self-hosted runners' queued and running jobs
+    permissions:
+      contents: read
+      actions: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
       draft: ${{ steps.filter.outputs.draft }}
@@ -49,6 +53,8 @@ jobs:
           REQUESTED_LABELS: ${{ inputs.self_hosted_labels }}
           CONFIGURED_LABELS: ${{ vars.CI_SELF_HOSTED_LABELS }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
+          SELF_HOSTED_CAPACITY: ${{ vars.CI_SELF_HOSTED_CAPACITY }}
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"
       - id: filter
         env:
@@ -109,7 +115,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
       - run: bun run build
         if: needs.changes.outputs.draft != 'true'
-      - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts
+      - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts ./server/claude-command-history.test.ts
         if: needs.changes.outputs.draft != 'true'
   macos-session:
     name: Native macOS session identity
@@ -176,6 +182,59 @@ jobs:
         env:
           OVIS_PTY_SIDECAR: rust
         run: bun test ./server/pty/session.test.ts
+  herdr-core-live:
+    # The hc client (server/herdr-core/connection.ts) against a real herdr-core, in a core of its
+    # own (server/herdr-core/live.test.ts). hc is pinned by version and sha256 from herdr-core's
+    # release server, and only this step sees it: a failed download or checksum fails the job.
+    name: herdr-core live contract
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      HERDR_TEST_MODE: unit
+      HC_VERSION: 0.1.14
+      HC_SHA256: e9dbabdead0ce0ce3de51b6f54cc9549efedbb41b2f8448b6932ab0d1442343e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+        with:
+          cache: restore
+      - name: Skip heavy tests on draft PRs
+        if: needs.changes.outputs.draft == 'true'
+        run: |
+          echo "Draft PR detected, skipping the herdr-core live contract"
+          exit 0
+      - name: Cache hc
+        if: needs.changes.outputs.draft != 'true'
+        id: hc-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/hc.tar.gz
+          key: hc-${{ env.HC_VERSION }}-linux-x86_64-${{ env.HC_SHA256 }}
+      - name: Download hc
+        if: needs.changes.outputs.draft != 'true' && steps.hc-cache.outputs.cache-hit != 'true'
+        run: curl -fsSL --retry 3 "https://releases.herdr.dev/core/$HC_VERSION/herdr-core-linux-x86_64.tar.gz" -o "$RUNNER_TEMP/hc.tar.gz"
+      - name: Verify and unpack hc
+        if: needs.changes.outputs.draft != 'true'
+        run: |
+          set -euo pipefail
+          echo "$HC_SHA256  $RUNNER_TEMP/hc.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/hc"
+          tar -xzf "$RUNNER_TEMP/hc.tar.gz" -C "$RUNNER_TEMP/hc" herdr-core
+      - run: bun install --frozen-lockfile
+        if: needs.changes.outputs.draft != 'true'
+      - name: hc client against a real hc
+        if: needs.changes.outputs.draft != 'true'
+        env:
+          OVIS_TEST_HC_BIN: ${{ runner.temp }}/hc/herdr-core
+        run: |
+          set -euo pipefail
+          "$OVIS_TEST_HC_BIN" --version | grep -Fx "hc $HC_VERSION"
+          bun test ./server/herdr-core/live.test.ts
   fast:
     name: Fast checks
     needs: changes
@@ -184,10 +243,6 @@ jobs:
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
       UNIT_TEST_WORKERS: 4
-      # Fast takes no herdr slot, but its start still passes check.ts's admission port, which every
-      # runner on the self-hosted PC shares (scripts/self-hosted-runner/run.sh): a run that starts
-      # while another runner's run holds that port for a moment waits instead of failing.
-      CHECK_WAIT_SECONDS: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -234,7 +289,7 @@ jobs:
       # The herdr-backed lanes of every runner on the self-hosted PC share check.ts's slots
       # (scripts/self-hosted-runner/run.sh): at most CHECK_MAX_RUNS at once, and a lane that finds
       # them taken waits its turn instead of failing. A hosted runner has the slots to itself.
-      CHECK_MAX_RUNS: 3
+      CHECK_MAX_RUNS: 6
       CHECK_WAIT_SECONDS: 2400
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -281,7 +336,7 @@ jobs:
       # The herdr-backed lanes of every runner on the self-hosted PC share check.ts's slots
       # (scripts/self-hosted-runner/run.sh): at most CHECK_MAX_RUNS at once, and a lane that finds
       # them taken waits its turn instead of failing. A hosted runner has the slots to itself.
-      CHECK_MAX_RUNS: 3
+      CHECK_MAX_RUNS: 6
       CHECK_WAIT_SECONDS: 2400
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -332,10 +387,17 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
   browser-other:
-    name: Browser regression (other scripts)
+    name: Browser regression (other scripts${{ strategy.job-total > 1 && format(' {0}/{1}', matrix.shard, strategy.job-total) || '' }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(needs.changes.outputs.linux) }}
+    # A hosted runner has 4 CPUs: one job running every script there took about 28 minutes, and
+    # frame-timing checks failed under the load. So hosted runs split the scripts over four jobs
+    # (scripts/ci-browser-parallel.ts's BROWSER_SHARD); a self-hosted run keeps one job.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(contains(needs.changes.outputs.linux, 'self-hosted') && '[1]' || '[1,2,3,4]') }}
     # a wait for a slot counts against it
     timeout-minutes: 50
     env:
@@ -343,7 +405,7 @@ jobs:
       # The herdr-backed lanes of every runner on the self-hosted PC share check.ts's slots
       # (scripts/self-hosted-runner/run.sh): at most CHECK_MAX_RUNS at once, and a lane that finds
       # them taken waits its turn instead of failing. A hosted runner has the slots to itself.
-      CHECK_MAX_RUNS: 3
+      CHECK_MAX_RUNS: 6
       CHECK_WAIT_SECONDS: 2400
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -374,18 +436,40 @@ jobs:
           key: playwright-workspace-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}
       - run: bun run build
         if: needs.changes.outputs.draft != 'true'
+      # the relay end-to-end run drives the hosted shell, and its media part encodes a video
+      - run: bun run build:shell
+        if: needs.changes.outputs.draft != 'true'
+      - name: Pinned ffmpeg for the relay media run
+        if: needs.changes.outputs.draft != 'true'
+        run: |
+          set -euo pipefail
+          ffmpeg="$(bash scripts/ci-ffmpeg.sh)"
+          echo "FFMPEG=$ffmpeg" >> "$GITHUB_ENV"
       - name: Browser regression (parallel)
         if: needs.changes.outputs.draft != 'true'
         env:
           # Every script of scripts/ci-browser.sh except the two browser-main runs.
           BROWSER_EXCLUDE: scripts/ui-regression.ts,scripts/ui-contexts-regression.ts
-          BROWSER_WORKERS: ${{ runner.environment == 'self-hosted' && '6' || '4' }}
+          BROWSER_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          BROWSER_WORKERS: ${{ runner.environment == 'self-hosted' && '6' || '3' }}
         run: bun run check run -- bun scripts/ci-browser-parallel.ts
-      - name: Preserve browser logs and evidence
-        if: always()
+      # About 2,000 screenshots of a green run cost ~50 s to upload on the job that ends a run last,
+      # so they go up only when the job failed; the report and every script's log always do.
+      - name: Preserve browser logs
+        if: success()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: browser-other-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-other-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci/report.json
+            .ci/browser-logs/**
+          include-hidden-files: true
+          if-no-files-found: ignore
+      - name: Preserve browser logs and evidence
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-other-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .ci/report.json
             .ci/browser-logs/**

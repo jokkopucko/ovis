@@ -584,5 +584,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
       expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
       expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThanOrEqual(1024 * 1024);
     } finally { alloc.mockRestore(); }
-  });
+    // the allocation is asserted, not time: writing and twice reading 40 MiB takes about 4.5 s on Windows
+  }, 30_000);
 });

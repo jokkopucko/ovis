@@ -6,6 +6,12 @@
  *   bun run scripts/generate-protocol-types.ts --check     # fail if the committed output is stale
  *   bun run scripts/generate-protocol-types.ts --refresh   # re-read the schema from `herdr api schema --json`
  *                                                           (OVIS_HERDR_BIN picks the herdr binary)
+ *   bun run scripts/generate-protocol-types.ts --refresh-hc  # re-read herdr-core's from `hc schema`
+ *                                                           (OVIS_HC_BIN picks the hc binary; use the
+ *                                                           version ci.yml's herdr-core-live job pins)
+ *
+ * herdr-core's (`hc`) types come from its own OpenRPC schema, scripts/hc-schema.json, into
+ * server/herdr-core/hc-api.generated.ts: see scripts/hc-types.ts for their shape.
  *
  * Shape decisions, and why:
  *
@@ -26,10 +32,13 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { generateHcTypes } from "./hc-types.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const SCHEMA_PATH = join(ROOT, "scripts", "herdr-schema.json");
 const OUTPUT_PATH = join(ROOT, "shared", "herdr-api.generated.ts");
+const HC_SCHEMA_PATH = join(ROOT, "scripts", "hc-schema.json");
+const HC_OUTPUT_PATH = join(ROOT, "server", "herdr-core", "hc-api.generated.ts");
 
 /** Roots per schema section; their transitive closure is what gets emitted. */
 const ROOTS: Record<string, string[]> = {
@@ -239,21 +248,39 @@ async function loadSchema(refresh: boolean): Promise<Json> {
   return JSON.parse(readFileSync(SCHEMA_PATH, "utf8")) as Json;
 }
 
+/** hc's schema as `hc schema` prints it, kept indented so a refresh reads as a diff. */
+async function loadHcSchema(refresh: boolean): Promise<Json> {
+  if (refresh) {
+    const hc = process.env["OVIS_HC_BIN"] || "hc";
+    const proc = Bun.spawn([hc, "schema"], { stdout: "pipe", stderr: "pipe" });
+    const text = await new Response(proc.stdout).text();
+    if ((await proc.exited) !== 0) throw new Error("hc schema failed");
+    const schema = JSON.parse(text) as Json;
+    writeFileSync(HC_SCHEMA_PATH, `${JSON.stringify(schema, null, 2)}\n`);
+    return schema;
+  }
+  if (!existsSync(HC_SCHEMA_PATH)) throw new Error(`schema snapshot missing: ${HC_SCHEMA_PATH}`);
+  return JSON.parse(readFileSync(HC_SCHEMA_PATH, "utf8")) as Json;
+}
+
 const args = process.argv.slice(2);
 const check = args.includes("--check");
-const schema = await loadSchema(args.includes("--refresh"));
-const output = generate(schema);
+const targets = [
+  { output: OUTPUT_PATH, schema: SCHEMA_PATH, text: generate(await loadSchema(args.includes("--refresh"))) },
+  { output: HC_OUTPUT_PATH, schema: HC_SCHEMA_PATH, text: generateHcTypes(await loadHcSchema(args.includes("--refresh-hc"))) },
+];
 
 if (check) {
-  const current = existsSync(OUTPUT_PATH) ? readFileSync(OUTPUT_PATH, "utf8") : "";
-  if (current !== output) {
-    console.error(
-      `${OUTPUT_PATH} is STALE relative to ${SCHEMA_PATH}.\nRun: bun run generate:types`,
-    );
+  const stale = targets.filter((target) => (existsSync(target.output) ? readFileSync(target.output, "utf8") : "") !== target.text);
+  for (const target of stale) console.error(`${target.output} is STALE relative to ${target.schema}.`);
+  if (stale.length > 0) {
+    console.error("Run: bun run generate:types");
     process.exit(1);
   }
   console.log("generated types are up to date");
 } else {
-  writeFileSync(OUTPUT_PATH, output);
-  console.log(`wrote ${OUTPUT_PATH}`);
+  for (const target of targets) {
+    writeFileSync(target.output, target.text);
+    console.log(`wrote ${target.output}`);
+  }
 }

@@ -37,6 +37,12 @@ Cloudflare Pages serves it, connected to this repository:
 A push to `main` that touches `ovis-site/` deploys the site, and a pull request touching it gets a
 preview address. Cloudflare serves `404.html` for a missing page and `/privacy` at `/privacy/`.
 
+`_worker.js` is a Pages Function in advanced mode: `_routes.json` sends only `/demo` and `/demo/*`
+to it, and it fetches those from the demo built into GitHub Pages (`https://herdrweb.dev/demo/`,
+`.github/workflows/pages.yml`), so the demo opens at `ovis.sh/demo/` instead of redirecting to the
+old domain. Every other path is a static file, with `_redirects` and `_headers` applied as before.
+A preview deploy serves it too, so a pull request can check `/demo/` on its preview address.
+
 ## For search and answer engines
 
 - `_headers` (Cloudflare's [headers file](https://developers.cloudflare.com/pages/configuration/headers/),

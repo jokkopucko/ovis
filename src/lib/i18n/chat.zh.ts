@@ -2,7 +2,7 @@
  * Simplified Chinese for the keys only the chat files use:
  * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
- * components/BackgroundAgentDetail.tsx, components/MarkdownLinkMenu.tsx,
+ * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
  * lib/chatTimestamp.ts, lib/chatReadDeadline.ts.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
@@ -33,7 +33,6 @@ export const CHAT_ZH: Record<string, string> = {
   "thinking": "思考",
   "Working…": "正在工作…",
   "Worked": "已工作",
-  "Rewind in terminal": "在终端中回退",
   "Copy as markdown": "复制为 Markdown",
   "Copy as plain text": "复制为纯文本",
   "Plain text": "纯文本",
@@ -146,6 +145,9 @@ export const CHAT_ZH: Record<string, string> = {
   "{n} tool calls": "{n} 次工具调用",
   "{n} tokens": "{n} 个 token",
   "Background tasks": "后台任务",
+  "Artifacts": "Artifact",
+  "{n} artifact": "{n} 个 Artifact",
+  "{n} artifacts": "{n} 个 Artifact",
   "Couldn't load the background tasks": "无法加载后台任务",
   "No background tasks to show yet": "暂时没有可显示的后台任务",
   "Running": "运行中",
@@ -204,6 +206,5 @@ export const CHAT_ZH: Record<string, string> = {
   "Go to turn {n}": "跳到第 {n} 轮",
   "Show full message": "显示完整消息",
   "Open link": "打开链接",
-  "Share link": "分享链接",
   "Sent · waiting for the agent's next turn": "已发送 · 等待 agent 的下一轮",
 };

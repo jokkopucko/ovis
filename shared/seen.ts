@@ -7,6 +7,22 @@
  */
 export interface SeenFinish { pc: string; epoch: string; pane: string; id: number; answer?: string }
 
+/**
+ * Sent beside a finish in POST /api/seen, never stored: whether its pane just came into view (`new`:
+ * selected, uncovered, or the page shown again) or was already in front when the finish arrived
+ * (`held`). On herdr-core, only a new presentation writes `herdr.seen` again for a turn already
+ * written, so a pane left on screen does not overrule a "mark unread" from another Herdr client,
+ * while a person coming back to it does. Absent (an older browser) or a word this server does not
+ * know counts as `held`.
+ */
+export type SeenPresentation = "new" | "held";
+
+export const seenPresentationOf = (raw: unknown): SeenPresentation | undefined => {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const presented = (raw as Record<string, unknown>)["presented"];
+  return presented === "new" || presented === "held" ? presented : undefined;
+};
+
 /** records the server keeps, oldest first out: one per pane per herdr run, so far more than are ever open */
 export const MAX_SEEN = 500;
 const MAX_NAME_LENGTH = 300;

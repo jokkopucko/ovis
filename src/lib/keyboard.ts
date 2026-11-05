@@ -14,32 +14,8 @@ export function keyboardUp(): boolean {
 }
 
 /**
- * Calls `listener` whenever the measured keyboard state changes (lib/viewport.ts toggles
- * data-keyboard on what it measured, never on a focus alone); returns the stop. With `keyboardUp`
- * this is a store for useSyncExternalStore: the key bar's keyboard control shows the state the
- * viewport measured, not the one a tap hoped for.
+ * Reference height for keyboard occlusion, retaining the unobstructed viewport unless the window resized.
  */
-export function subscribeKeyboardUp(listener: () => void): () => void {
-  if (typeof document === "undefined") return () => {};
-  const observer = new MutationObserver(listener);
-  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-keyboard"] });
-  return () => observer.disconnect();
-}
-
-/**
- * What a tap on the key bar's keyboard control does. The measured state decides, not the focus: a
- * field focused under a hardware keyboard, or before the occlusion is measured, counts as down, so
- * the tap only focuses it again (`show`); a keyboard measured up is put away by blurring this pane's
- * field (`hide`). An IME composition in either field, or a commit still on its way, refuses the tap
- * outright (`refuse`): nothing runs later, and no compositionend is forced.
- */
-export type KeyboardToggle = "show" | "hide" | "refuse";
-export function keyboardToggleAction(up: boolean, composing: boolean): KeyboardToggle {
-  if (composing) return "refuse";
-  return up ? "hide" : "show";
-}
-
-/** Reference height for keyboard occlusion, retaining the unobstructed viewport unless the window resized. */
 export function keyboardViewportReference(
   height: number,
   large: number,
@@ -66,6 +42,18 @@ export function keyboardViewportReference(
  */
 export function keyboardHoldsGrid(keyboard: boolean, width: number, fittedWidth: number | null): boolean {
   return keyboard && (fittedWidth === null || width === fittedWidth);
+}
+
+/**
+ * The fields a focused element may have the soft keyboard for, as lib/viewport.ts's measurement
+ * reads them (syncKeyboard), and the keyboard control needs the same words: a blur that leaves no
+ * such field focused anywhere is the keyboard going, where a blind measurement (a zoomed page, a
+ * floating keyboard) is not. xterm's automatically focused helper only counts in direct typing.
+ */
+export function keyboardTypingField(element: Element | null): boolean {
+  return (element instanceof HTMLTextAreaElement && (!element.classList.contains("xterm-helper-textarea") || element.closest("[data-direct-typing]") !== null))
+    || (element instanceof HTMLInputElement && !["button", "checkbox", "radio", "range", "submit", "reset", "file", "color"].includes(element.type))
+    || (element instanceof HTMLElement && element.isContentEditable);
 }
 
 function dismissKeyboard(): void {

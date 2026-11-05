@@ -10,10 +10,10 @@
  * (type, answer, manage) or only to watch. A durable enrollment is announced (`onPaired`) once
  * its write succeeded, so every other session can hear of a device it did not pair.
  */
-import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type DevicePairedEvent, type DeviceRole, type DevicesRevokedAll, type PairedDevice, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts";
+import { type DevicePairedEvent, type DevicePairToken, type DeviceRole, type DevicesRevokedAll, type PairedDevice, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts";
 import type { Access } from "./access.ts";
 import { CLEAR_LEGACY_DEVICE_COOKIE, COOKIE_MAX_AGE_SECONDS, DEVICE_COOKIE_CLEARED, deviceCookie, isSecureRequest, noContent, parseCookies } from "./auth.ts";
 import { badRequest, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
@@ -25,12 +25,36 @@ const CODE_ATTEMPTS = 5;
 const LAST_SEEN_WRITE_MS = 60_000;
 const UNCONFIRMED_FIRST_PAIR_LIMIT = 8;
 const LABEL_MAX = 48;
+const PAIRING_WINDOW_MS = 10 * 60_000;
+
+export class PairingRateLimitedError extends Error {
+  readonly code = "pairing_rate_limited";
+  constructor(readonly retryAfter: number) {
+    super("Too many pairing attempts; try again later");
+  }
+}
+
+/** Canonical base64url SPKI containing a public P-256 key, never private key material. */
+function isRelayPublicKey(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  const bytes = Buffer.from(value, "base64url");
+  if (bytes.toString("base64url") !== value) return false;
+  try {
+    const key = createPublicKey({ key: bytes, format: "der", type: "spki" });
+    return key.asymmetricKeyType === "ec" && key.asymmetricKeyDetails?.namedCurve === "prime256v1"
+      && key.export({ format: "der", type: "spki" }).equals(bytes);
+  } catch (error) {
+    if (error instanceof Error) return false;
+    throw error;
+  }
+}
 
 export interface StoredDevice {
   id: string;
   label: string;
   role: DeviceRole;
   token_hash: string;
+  relay_public_key?: string;
   created_at: string;
   last_seen_at: string | null;
 }
@@ -63,6 +87,11 @@ export function streamKeys(request: Request): string[] {
     if (keys.length === STREAM_KEYS_MAX) break;
   }
   return keys;
+}
+
+/** The request names `application/json` among the types it accepts: a browser's fetch sends `*\/*` and never asks. */
+function acceptsJson(request: Request): boolean {
+  return (request.headers.get("accept") ?? "").split(",").some((type) => type.split(";")[0]!.trim().toLowerCase() === "application/json");
 }
 
 export function newStreamKey(): string {
@@ -124,6 +153,7 @@ export function readDeviceRegistry(path: string): DeviceRegistry {
     || !(parsed.gate_closed_at === null || typeof parsed.gate_closed_at === "string")
     || !parsed.devices.every((d) => isJsonObject(d) && typeof d.id === "string"
       && typeof d.token_hash === "string" && isDeviceRole(d.role)
+      && (d.relay_public_key === undefined || isRelayPublicKey(d.relay_public_key))
       && typeof d.label === "string" && typeof d.created_at === "string"
       && (d.last_seen_at === null || typeof d.last_seen_at === "string"))) return { kind: "bad" };
   return { kind: "ok", gateClosedAt: parsed.gate_closed_at, devices: parsed.devices as StoredDevice[], placeholder: parsed.placeholder === true && parsed.devices.length === 0 };
@@ -134,6 +164,9 @@ export class DeviceStore {
   /** when the first device was paired: from then on, only this PC, the owner's login, a device or the token get in */
   private gateClosedAt: string | null = null;
   private pending: { code: string; expires: number; attempts: number } | null = null;
+  private codeIssues: number[] = [];
+  private relayFailures: number[] = [];
+  private relayBlockedUntil = 0;
   /** First-pair cookies are not devices, and do not close the gate, until one returns. */
   private unconfirmedFirstPairs: UnconfirmedFirstPair[] = [];
   private readonly path: string;
@@ -172,7 +205,18 @@ export class DeviceStore {
     return this.error !== null || this.gateClosedAt !== null || this.devices.length > 0;
   }
 
-  /** Called immediately for an already-revoked identity, including an upgrade still in flight. */
+  /** Relay opt-in closes open LAN access before any outbound connection is made. */
+  closeGate(): void {
+    this.assertWritable();
+    if (this.gated) return;
+    const gate = new Date().toISOString();
+    this.save(this.devices, gate);
+    this.gateClosedAt = gate;
+    this.pending = null;
+    this.unconfirmedFirstPairs = [];
+  }
+
+  /** Ends stale authority on revocation or role changes, never a label-only update. Called immediately for an already-revoked identity. */
   onRevoke(id: string, close: () => void): () => void {
     if (!this.devices.some((device) => device.id === id)) { close(); return () => {}; }
     const listeners = this.revocations.get(id) ?? new Set<() => void>();
@@ -209,13 +253,23 @@ export class DeviceStore {
   }
 
   list(currentId: string | null): PairedDevice[] {
-    return this.devices.map((d) => ({ id: d.id, label: d.label, role: d.role, created_at: d.created_at, last_seen_at: d.last_seen_at, current: d.id === currentId }));
+    return this.devices.map((d) => ({ id: d.id, label: d.label, role: d.role, created_at: d.created_at, last_seen_at: d.last_seen_at, current: d.id === currentId, ...(d.relay_public_key === undefined ? {} : { via_relay: true as const }) }));
+  }
+
+  /** The current code when it can still be used, without changing its attempts or expiry. */
+  activePairing(now = Date.now()): PairingCode | null {
+    const pending = this.pending;
+    if (pending === null || now > pending.expires || pending.attempts >= CODE_ATTEMPTS) return null;
+    return { code: pending.code, expires_at: new Date(pending.expires).toISOString() };
   }
 
   /** A fresh six-digit code, replacing any code still pending. */
   startPairing(now = Date.now()): PairingCode {
     this.assertWritable();
     this.pruneUnconfirmedFirstPairs(now);
+    this.codeIssues = this.codeIssues.filter((at) => now - at < PAIRING_WINDOW_MS);
+    if (this.codeIssues.length >= 10) throw new PairingRateLimitedError(Math.ceil(((this.codeIssues[0] ?? now) + PAIRING_WINDOW_MS - now) / 1000));
+    this.codeIssues.push(now);
     const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
     this.pending = { code, expires: now + CODE_TTL_MS, attempts: 0 };
     return { code, expires_at: new Date(this.pending.expires).toISOString() };
@@ -225,13 +279,7 @@ export class DeviceStore {
   pair(code: string, label: string, role: DeviceRole, now = Date.now(), origin: readonly string[] = []): { token: string; device: DeviceMatch } | null {
     this.assertWritable();
     this.pruneUnconfirmedFirstPairs(now);
-    const pending = this.pending;
-    if (pending === null || now > pending.expires) { this.pending = null; return null; }
-    if (!same(code.replace(/\D/g, ""), pending.code)) {
-      pending.attempts += 1;
-      if (pending.attempts >= CODE_ATTEMPTS) this.pending = null;
-      return null;
-    }
+    if (!this.checkPairingCode(code, now)) return null;
     const token = randomBytes(32).toString("hex");
     const device: StoredDevice = { id: randomBytes(8).toString("hex"), label, role, token_hash: hash(token), created_at: new Date(now).toISOString(), last_seen_at: null };
     if (!this.gated) {
@@ -240,14 +288,75 @@ export class DeviceStore {
       if (this.unconfirmedFirstPairs.length > UNCONFIRMED_FIRST_PAIR_LIMIT) this.unconfirmedFirstPairs.shift();
       return { token, device: { id: device.id, label: device.label, role: device.role } };
     }
+    this.enroll(device, now, origin);
+    return { token, device: { id: device.id, label: device.label, role: device.role } };
+  }
+
+  /** Both transports spend the same pending code's five guesses. */
+  private checkPairingCode(code: string, now: number): boolean {
+    const pending = this.pending;
+    if (pending === null || now > pending.expires) { this.pending = null; return false; }
+    if (!same(code.replace(/\D/g, ""), pending.code)) {
+      pending.attempts += 1;
+      if (pending.attempts >= CODE_ATTEMPTS) this.pending = null;
+      return false;
+    }
+    return true;
+  }
+
+  /** One authorization write precedes every state change and enrollment announcement. */
+  private enroll(device: StoredDevice, now: number, origin: readonly string[]): void {
     const next = [...this.devices, device];
     const gate = this.gateClosedAt ?? device.created_at;
     this.save(next, gate);
     this.devices = next;
     this.gateClosedAt = gate;
     this.pending = null;
+    // A relay enrollment closes the gate immediately, invalidating every first-cookie candidate.
+    if (device.relay_public_key !== undefined) this.unconfirmedFirstPairs = [];
     this.announce(device, now, origin);
-    return { token, device: { id: device.id, label: device.label, role: device.role } };
+  }
+
+  /** No cookie is issued: even the first relay pairing is durable and closes the gate at once. */
+  pairRelay(code: string, label: string, publicKey: string, now = Date.now()): { device: DeviceMatch } | null {
+    this.assertWritable();
+    if (now < this.relayBlockedUntil) throw new PairingRateLimitedError(Math.ceil((this.relayBlockedUntil - now) / 1000));
+    this.relayFailures = this.relayFailures.filter((at) => now - at < PAIRING_WINDOW_MS);
+    if (!this.checkPairingCode(code, now) || !isRelayPublicKey(publicKey)) {
+      this.relayFailures.push(now);
+      if (this.relayFailures.length >= 20) this.relayBlockedUntil = now + PAIRING_WINDOW_MS;
+      return null;
+    }
+    const device: StoredDevice = {
+      id: randomBytes(8).toString("hex"), label: normalizeLabel(label, "Device"), role: "drive",
+      token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: publicKey,
+      // PAIR authenticates this relay session too, so the device is seen as it pairs.
+      created_at: new Date(now).toISOString(), last_seen_at: new Date(now).toISOString(),
+    };
+    this.enroll(device, now, []);
+    return { device: { id: device.id, label: device.label, role: device.role } };
+  }
+
+  /** The transport owns a fresh 32-byte nonce per session and consumes AUTH only once. */
+  async matchRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string, now = Date.now()): Promise<DeviceMatch | null> {
+    if (nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
+    const signed = Buffer.from(signature, "base64url");
+    if (signed.length !== 64 || signed.toString("base64url") !== signature) return null;
+    const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key !== undefined);
+    if (device?.relay_public_key === undefined) return null;
+    const message = Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from(serverId)]);
+    try {
+      const key = await crypto.subtle.importKey("spki", Buffer.from(device.relay_public_key, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+      const verified = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signed, message);
+      // Authorization changes during WebCrypto invalidate the proof; a rename does not.
+      const current = this.devices.find((d) => d.id === deviceId);
+      if (!verified || !current || current.role !== device.role || current.relay_public_key !== device.relay_public_key) return null;
+      this.noteSeen(current, now);
+      return { id: current.id, label: current.label, role: current.role };
+    } catch (error) {
+      if (error instanceof DOMException) return null;
+      throw error;
+    }
   }
 
   /** The device a cookie token belongs to, noting when it was last seen (at most once a minute on disk). */
@@ -274,18 +383,23 @@ export class DeviceStore {
     }
     for (const device of this.devices) {
       if (!same(digest, device.token_hash)) continue;
-      const seen = device.last_seen_at === null ? 0 : Date.parse(device.last_seen_at);
-      if (now - seen >= LAST_SEEN_WRITE_MS) {
-        try {
-          const next = this.devices.map((d) => d === device ? { ...d, last_seen_at: new Date(now).toISOString() } : d);
-          // devices.json is also the authorization registry: a torn write here would lock every device out
-          this.save(next);
-          this.devices = next;
-        } catch { /* last-seen telemetry must not deny an otherwise valid credential */ }
-      }
+      this.noteSeen(device, now);
       return { id: device.id, label: device.label, role: device.role };
     }
     return null;
+  }
+
+  /** Notes when a device was last seen, at most once a minute on disk. */
+  private noteSeen(device: StoredDevice, now: number): void {
+    const seen = device.last_seen_at === null ? 0 : Date.parse(device.last_seen_at);
+    // A blocked registry stays as it is on disk until the server restarts.
+    if (this.error !== null || now - seen < LAST_SEEN_WRITE_MS) return;
+    try {
+      const next = this.devices.map((d) => d === device ? { ...d, last_seen_at: new Date(now).toISOString() } : d);
+      // devices.json is also the authorization registry: a torn write here would lock every device out
+      this.save(next);
+      this.devices = next;
+    } catch { /* last-seen telemetry must not deny an otherwise valid credential */ }
   }
 
   update(id: string, patch: { label?: string; role?: DeviceRole }): PairedDevice | null {
@@ -296,7 +410,12 @@ export class DeviceStore {
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);
     this.devices = next;
-    return { id: updated.id, label: updated.label, role: updated.role, created_at: updated.created_at, last_seen_at: updated.last_seen_at, current: false };
+    if (updated.role !== device.role) {
+      const listeners = this.revocations.get(id);
+      this.revocations.delete(id);
+      for (const close of listeners ?? []) close();
+    }
+    return { id: updated.id, label: updated.label, role: updated.role, created_at: updated.created_at, last_seen_at: updated.last_seen_at, current: false, ...(updated.relay_public_key === undefined ? {} : { via_relay: true as const }) };
   }
 
   revoke(id: string): boolean {
@@ -367,13 +486,24 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
   };
   if (pathname === "/api/devices/pair") {
     setRequestRoute(pathname);
+    if (access.level === "full" && access.via === "relay") return jsonResponse({ error: { code: "device_key_required", message: "Pair relay devices through the encrypted channel" } }, 403);
     if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
     const body = await json();
     if (body instanceof Response) return body;
     if (typeof body["code"] !== "string") return badRequest("missing_code", "code is required");
+    const firstPair = !store.gated;
     const paired = store.pair(body["code"], normalizeLabel(body["label"], "Device"), "drive", Date.now(), streamKeys(request));
     if (paired === null) return jsonResponse({ error: { code: "invalid_code", message: "the code is wrong, spent or expired; start a new pairing on the PC" } }, 401);
-    return noContent(deviceCookie(paired.token, isSecureRequest(request)), CLEAR_LEGACY_DEVICE_COOKIE);
+    const cookies = [deviceCookie(paired.token, isSecureRequest(request)), CLEAR_LEGACY_DEVICE_COOKIE];
+    if (!acceptsJson(request)) return noContent(...cookies);
+    // a script asked for the token itself, to send as `Authorization: Device <token>` (#2744); a
+    // browser never asks, so its page never reads the credential its HttpOnly cookie keeps. A first
+    // pairing waits in memory for its cookie to come back; a script may store the token and use it
+    // after a restart, so its pairing is confirmed (written, gate closed) before the answer
+    if (firstPair) store.match(paired.token);
+    const answer = jsonResponse({ token: paired.token } satisfies DevicePairToken, 200, { "cache-control": "no-store" });
+    for (const cookie of cookies) answer.headers.append("set-cookie", cookie);
+    return answer;
   }
   if (pathname === "/api/devices") {
     setRequestRoute(pathname);
@@ -385,7 +515,12 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
   if (pathname === "/api/devices/pair/start") {
     setRequestRoute(pathname);
     if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
-    return jsonResponse(store.startPairing(), 200, { "cache-control": "no-store" });
+    try {
+      return jsonResponse(store.startPairing(), 200, { "cache-control": "no-store" });
+    } catch (error) {
+      if (error instanceof PairingRateLimitedError) return jsonResponse({ error: { code: error.code, message: error.message } }, 429, { "retry-after": String(error.retryAfter), "cache-control": "no-store" });
+      throw error;
+    }
   }
   if (pathname === "/api/devices/revoke-all") {
     setRequestRoute("/api/devices/revoke-all");

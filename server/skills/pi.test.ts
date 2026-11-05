@@ -70,15 +70,25 @@ describe("pi's builtins", () => {
       ["reload", "Reload keybindings, extensions, skills, prompts, themes, and context files"],
       ["quit", "Quit pi"],
     ] as const;
-    expect(source.builtins).toEqual(upstream.map(([name]) => name));
-    expect(Object.fromEntries(source.builtins.map((name) => [name, source.descriptions?.[name]]))).toEqual(Object.fromEntries(upstream));
+    const shown = source.builtins.filter((name) => !source.agentHidden?.includes(name));
+    expect(shown).toEqual(upstream.map(([name]) => name));
+    expect(Object.fromEntries(shown.map((name) => [name, source.descriptions?.[name]]))).toEqual(Object.fromEntries(upstream));
   });
 
-  it("defines the canonical 24 builtins with forms, including terminal tree", () => {
+  it("lists the builtins Pi runs itself but hides from its menu", () => {
+    // Pi 1.4's submit handler runs these when typed exactly; they never reach the transcript
+    expect(source.agentHidden).toEqual(["debug", "arminsayshi", "dementedelves"]);
+    for (const name of source.agentHidden ?? []) {
+      expect(source.builtins).toContain(name);
+      expect(source.forms?.[name]).toEqual([{ match: "bare", interaction: "terminal" }]);
+    }
+  });
+
+  it("defines the canonical 24 builtins and the 3 hidden ones with forms, including terminal tree", () => {
     expect(source.builtins).toEqual([
       "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "bug", "copy",
       "name", "session", "changelog", "hotkeys", "fork", "clone", "trust", "login", "logout", "new",
-      "compact", "resume", "reload", "quit",
+      "compact", "resume", "reload", "quit", "debug", "arminsayshi", "dementedelves",
     ]);
     expect(source.terminalBound).toEqual(["tree"]);
     expect(source.forms?.["tree"]).toEqual([{ match: "bare", interaction: "terminal" }]);
@@ -125,7 +135,7 @@ describe("pi's builtins", () => {
     expect(noneForms).toEqual({
       model: [{ match: "other", interaction: "none" }],
       thinking: [{ match: "other", interaction: "none" }],
-      compact: [{ match: "bare", interaction: "none" }],
+      compact: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }],
       name: [{ match: "other", interaction: "none" }],
     });
   });

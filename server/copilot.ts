@@ -1,6 +1,8 @@
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { readSync } from "node:fs";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { closeSync, readSync } from "node:fs";
+import { imageType, inlineImageType, MAX_IMAGE_BYTES } from "./codex-images.ts";
+import { openCopilotFile } from "./copilot-store.ts";
 import { MAX_TURNS, toolSummary } from "./transcript-records.ts";
 import { trimOutput } from "./tool-output.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
@@ -22,6 +24,111 @@ function outputRef(id: string, requestAt: number, resultAt: number, request: str
   return `${id}@${requestAt.toString(36)}@${resultAt.toString(36)}@${outputSeal(id, requestAt, resultAt, request, result)}`;
 }
 
+/**
+ * A picture Copilot interned in its session: the CLI writes a picture's bytes once, as base64 in a
+ * `session.binary_asset` record named `sha256:<digest of the bytes>`, and a prompt's attachments and a
+ * tool's `binaryResultsForLlm` name it by that id (1.0.105). The chat names it `copilot:<digest>`.
+ */
+export const COPILOT_IMAGE_REF = /^copilot:([a-f0-9]{64})$/;
+const ASSET_ID = /^sha256:([a-f0-9]{64})$/;
+const RASTER_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/**
+ * The pictures `values` name by an interned asset, in order and each once: declared a raster the chat
+ * shows, within the size the image endpoint serves. Only the name is read here; copilotImage checks
+ * the bytes it serves. `kind` holds a tool's results to its images (a prompt's attachments are files
+ * or blobs, told apart by their type instead).
+ */
+function assetPictures(values: unknown, kind?: "image"): { media_type: string; ref: string }[] {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set<string>();
+  return values.flatMap((value) => {
+    const asset = row(value);
+    const digest = typeof asset?.assetId === "string" ? ASSET_ID.exec(asset.assetId)?.[1] : undefined;
+    if (asset === null || digest === undefined || (kind !== undefined && asset.type !== kind)
+      || typeof asset.mimeType !== "string" || !RASTER_TYPES.has(asset.mimeType)
+      || (typeof asset.byteLength === "number" && asset.byteLength > MAX_IMAGE_BYTES)) return [];
+    const ref = `copilot:${digest}`;
+    if (seen.has(ref)) return [];
+    seen.add(ref);
+    return [{ media_type: asset.mimeType, ref }];
+  });
+}
+
+/** The pictures a prompt carries: its attachments Copilot interned as pictures. */
+export function copilotPromptPictures(data: unknown): { media_type: string; ref: string }[] {
+  return assetPictures(row(data)?.attachments);
+}
+
+/** Whether a root `user.message`'s data opens a turn: it has words, or pictures (the parser draws either). */
+export function copilotPromptOpens(data: unknown): boolean {
+  const content = row(data)?.content;
+  return typeof content === "string" && (!!content.trim() || copilotPromptPictures(data).length > 0);
+}
+
+/** The longest record copilotImage reads: a picture of MAX_IMAGE_BYTES as base64, and room for its fields. */
+const ASSET_RECORD_MAX = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 64 * 1024;
+const ASSET_WINDOW = 1024 * 1024;
+
+/** The lines of the file open at `fd`, from its start, the last one too when no newline ends it, each at most ASSET_RECORD_MAX bytes: a longer one is dropped as it is read. */
+async function* boundedLines(fd: number): AsyncGenerator<string> {
+  const window = Buffer.alloc(ASSET_WINDOW);
+  let pieces: Buffer[] = [];
+  let length = 0;
+  let oversized = false;
+  for (let position = 0; ;) {
+    const count = readSync(fd, window, 0, window.length, position);
+    if (count === 0) {
+      if (!oversized && length > 0) yield Buffer.concat(pieces, length).toString("utf8");
+      return;
+    }
+    position += count;
+    for (let at = 0; at < count;) {
+      const newline = window.subarray(0, count).indexOf(0x0a, at);
+      const end = newline < 0 ? count : newline;
+      if (!oversized && length + end - at <= ASSET_RECORD_MAX) { pieces.push(Buffer.from(window.subarray(at, end))); length += end - at; }
+      else { oversized = true; pieces = []; length = 0; }
+      if (newline < 0) break;
+      if (!oversized) yield Buffer.concat(pieces, length).toString("utf8");
+      pieces = []; length = 0; oversized = false;
+      at = newline + 1;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+/**
+ * The picture `ref` names in the Copilot transcript `path`, from the root `session.binary_asset`
+ * record that interned it, and only when its bytes are a raster within MAX_IMAGE_BYTES (inlineImageType,
+ * as the other agents' inline pictures) that hash to the digest the ref names. The transcript is opened
+ * pinned as the page reads it (openCopilotFile) and read a window at a time, the event loop running
+ * between windows; a line longer than the largest picture record it could serve is skipped without
+ * being held, and a line that does not name the digest is never parsed. Null for anything else.
+ */
+export async function copilotImage(path: string, ref: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+  const digest = COPILOT_IMAGE_REF.exec(ref)?.[1];
+  if (digest === undefined) return null;
+  let fd: number;
+  try { fd = openCopilotFile(path); } catch { return null; }
+  try {
+    for await (const line of boundedLines(fd)) {
+      if (!line.includes('"session.binary_asset"') || !line.includes(digest)) continue;
+      let entry: Row | null;
+      try { entry = row(JSON.parse(line)); } catch { continue; }
+      const data = row(entry?.data);
+      if (entry?.type !== "session.binary_asset" || !copilotRootRecord(entry) || data === null
+        || data.assetId !== `sha256:${digest}` || data.type !== "image") continue;
+      const declared = inlineImageType(data.mimeType, data.data);
+      if (declared === null) continue;
+      const bytes = Buffer.from(data.data as string, "base64");
+      if (createHash("sha256").update(bytes).digest("hex") !== digest || imageType(bytes) !== declared) continue;
+      return { mediaType: declared, bytes: new Uint8Array(bytes) };
+    }
+  } catch { return null; }
+  finally { closeSync(fd); }
+  return null;
+}
+
 /** A task parent can occur on a root prompt; only agent identity marks a child. */
 export function copilotRootRecord(value: unknown): boolean {
   const entry = row(value);
@@ -36,6 +143,9 @@ export function copilotRecords(jsonl: string, strict = false, baseOffset?: numbe
   for (const [index, line] of lines.entries()) {
     const at = offset;
     if (baseOffset !== undefined) offset += Buffer.byteLength(line) + 1;
+    // a checked picture record the newest-turn cache keeps only the length of (copilotSetAside)
+    const setAside = SET_ASIDE.exec(line);
+    if (setAside !== null) { offset += Number(setAside[1]) - Buffer.byteLength(line); continue; }
     if (!line.trim()) continue;
     let value: unknown;
     try { value = JSON.parse(line); } catch {
@@ -59,6 +169,22 @@ export function copilotRecords(jsonl: string, strict = false, baseOffset?: numbe
       ...(baseOffset === undefined ? {} : { offset: at, raw: line }) });
   }
   return records;
+}
+
+/** A line copilotSetAside stands in for: the byte length of the record it replaces, behind a mark made for this process that no file holds. */
+const SET_ASIDE_MARK = `\u0000copilot-set-aside:${randomBytes(16).toString("hex")}:`;
+const SET_ASIDE = new RegExp(`^${SET_ASIDE_MARK}(\\d{1,10})$`);
+
+/**
+ * A picture record (`session.binary_asset`) a page keeps in memory as its length only, once it has been
+ * checked whole as the page parser would read it: the parser never reads one, and copilotRecords keeps
+ * every later record's offset. Any other line, or one that does not parse, is returned as it is.
+ */
+export function copilotSetAside(line: string): string {
+  if (!line.startsWith('{"type":"session.binary_asset",')) return line;
+  let entry: unknown;
+  try { entry = JSON.parse(line); } catch { return line; }
+  return row(entry)?.type === "session.binary_asset" && row(row(entry)?.data) !== null ? `${SET_ASIDE_MARK}${Buffer.byteLength(line)}` : line;
 }
 
 /** Convert persisted Copilot CLI turns to the shared, read-only chat shape. */
@@ -108,9 +234,11 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS, base
     if (type === "user.message") {
       if (typeof data.content !== "string") throw new ConversationUnavailable("transcript_unreadable");
       const content = text(data.content);
-      if (content !== null) {
+      const pictures = copilotPromptPictures(data).map((picture) => ({ kind: "image" as const, ...picture }));
+      // a prompt that is only pictures is a turn too (copilotPromptOpens)
+      if (content !== null || pictures.length > 0) {
         flushCompletion();
-        turns.push({ role: "user", ts: timestamp, parts: [{ kind: "text", text: content }] });
+        turns.push({ role: "user", ts: timestamp, parts: [...content === null ? [] : [{ kind: "text" as const, text: content }], ...pictures] });
         pending.clear();
         completionTools.clear();
         finished = false;
@@ -149,6 +277,8 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS, base
         && Buffer.byteLength(call.request) <= RECORD_MAX && Buffer.byteLength(raw) <= RECORD_MAX
         ? outputRef(id, call.requestAt, offset, call.request, raw) : id;
       trimOutput(call.part, output, ref);
+      const images = assetPictures(row(data.result)?.binaryResultsForLlm, "image");
+      if (images.length > 0) call.part.images = images;
       if (data.success === false) call.part.error = true;
       if (data.success !== false && completionTools.has(id)) completion ??= completionTools.get(id)!;
       pending.delete(id);

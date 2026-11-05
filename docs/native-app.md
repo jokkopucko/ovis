@@ -185,6 +185,24 @@ What is there:
   to every page, the client included.
 - A PC joins the list of PCs only once a page of it has loaded, so an address that never
   answered, or answered with an HTTP error, is not kept.
+- A PC paired over the Ovis relay opens from its pairing link, scanned or pasted:
+  `https://app.ovis.sh/s/<server_id>/#offer=...` (`relayLink()` in `shell.js`). Only the hosted
+  shell's origin may carry an offer: one on any other origin is refused on the connect screen,
+  as is an offer that names another PC than its path. The app opens the link as the WebView's
+  first page, like any PC (the offer stays in the fragment through
+  `instanceDescriptor().serverURL` on iOS, a 2026-10-30 Simulator spike, and through the start
+  path on Android), and the hosted shell pairs from there. Every relay PC shares that origin, so
+  the app saves it by its scope (`https://app.ovis.sh/s/<server_id>/`) and labels it with the
+  offer's `name`; a PC opened at its own address is still saved by its origin, and lists saved
+  before keep their entries as they are. The allowed host (iOS) and the bridge's origin
+  (Android) follow the PC opened, so a relay PC gets the shell's origin and nothing else.
+  A page belongs to a relay PC only within its scope as a browser would load it: a path with a
+  `.` or `..` segment (plain or percent-encoded), an encoded `/` or a `\` is refused, so
+  `<scope>../<other server_id>/` cannot pass for this PC (`PCStore.cleanPath` on Android,
+  `ScopePath.swift` on iOS; on a Mac, `swiftc app/ios/App/App/ScopePath.swift
+  app/ios/ScopePathCheck/main.swift -o /tmp/check && /tmp/check` runs its checks).
+  `error.html` says when the relay could not be reached. A test build points at another shell
+  with `OVIS_APP_URL=https://<host> bun run build:web`.
 - Both apps allow plain http to any host, as Android cannot limit cleartext to address ranges.
   Before opening plain http to an address outside a tailnet, a home network and the phone (one not
   in the list of PCs yet), the connect screen warns that the pairing code and everything typed
@@ -462,6 +480,21 @@ were read through the WebView's DevTools socket (`webview_devtools_remote_<pid>`
 Still open on Android:
 
 - QR scanning and IME were not tried in the emulator; a physical phone should check them.
+
+## Through the Ovis relay
+
+A PC can also be reached through the [Ovis relay](relay.md), which is off by default and end-to-end
+encrypted ([how to use it](guide.md#through-the-ovis-relay)). Its pairing QR code holds a link to
+the hosted app, `https://app.ovis.sh/s/<server_id>/#offer=…`, not the PC's own address. Scanned or
+pasted into the connect screen, that link opens the hosted app's pairing screen in the app; an
+offer on any other origin is refused there. Each relay PC is saved by its scope URL, older entries
+saved by origin keep working, and a page counts as that PC's only inside its scope ([The app
+(app/)](#the-app-app) has the details). Scanned with the phone's camera instead, the code opens the
+hosted app in the phone's browser.
+
+Files load as in a browser without a service worker ([relay files](relay.md#files)), since the
+app's web view has none ([Spike results](#spike-results-2026-10-19)): each picture, PDF or video
+loads whole, up to 64 MiB, before it shows, so a video can't skip ahead while it loads.
 
 ## Risks and open questions
 

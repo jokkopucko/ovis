@@ -3,6 +3,7 @@ import type { HerdrPane, HerdrWorkspace } from "../../shared/protocol.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { PaneView } from "./actions.ts";
 import { isNavigation, linkSearch, NAV_KEY, readLink, resolveLink, slugOf, type AppLink, type LinkNote } from "./deepLink.ts";
+import { pageAddress, pageSearch } from "./pageQuery.ts";
 import type { SelectionMark } from "./selectionMark.ts";
 import { settingsEntry, settingsSteppedOff } from "./settingsHistory.ts";
 import { sheetSteppedOff } from "./sheetHistory.ts";
@@ -75,12 +76,12 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
     };
     const previous = writtenLink.current;
     writtenLink.current = link;
-    const search = linkSearch(link, window.location.search);
+    const search = linkSearch(link, pageSearch());
     const popped = poppedTo.current;
     poppedTo.current = false;
     // Back and Forward land where the address already says: nothing to write
-    if (search === window.location.search) return;
-    const url = `${window.location.pathname}${search}${window.location.hash}`;
+    if (search === pageSearch()) return;
+    const url = pageAddress(window.location.pathname, search, window.location.hash);
     if (previous !== null && !popped && !autoSelected && !settingsOpen && !newSessionOpen && isNavigation(previous, link)) {
       // a move that leaves the open file behind takes the file's entry: no entry is left between
       if (fileLeft) window.history.replaceState({ [NAV_KEY]: true }, "", url);
@@ -111,7 +112,7 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
       // Settings closing lands on the entry it opened over: what was picked while it was up stays
       // (hiding a PC here moves the selection off it), and the entry is written to say so
       if (settingsSteppedOff()) { sayShown(); return; }
-      const link = readLink(window.location.search);
+      const link = readLink(pageSearch());
       // before the PCs are in, nothing can say the entry's PC is still set up: it waits as a link
       // opened with the page does, settled against its roster or answered with a note once they are
       if (machinesRef.current.length === 0) {
@@ -144,8 +145,8 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
     };
     const sayShown = (): void => {
       const shown = writtenLink.current;
-      const search = shown ? linkSearch(shown, window.location.search) : window.location.search;
-      if (search !== window.location.search) window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
+      const search = shown ? linkSearch(shown, pageSearch()) : pageSearch();
+      if (search !== pageSearch()) window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, search, window.location.hash));
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);

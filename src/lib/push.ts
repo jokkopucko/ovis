@@ -31,8 +31,15 @@ async function appSubscription(): Promise<AppSubscription | null> {
   return (await callNative<{ subscription: AppSubscription | null }>(PUSH_PLUGIN, "getSubscription")).subscription;
 }
 
+/**
+ * The desktop app (Electron, app/electron) offers a PushManager with no push service behind it: its
+ * subscribe always fails. Its window stays loaded in the tray, so the page's own notifications carry
+ * its alerts, as on a browser without push.
+ */
+const desktopApp = (): boolean => typeof navigator !== "undefined" && /\bElectron\//.test(navigator.userAgent);
+
 export function pushSupported(): boolean {
-  return appPush() || (typeof navigator !== "undefined" && "serviceWorker" in navigator && typeof globalThis.PushManager !== "undefined");
+  return appPush() || (typeof navigator !== "undefined" && "serviceWorker" in navigator && typeof globalThis.PushManager !== "undefined" && !desktopApp());
 }
 
 /** Test the existing subscription without repairing it first, so stale registrations stay visible. */
@@ -133,7 +140,12 @@ export function currentPushOperation(): Promise<void> {
 export function ensurePushSubscription(alerts?: AlertPrefs): Promise<string | null> {
   if (pending) return pending;
   epoch += 1;
-  const request = operations.catch(() => undefined).then(() => subscribeDevice(alerts)).then((endpoint) => {
+  const request = operations.catch(() => undefined).then(() => {
+    // read once this registration's turn comes: the recovery queued before it has finished by then
+    const handedOver = recovered;
+    recovered = null;
+    return subscribeDevice(alerts, handedOver);
+  }).then((endpoint) => {
     registered = endpoint;
     return endpoint;
   }, (error: unknown) => {
@@ -147,7 +159,7 @@ export function ensurePushSubscription(alerts?: AlertPrefs): Promise<string | nu
   return request;
 }
 
-async function subscribeDevice(alerts?: AlertPrefs): Promise<string | null> {
+async function subscribeDevice(alerts?: AlertPrefs, handedOver: Recovered | null = null): Promise<string | null> {
   if (!pushSupported() || notificationState() !== "granted") return null;
   if (appPush()) return subscribeApp(alerts);
   const registration = await workerRegistration();
@@ -160,6 +172,8 @@ async function subscribeDevice(alerts?: AlertPrefs): Promise<string | null> {
     subscription = null;
   }
   subscription ??= await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  // the start's recovery (registerPendingPush) handed the PC this very endpoint with these alerts just before
+  if (handedOver !== null && handedOver.endpoint === subscription.endpoint && handedOver.alerts === alertsKey(alerts)) return subscription.endpoint;
   try {
     await registerPushSubscription(subscription.toJSON(), alerts);
   } catch (error) {
@@ -196,12 +210,70 @@ async function subscribeApp(alerts?: AlertPrefs): Promise<string> {
   return subscription.endpoint;
 }
 
+/**
+ * A subscription the browser rotated while no window of this PC's app could tell the PC: the hosted
+ * shell's worker (public/sw.js pushsubscriptionchange) keeps it in IndexedDB `ovis-relay/pending-push`,
+ * one per PC, and the shell registers it once it is connected again (lib/relay/shell.tsx).
+ */
+export interface PendingPush {
+  readonly server_id: string;
+  readonly subscription: PushSubscriptionJSON;
+  /** the endpoint the PC last knew, to drop; null when the browser did not say */
+  readonly old_endpoint: string | null;
+}
+
+export interface PendingPushStore {
+  get(serverId: string): Promise<PendingPush | undefined>;
+  /** Drops the PC's pending subscription only while it is still `endpoint`: one the worker kept meanwhile waits for the next run. */
+  clear(serverId: string, endpoint: string): Promise<void>;
+}
+
+/** A registration the start's recovery made, which the load-time registration queued after it does not repeat. */
+interface Recovered {
+  endpoint: string;
+  alerts: string;
+}
+
+let recovered: Recovered | null = null;
+
+const alertsKey = (alerts: AlertPrefs | undefined): string => JSON.stringify(alerts ?? null);
+
+/**
+ * Hands the PC the subscription its worker kept while no window could, over whatever transport is set
+ * (the relay in the hosted shell), with this device's `alerts`, then forgets it: registered once. The
+ * shell runs it before the app's own load-time registration (ensurePushSubscription), which then skips
+ * that endpoint once when its alerts are the same, so one start registers it once. A PC that could not
+ * be reached keeps it for the next start; a PC that answered with a refusal has had its say, and the
+ * load-time registration takes it from there. Resolves whether one was registered.
+ */
+export function registerPendingPush(serverId: string, store: PendingPushStore, alerts?: AlertPrefs): Promise<boolean> {
+  epoch += 1;
+  const request = operations.catch(() => undefined).then(async () => {
+    const held = await store.get(serverId);
+    const endpoint = held?.subscription.endpoint;
+    if (held === undefined || endpoint === undefined) return false;
+    try {
+      await registerPushSubscription(held.subscription, alerts);
+      if (held.old_endpoint !== null && held.old_endpoint !== endpoint) await unregisterPushSubscription(held.old_endpoint);
+    } catch (error) {
+      if (error instanceof ApiError && error.status < 500) await store.clear(serverId, endpoint);
+      throw error;
+    }
+    await store.clear(serverId, endpoint);
+    recovered = { endpoint, alerts: alertsKey(alerts) };
+    return true;
+  });
+  operations = request;
+  return request;
+}
+
 /** Stops pushes to this device: the server forgets it first, then the browser (or the app) drops it. */
 export function removePushSubscription(): Promise<void> {
   // A later enable must enqueue a new registration after this removal, not join the old one.
   pending = null;
   epoch += 1;
   registered = null;
+  recovered = null;
   const request = operations.catch(() => undefined).then(unsubscribeDevice);
   operations = request;
   return request;

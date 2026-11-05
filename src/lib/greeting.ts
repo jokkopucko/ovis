@@ -107,12 +107,13 @@ export interface GreetingState {
 
 /**
  * Whether the greeting shows. A message sent takes it away at once, before the server answers
- * for it and before the transcript holds the turn; an agent already at work or asking is not
- * asked what it should do.
+ * for it and before the transcript holds the turn; an agent asking is not asked what it should do.
+ * A status at work alone leaves it: a /clear reports one for a moment with no turn (#2550), and a
+ * turn begun elsewhere ends it once a read holds that turn.
  */
 export function showsGreeting(state: GreetingState): boolean {
   return state.memory.blank && !state.memory.sent && state.memory.pending === 0
-    && state.agentStatus !== "working" && state.agentStatus !== "blocked"
+    && state.agentStatus !== "blocked"
     && state.queued === 0 && state.folder !== "";
 }
 

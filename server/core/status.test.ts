@@ -1,11 +1,262 @@
 import { afterEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { HerdrPane } from "../../shared/protocol.ts";
 import * as herdr from "../herdr/client.ts";
+import * as gjc from "../gjc-status.ts";
+import * as omo from "../omo.ts";
+import * as records from "../omo-records.ts";
+import * as service from "../opencode-service.ts";
+import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
+import type { StatusCollectorDeps } from "../collector.ts";
 import { noteSubmitted } from "../prompt.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
-import { at, claude, collectorSnapshot, handlers, hub, line, opencode, root, workingClaude } from "./status.fake.ts";
+import { at, claude, collectorSnapshot, handlers, hub, line, opencode, originalCollector, root, workingClaude } from "./status.fake.ts";
+
+describe.each(["baseline", "gap", "resync", "newer-event"] as const)("native OpenCode ownership reconciliation (%s)", (mode) => {
+  it.each([
+    { proof: "known shell status", agent: null, status: "idle", front: "unreadable" },
+    { proof: "another agent", agent: "claude", status: "idle", front: "unreadable" },
+    { proof: "unknown handover", agent: null, status: "unknown", front: "unreadable" },
+    { proof: "unknown handover with an agent in front", agent: null, status: "unknown", front: "agent" },
+    { proof: "unknown handover after exec opencode", agent: null, status: "unknown", front: "exec" },
+    { proof: "unknown status with the shell in front", agent: null, status: "unknown", front: "shell" },
+  ] as const)(`${mode}: reconciles a verified pane from $proof`, async ({ agent, status, front }) => {
+    // Given a pane verified before its collector has heard any status event.
+    const h = hub();
+    closeOpenCodeNative();
+    const pane: HerdrPane = { ...claude, ...opencode("ses_parent"), focused: false, revision: 0, terminal_id: "native-reconcile" };
+    const lookup = spyOn(service, "openCodeService").mockResolvedValue({
+      version: "2.0.32", config: { baseUrl: "http://127.0.0.1:1", port: 1, pid: process.pid, password: "fixture" },
+    });
+    const session = spyOn(service, "openCodeHasSession").mockResolvedValue(true);
+    let closed = false;
+    const events = spyOn(service, "subscribeOpenCodeEvents").mockImplementation(() => ({ close() { closed = true; } }));
+    const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue(front === "unreadable" ? undefined : {
+      pane_id: pane.pane_id, shell_pid: 41000,
+      foreground_processes: [{ pid: front === "shell" || front === "exec" ? 41000 : 41001, name: front === "shell" ? "sh" : "opencode", argv: [front === "shell" ? "/bin/sh" : "/usr/bin/opencode"] }],
+    });
+    let collector: ReturnType<typeof originalCollector> | undefined;
+    try {
+      expect(await openCodePaneService(pane)).not.toBeNull();
+      expect(openCodeNativeState()).toEqual({ stream: true, panes: [pane.pane_id] });
+      // When the real collector sees a replacement agent at the same status, without
+      // a status frame. Exercise the first baseline, a gap and a lost subscription.
+      const changed = { ...pane, agent, agent_status: status, agent_session: null };
+      let snapshotPane = mode === "baseline" ? changed : pane;
+      let live: Parameters<StatusCollectorDeps["subscribe"]>[1] | undefined;
+      let hold: Promise<void> | undefined;
+      let resynced = false;
+      let reconciled = Promise.withResolvers<void>();
+      const asked = Promise.withResolvers<void>();
+      collector = originalCollector({
+        onBaseline: handlers.onBaseline,
+        onReconciled: (panes) => {
+          handlers.onReconciled(panes);
+          if (mode !== "resync" || resynced) reconciled.resolve();
+        },
+        onResync: (panes, newer) => { handlers.onResync(panes, newer); resynced = true; },
+        onStatus: handlers.onStatus,
+        onPaneEnded: handlers.onPaneEnded,
+        onStructureChange() {},
+      }, {
+        snapshot: async () => {
+          h.herdrSays(snapshotPane);
+          const snapshot = await collectorSnapshot();
+          if (hold) { asked.resolve(); await hold; }
+          return snapshot;
+        },
+        subscribe: (_subs, callbacks) => {
+          if (_subs[0]?.type === "pane.agent_status_changed") live = callbacks;
+          queueMicrotask(() => {
+            if (mode === "gap") snapshotPane = changed;
+            callbacks.onStarted?.();
+          });
+          return { close() {} };
+        },
+      });
+      await collector.ready;
+      if (!live) throw new Error("status subscription missing");
+      if (mode === "resync") {
+        snapshotPane = changed;
+        reconciled = Promise.withResolvers<void>();
+        live.onClose?.();
+        await reconciled.promise;
+        await collector.ready;
+      } else if (mode === "newer-event") {
+        const answer = Promise.withResolvers<void>();
+        snapshotPane = changed;
+        hold = answer.promise;
+        reconciled = Promise.withResolvers<void>();
+        collector.trackPane(pane.pane_id);
+        await asked.promise;
+        live.onEvent({ event: "pane.agent_status_changed", data: { pane_id: pane.pane_id, agent_status: "idle", agent: "opencode" } });
+        answer.resolve();
+        await reconciled.promise;
+      }
+      // Then the authoritative agent releases ownership, but an event newer than the
+      // snapshot preserves both the verified pane and its service subscription.
+      const retained = mode === "newer-event" || (status === "unknown" && (front !== "shell" || process.platform === "win32"));
+      expect(openCodeNativeState()).toEqual({ stream: retained, panes: retained ? [pane.pane_id] : [] });
+      expect(closed).toBe(!retained);
+    } finally {
+      collector?.stop();
+      closeOpenCodeNative();
+      info.mockRestore();
+      events.mockRestore();
+      session.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+});
+
+describe("native OpenCode ownership verified during a snapshot", () => {
+  it.each(["baseline", "gap replay", "reverification"] as const)("retains newer verification through an older %s", async (mode) => {
+    // Given a snapshot that captured Claude before OpenCode's native verification.
+    const h = hub();
+    closeOpenCodeNative();
+    const pane: HerdrPane = { ...claude, ...opencode("ses_parent"), focused: false, revision: 0, terminal_id: "native-newer" };
+    const lookup = spyOn(service, "openCodeService").mockResolvedValue({
+      version: "2.0.32", config: { baseUrl: "http://127.0.0.1:1", port: 1, pid: process.pid, password: "fixture" },
+    });
+    const session = spyOn(service, "openCodeHasSession").mockResolvedValue(true);
+    let closed = 0;
+    const events = spyOn(service, "subscribeOpenCodeEvents").mockImplementation(() => ({ close() { closed++; } }));
+    const captured = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    const reconciled = Promise.withResolvers<void>();
+    let collector: ReturnType<typeof originalCollector> | undefined;
+    let untrack: (() => void) | undefined;
+    let replayed = false;
+    let hold = mode !== "gap replay";
+    h.herdrSays(mode === "gap replay" ? { ...pane, agent_status: "working" } : { ...pane, agent: "claude", agent_status: "idle" });
+    try {
+      if (mode === "reverification") expect(await openCodePaneService(pane)).not.toBeNull();
+      collector = originalCollector({
+        onBaseline: handlers.onBaseline,
+        onReconciled: (panes) => {
+          handlers.onReconciled(panes);
+          if (panes.some((seen) => seen.agent === "claude")) reconciled.resolve();
+        },
+        onStatus: (...args) => { replayed ||= args[3] !== undefined; handlers.onStatus(...args); },
+        onPaneEnded: handlers.onPaneEnded,
+        onStructureChange() {},
+      }, {
+        snapshot: async () => {
+          const snapshot = await collectorSnapshot();
+          if (hold) { captured.resolve(); await answer.promise; }
+          return snapshot;
+        },
+        subscribe: (subs, callbacks) => {
+          queueMicrotask(() => {
+            if (mode === "gap replay" && subs[0]?.type === "pane.agent_status_changed") {
+              h.herdrSays({ ...pane, agent: "claude", agent_status: "idle" });
+              hold = true;
+            }
+            callbacks.onStarted?.();
+          });
+          return { close() {} };
+        },
+      });
+      await captured.promise;
+      untrack = trackVerifiedOpenCodePanes(collector.trackPane);
+      // When verification succeeds while the captured snapshot is still pending,
+      // trackPane requests another read but must not let the older one release it.
+      expect(await openCodePaneService(pane)).not.toBeNull();
+      h.herdrSays(pane);
+      hold = false;
+      answer.resolve();
+      await reconciled.promise;
+      await collector.ready;
+      // Then neither reconciliation nor a status replay closes the new ownership.
+      expect(replayed).toBe(mode === "gap replay");
+      expect(openCodeNativeState()).toEqual({ stream: true, panes: [pane.pane_id] });
+      expect(closed).toBe(0);
+    } finally {
+      collector?.stop();
+      untrack?.();
+      answer.resolve();
+      closeOpenCodeNative();
+      events.mockRestore();
+      session.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+});
+
+describe("native OpenCode verification in flight", () => {
+  it("survives a reconciled snapshot that still shows another agent in the pane", async () => {
+    // Given a verification of a pane not yet verified, held at its session check.
+    hub();
+    closeOpenCodeNative();
+    const pane: HerdrPane = { ...claude, ...opencode("ses_parent"), focused: false, revision: 0, terminal_id: "native-in-flight" };
+    const lookup = spyOn(service, "openCodeService").mockResolvedValue({
+      version: "2.0.32", config: { baseUrl: "http://127.0.0.1:1", port: 1, pid: process.pid, password: "fixture" },
+    });
+    const asked = Promise.withResolvers<void>();
+    const found = Promise.withResolvers<boolean>();
+    const session = spyOn(service, "openCodeHasSession").mockImplementation(() => { asked.resolve(); return found.promise; });
+    const events = spyOn(service, "subscribeOpenCodeEvents").mockImplementation(() => ({ close() {} }));
+    try {
+      const verifying = openCodePaneService(pane);
+      await asked.promise;
+      // When a snapshot read before OpenCode started is reconciled while it is in flight.
+      handlers.onReconciled([{ ...pane, agent: "claude", agent_status: "idle", agent_session: null }]);
+      found.resolve(true);
+      // Then the verification still completes and holds the stream.
+      expect(await verifying).not.toBeNull();
+      expect(openCodeNativeState()).toEqual({ stream: true, panes: [pane.pane_id] });
+    } finally {
+      found.resolve(false);
+      closeOpenCodeNative();
+      events.mockRestore();
+      session.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+});
+
+describe("pane end during native transcript replay", () => {
+  for (const agent of ["omo", "gjc"] as const) {
+    it(`drops a suspended ${agent} replay when the collector reports pane end`, async () => {
+      // Given a real cooperative replay suspended after its first record.
+      const h = hub();
+      const pane: HerdrPane = { ...claude, agent, agent_status: "idle", agent_session: null, focused: false, revision: 0, terminal_id: "test" };
+      const path = join(root, `${agent}-ended.jsonl`);
+      writeFileSync(path, line({ type: "message", message: { role: "user" } })
+        + line({ type: "message", message: { role: "toolResult", content: [{ type: "text", text: "x".repeat(2 * 1024 * 1024) }] } }));
+      const started = Promise.withResolvers<void>();
+      const read = records.readOmoLinesCooperatively;
+      let reduced = 0;
+      const reader = spyOn(records, "readOmoLinesCooperatively").mockImplementation((fd, from, size, each, current) =>
+        read(fd, from, size, (entry) => { each(entry); reduced++; started.resolve(); }, current));
+      const discovery = agent === "omo"
+        ? spyOn(omo, "omoPanes").mockResolvedValue(new Map([[pane.pane_id, { path, startedAt: null }]]))
+        : spyOn(gjc, "gjcPanes").mockResolvedValue(new Map([[pane.pane_id, { path, startedAt: null }]]));
+      const tracker = h.status[agent];
+      const replay = tracker.refresh([pane]);
+      try {
+        await started.promise;
+        expect(reduced).toBe(1);
+        expect(h.last().status).toBeUndefined();
+        // When the actual production lifecycle callback runs before replay resumes.
+        handlers.onPaneEnded(pane.pane_id);
+        await replay;
+        // Then no stale status or alert resurrects the ended pane.
+        expect(h.last().status).toBeUndefined();
+        expect(h.alerts).toEqual([]);
+        expect(tracker.runs(pane.pane_id)).toBe(false);
+        expect(reduced).toBe(1);
+      } finally {
+        tracker.stop();
+        await replay;
+        reader.mockRestore();
+        discovery.mockRestore();
+      }
+    }, 5000);
+  }
+});
 
 describe("the status hub's OpenCode subagents", () => {
   it("holds an OpenCode turn after Claude Code's on its subagent though its session is found after the turn, and calls its finish off", async () => {
@@ -609,7 +860,7 @@ describe("queued input while a busy signal holds a Claude pane's queue (#2072)",
   /** A pane shown at rest again after a herdr working signal whose turn was never written: its queue is held. */
   async function heldPane(queued = false) {
     const writes: string[] = [];
-    const client = { data: connectionData({ readOnly: false, deviceId: undefined }), getBufferedAmount: () => 0, send: () => 1 } as unknown as Client;
+    const client: Client = { data: connectionData({ readOnly: false, deviceId: undefined }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: () => 1, close: () => {} };
     let lane: Promise<unknown> = Promise.resolve();
     const serialize = <T>(_paneId: string, task: () => T | Promise<T>): Promise<T> => { const next = lane.catch(() => undefined).then(task); lane = next; return next; };
     let h!: Awaited<ReturnType<typeof workingClaude<Client, unknown>>>;
@@ -688,5 +939,30 @@ describe("the herdr a features frame names (#2257)", () => {
     live.onChange("herdr-socket-b");
     expect(h.status.currentHerdrLifetime()).toBeString();
     expect(h.status.currentHerdrLifetime()).not.toBe(named);
+  });
+});
+
+describe("a pane closed, not ended by itself", () => {
+  it("turns away what a closed pane held (a launch's first message) and sends no 'terminal ended' alert", async () => {
+    // Given: a pane whose first message waits for its agent
+    const h = hub();
+    h.herdrSays(claude);
+    handlers.onBaseline([claude]);
+    await h.snapshot();
+    // When: it is closed (herdr's pane.close, hc's terminal.kill) before the message goes
+    handlers.onPaneClosed(claude.pane_id);
+    // Then: what it held is turned away as for an ended pane, and nobody is told it ended
+    expect(h.held).toEqual([{ paneId: claude.pane_id, code: "pane_not_found" }]);
+    expect(h.ended()).toEqual({ push: [], frames: 0 });
+  });
+
+  it("still alerts for a pane that ended by itself, with the same cleanup", async () => {
+    const h = hub();
+    h.herdrSays(claude);
+    handlers.onBaseline([claude]);
+    await h.snapshot();
+    handlers.onPaneEnded(claude.pane_id);
+    expect(h.held).toEqual([{ paneId: claude.pane_id, code: "pane_not_found" }]);
+    expect(h.ended()).toEqual({ push: [claude.pane_id], frames: 1 });
   });
 });

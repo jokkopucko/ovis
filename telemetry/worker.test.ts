@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ACTIVE_LATE_DAYS, TELEMETRY_THEME_IDS, telemetrySettings, type TelemetrySettings } from "../shared/telemetry.ts";
+import { ACTIVE_LATE_DAYS, TELEMETRY_THEME_IDS, telemetrySettings, type TelemetrySettings, type TelemetryUsage } from "../shared/telemetry.ts";
 import { handle, readActive, readEvent, requestCountry, type Env } from "./worker.ts";
 
 const event = {
@@ -95,7 +95,7 @@ describe("telemetry receiver", () => {
     expect(response.status).toBe(204);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.query).toContain("INSERT OR IGNORE");
-    expect(rows[0]!.values).toEqual(["2026-10-08", "update", event.install_id, "0.4.2", "0.4.1", "linux", "x64", "plugin", "KR", JSON.stringify(settings)]);
+    expect(rows[0]!.values).toEqual(["2026-10-08", "update", event.install_id, "0.4.2", "0.4.1", "linux", "x64", "plugin", null, "KR", JSON.stringify(settings)]);
     expect(JSON.stringify(rows)).not.toContain("203.0.113.9");
     expect(JSON.stringify(rows)).not.toMatch(/Seoul|04524|37\.5/);
     expect(readEvent({ ...event, settings: unordered }, now)?.settings).toEqual(settings);
@@ -275,6 +275,16 @@ describe("telemetry receiver", () => {
     expect(readEvent({ ...event, version: "0.5.0-rc.1; DROP" }, now)).toBeNull();
   });
 
+  test("takes the terminal runtime a newer sender names, keeps none for an older one, and refuses any other", async () => {
+    const { env, rows } = fakeDb();
+    expect(readEvent({ ...event, runtime: "herdr-core" }, now)?.runtime).toBe("herdr-core");
+    expect(readEvent({ ...event, runtime: "herdr" }, now)?.runtime).toBe("herdr");
+    expect(readEvent(event, now)?.runtime).toBeNull();
+    for (const runtime of ["tmux", "", null, 1, "HERDR"]) expect(readEvent({ ...event, runtime }, now)).toBeNull();
+    expect((await handle(post(JSON.stringify({ ...event, runtime: "herdr-core" })), env, now)).status).toBe(204);
+    expect(rows[0]!.values[8]).toBe("herdr-core");
+  });
+
   test("an install has no previous version", () => {
     expect(readEvent({ ...event, event: "install", previous_version: null }, now)).toMatchObject({ event: "install", previous_version: null });
   });
@@ -290,7 +300,7 @@ describe("telemetry receiver: active", () => {
 
   test("active: readActive accepts a valid message, no harnesses, and a day ACTIVE_LATE_DAYS back", () => {
     expect(readActive(active, now)).toEqual({
-      day: "2026-10-08", install_id: event.install_id, version: "0.4.2", os: "linux", arch: "x64", install_method: "plugin", harnesses: ["claude", "codex", "other"],
+      day: "2026-10-08", install_id: event.install_id, version: "0.4.2", os: "linux", arch: "x64", install_method: "plugin", harnesses: ["claude", "codex", "other"], usage: null, runtime: null,
     });
     expect(readActive({ ...active, harnesses: [] }, now)?.harnesses).toEqual([]);
     expect(ACTIVE_LATE_DAYS).toBe(2);
@@ -324,7 +334,7 @@ describe("telemetry receiver: active", () => {
     expect((await handle(from(postActive(JSON.stringify(active)), { country: "KR" }), env, now)).status).toBe(204);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.query).toContain("INSERT INTO active");
-    expect(rows[0]!.values).toEqual(["2026-10-08", event.install_id, "0.4.2", "linux", "x64", "plugin", "KR", JSON.stringify(["claude", "codex", "other"])]);
+    expect(rows[0]!.values).toEqual(["2026-10-08", event.install_id, "0.4.2", "linux", "x64", "plugin", "KR", JSON.stringify(["claude", "codex", "other"]), null, null]);
     for (const body of [
       "not json",
       JSON.stringify({ ...active, harnesses: ["cursor"] }),
@@ -339,6 +349,94 @@ describe("telemetry receiver: active", () => {
     // an active message is not an event either
     expect((await handle(post(JSON.stringify(active)), env, now)).status).toBe(400);
     expect(rows).toHaveLength(1);
+  });
+
+  const usage: TelemetryUsage = { surfaces: ["browser", "mobile-pwa"], ingress: ["local", "tailscale"], prompt_answers: 3, alerts_delivered: 2, alerts_opened: 1 };
+
+  test("active: readActive takes a message with the day's usage, and an older sender's without it", () => {
+    expect(readActive({ ...active, usage }, now)?.usage).toEqual(usage);
+    expect(readActive(active, now)?.usage).toBeNull();
+  });
+
+  test("active: readActive refuses usage with an unknown, unsorted or repeated kind, a bad count or another key", () => {
+    for (const bad of [
+      { ...usage, surfaces: ["tv"] },
+      { ...usage, surfaces: ["mobile-pwa", "browser"] },
+      { ...usage, ingress: ["local", "local"] },
+      { ...usage, prompt_answers: -1 },
+      { ...usage, alerts_delivered: 1.5 },
+      { ...usage, alerts_opened: 10_000 },
+      { ...usage, pane_id: "w1:p1" },
+      { surfaces: [], ingress: [], prompt_answers: 0, alerts_delivered: 0 },
+      null,
+      "usage",
+    ]) expect(readActive({ ...active, usage: bad }, now)).toBeNull();
+  });
+
+  test("active: the day's latest usage replaces the row's, and an older sender's message leaves it", async () => {
+    const db = new Database(":memory:");
+    db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
+    const env: Env = { DB: { prepare: (query) => ({ bind: (...values) => ({ run: async () => db.prepare(query).run(...(values as (string | null)[])) }) }) } };
+    const send = (body: object) => handle(postActive(JSON.stringify(body)), env, now);
+    const usageOf = () => (db.query("SELECT usage FROM active").get() as { usage: string | null }).usage;
+    expect((await send(active)).status).toBe(204);
+    expect(usageOf()).toBeNull();
+    expect((await send({ ...active, usage: { ...usage, prompt_answers: 1 } })).status).toBe(204);
+    expect((await send({ ...active, usage })).status).toBe(204);
+    expect(JSON.parse(usageOf()!)).toEqual(usage);
+    expect((await send(active)).status).toBe(204);
+    expect(JSON.parse(usageOf()!)).toEqual(usage);
+  });
+
+  test("active: an existing table takes the usage only after the README's ALTER, keeping its rows", async () => {
+    const db = new Database(":memory:");
+    db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8").replace("  usage TEXT CHECK (usage IS NULL OR json_valid(usage)),\n", ""));
+    const env: Env = { DB: { prepare: (query) => ({ bind: (...values) => ({ run: async () => db.prepare(query).run(...(values as (string | null)[])) }) }) } };
+    db.exec("INSERT INTO active (day, install_id, version, os, arch, install_method, country, harnesses) VALUES ('2026-10-07', '11111111-2222-4333-8444-555555555555', '0.4.20', 'linux', 'x64', 'plugin', 'KR', '[\"claude\"]')");
+    await expect(handle(postActive(JSON.stringify({ ...active, usage })), env, now)).rejects.toThrow(/usage/);
+    const alter = readFileSync(join(import.meta.dir, "README.md"), "utf8").match(/"(ALTER TABLE active ADD COLUMN usage [^"]+)"/)?.[1];
+    expect(alter).toBeDefined();
+    db.exec(alter!);
+    expect((await handle(postActive(JSON.stringify({ ...active, usage })), env, now)).status).toBe(204);
+    expect(db.query("SELECT day, usage FROM active ORDER BY day").all()).toEqual([{ day: "2026-10-07", usage: null }, { day: "2026-10-08", usage: JSON.stringify(usage) }]);
+  });
+
+  test("active: takes the runtime with the usage, keeps the row's for an older sender, and refuses another runtime or one without usage", async () => {
+    expect(readActive({ ...active, usage, runtime: "herdr-core" }, now)?.runtime).toBe("herdr-core");
+    expect(readActive({ ...active, usage }, now)?.runtime).toBeNull();
+    for (const bad of [{ ...active, usage, runtime: "tmux" }, { ...active, usage, runtime: null }, { ...active, runtime: "herdr" }]) expect(readActive(bad, now)).toBeNull();
+    const db = new Database(":memory:");
+    db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
+    const env: Env = { DB: { prepare: (query) => ({ bind: (...values) => ({ run: async () => db.prepare(query).run(...(values as (string | null)[])) }) }) } };
+    const runtimeOf = () => (db.query("SELECT runtime FROM active").get() as { runtime: string | null }).runtime;
+    expect((await handle(postActive(JSON.stringify({ ...active, usage })), env, now)).status).toBe(204);
+    expect(runtimeOf()).toBeNull();
+    expect((await handle(postActive(JSON.stringify({ ...active, usage, runtime: "herdr-core" })), env, now)).status).toBe(204);
+    expect(runtimeOf()).toBe("herdr-core");
+    expect((await handle(postActive(JSON.stringify({ ...active, usage })), env, now)).status).toBe(204);
+    expect(runtimeOf()).toBe("herdr-core");
+  });
+
+  test("an existing database takes the runtime only after the README's ALTERs, keeping its rows", async () => {
+    const column = "  runtime TEXT CHECK (runtime IS NULL OR runtime IN ('herdr', 'herdr-core')),\n";
+    const schema = readFileSync(join(import.meta.dir, "schema.sql"), "utf8");
+    expect(schema.split(column)).toHaveLength(3);
+    const db = new Database(":memory:");
+    db.exec(schema.replaceAll(column, ""));
+    const env: Env = { DB: { prepare: (query) => ({ bind: (...values) => ({ run: async () => db.prepare(query).run(...(values as (string | null)[])) }) }) } };
+    db.exec("INSERT INTO active (day, install_id, version, os, arch, install_method, country, harnesses) VALUES ('2026-10-07', '11111111-2222-4333-8444-555555555555', '0.4.20', 'linux', 'x64', 'plugin', 'KR', '[\"claude\"]')");
+    const sendEvent = () => handle(new Request("https://receiver.test/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...event, runtime: "herdr-core" }) }), env, now);
+    const sendActive = () => handle(postActive(JSON.stringify({ ...active, usage, runtime: "herdr-core" })), env, now);
+    await expect(sendEvent()).rejects.toThrow(/runtime/);
+    await expect(sendActive()).rejects.toThrow(/runtime/);
+    const alters = [...readFileSync(join(import.meta.dir, "README.md"), "utf8").matchAll(/"(ALTER TABLE (?:events|active) ADD COLUMN runtime [^"]+)"/g)].map((match) => match[1]!);
+    expect(alters).toHaveLength(2);
+    for (const alter of alters) db.exec(alter);
+    expect((await sendEvent()).status).toBe(204);
+    expect((await sendActive()).status).toBe(204);
+    expect(db.query("SELECT runtime FROM events").all()).toEqual([{ runtime: "herdr-core" }]);
+    expect(db.query("SELECT day, runtime FROM active ORDER BY day").all()).toEqual([{ day: "2026-10-07", runtime: null }, { day: "2026-10-08", runtime: "herdr-core" }]);
+    expect(() => db.exec("UPDATE active SET runtime = 'tmux'")).toThrow(/CHECK/);
   });
 
   test("active: the upsert keeps one row per install and day, with the latest set, under the visit's day", async () => {

@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -127,6 +127,32 @@ describe("hermes terminal breadcrumb resolution", () => {
 });
 
 describe("hermes message rows parsing", () => {
+  it("shows a recorded 0.21.5 prompt's attached picture as a local Markdown image, and leaves any other hint as text", () => {
+    const rows = JSON.parse(readFileSync(new URL("./fixtures/hermes-pictures-0.21.5-rows.json", import.meta.url), "utf8")) as HermesMessageRow[];
+    const prompt = "Reply with one word: what color is the attached image? Then use your vision tool to look at ./blue.png and reply with its color in one word.";
+    expect(parseHermesRows(rows)[0]!.parts).toEqual([{ kind: "text", text: `![red.png](/tmp/hermes-proj/red.png)\n\n${prompt}` }]);
+    const user = (content: string) => parseHermesRows([{ ...rows[0]!, content }])[0]!.parts[0];
+    // a path Markdown would read otherwise is written so the file API gets it back exactly
+    expect(user("Look\n\n[Image attached at: /tmp/a (1)/b c#2.png]\n[screenshot]")).toEqual({ kind: "text", text: "![b c#2.png](/tmp/a%20%281%29/b%20c%232.png)\n\nLook" });
+    expect(user("Look\n\n[Image attached at: /tmp/a[b.png]\n[screenshot]")).toEqual({ kind: "text", text: "![a[b.png](/tmp/a%5Bb.png)\n\nLook" });
+    // anything Hermes itself would not read as its hints stays as written
+    for (const content of [
+      "Look\n\n[Image attached: https://example.com/a.png]\n[screenshot]",
+      "Look\n\n[Image attached at: relative/a.png]",
+      "Look\n\n[Image attached at: C:\\pics\\a.png]",
+      "Look\n\n[Image attached at: /tmp/a.png]\nmore words",
+      "Look\n\n[Image attached at: /tmp/a.png]\n[screenshot]\n[screenshot]",
+      // words alone attach nothing: Hermes writes a [screenshot] for each picture it attached
+      "Look\n\n[Image attached at: /tmp/a.png]",
+      "[Image attached at: /tmp/a.png]",
+    ]) expect(user(content)).toEqual({ kind: "text", text: content });
+    // words with a code fence left open come after the pictures, so they cannot take them in
+    expect(user("```js\nLook\n```text\n\n[Image attached at: /tmp/a.png]\n[screenshot]")).toEqual({ kind: "text", text: "![a.png](/tmp/a.png)\n\n```js\nLook\n```text" });
+    // a skill invocation keeps its picture: it comes off the stored text before the skill is read
+    const skill = readFileSync(new URL("./fixtures/skill-invocations/hermes.txt", import.meta.url), "utf8");
+    expect(parseHermesRows([{ ...rows[0]!, content: `${skill}\n\n[Image attached at: /tmp/a.png]\n[screenshot]` }])[0]!.parts[0]).toEqual({ kind: "text", text: "![a.png](/tmp/a.png)\n\n/probe-skill hello" });
+  });
+
   it("uses the first nonblank code line for Hermes code calls, falling back to file and other fields", () => {
     expect(hermesToolSummary("execute_code", { code: "\nprint('hello')\nprint('world')", file_path: "script.py" })).toBe("print('hello')");
     expect(hermesToolSummary("write_file", { code: " \n ", file_path: "example.ts" })).toBe("example.ts");

@@ -1,6 +1,6 @@
 import type { DialogReader } from "./registry.ts";
 import { piActiveTab } from "./pi-ask-tabs.ts";
-import { ANSI_RE, KEY, type ParsedPrompt, finishPrompt, keySteps, navigationKeys } from "./shared.ts";
+import { ANSI_RE, KEY, PROMPT_LINE_RE, type ParsedPrompt, finishPrompt, keySteps, navigationKeys } from "./shared.ts";
 
 // Installed questionnaire.ts uses ui.custom, not native Pi dialogs or rpiv's widget.
 // Bind to a pending call: visible prose alone cannot distinguish an ordinary option
@@ -16,10 +16,20 @@ const INPUT = "Enter to submit • Esc to cancel";
 const compact = (text: string): string => text.replace(/\s/g, "");
 const same = (a: string, b: string): boolean => compact(a) === compact(b);
 const rule = (line: string): boolean => /^─{8,}$/.test(line);
+const piStats = (line: string): boolean => /\d+(?:\.\d+)?%\/\d/.test(line) && !/^[>›❯]/.test(line.trim());
+const piFolder = (line: string): boolean => /^(?:[A-Za-z]:[\\/]|[~\/])/.test(line);
+/**
+ * An extension's `ctx.ui.setStatus` line, which pi draws under its folder and stats lines (one line,
+ * truncated, never wrapped). Only directly under them, and never a composer's or a shell's prompt. Not on
+ * Windows, where no foreground process tells a live pi from the shell under its last screen.
+ */
+const piStatus = (lines: string[], at: number): boolean => process.platform !== "win32" && at >= 2 && !piStats(lines[at] ?? "")
+  && !PROMPT_LINE_RE.test(lines[at]!.trim()) && piStats(lines[at - 1] ?? "") && piFolder(lines[at - 2] ?? "");
 
 /** Also reserves malformed/clipped active drawings, never old hints above a newer prompt. */
 export function isPiQuestionnaireScreen(screen: string): boolean {
   const lines = screen.slice(-8192).replace(ANSI_RE, "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (piStatus(lines, lines.length - 1)) lines.pop();
   const last = lines.at(-1) ?? "";
   if (/\d+(?:\.\d+)?%\/\d/.test(last) && !/^[>›❯]/.test(last)
     && /^(?:[A-Za-z]:[\\/]|[~\/])/.test(lines.at(-2) ?? "")) lines.splice(-2);
@@ -75,7 +85,9 @@ export function parsePiQuestionnaire(screen: string, source?: PiQuestionnaire): 
   const lines = raw.map(line => line.replace(ANSI_RE, ""));
   let bottom = lines.length - 1;
   while (bottom >= 0 && !lines[bottom]) bottom--;
-  // Pi's own two-line footer is allowed, never a composer or output below an old form.
+  // Pi's own two-line footer is allowed, and an extension's status under it, never a composer or
+  // output below an old form.
+  if (!rule(lines[bottom] ?? "") && piStatus(lines, bottom)) bottom--;
   if (!rule(lines[bottom] ?? "")) {
     if (!/\d+(?:\.\d+)?%\/\d/.test(lines[bottom] ?? "") || /^[>›❯]/.test(lines[bottom]?.trim() ?? "")
       || !/^(?:[A-Za-z]:[\\/]|[~\/])/.test(lines[bottom - 1] ?? "")) return null;

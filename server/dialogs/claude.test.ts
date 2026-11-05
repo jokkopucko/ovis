@@ -4,7 +4,7 @@ import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { answerKeys, claudeRewindOpen, parseInteractivePrompt } from "../prompt.ts";
 import { executeInteractionPlan } from "./interaction-plan.ts";
 import { registry } from "./registry.ts";
-import { parsedByPublicPrompt, type AnswerStep } from "./shared.ts";
+import { ANSI_RE, parsedByPublicPrompt, type AnswerStep } from "./shared.ts";
 
 const fixture = (state: string, width: number): string =>
   readFileSync(new URL(`../fixtures/claude-goal-2.1.304-${state}-${width}.txt`, import.meta.url), "utf8");
@@ -469,5 +469,71 @@ describe("Claude's words over its question (#2088)", () => {
       "",
     ]));
     expect(prompt?.screen_words).toBe("Two ways to fix it:\n- Patch: add the missing newline to the end of the last line.\n- Rewrite: rewrite the whole file.");
+  });
+});
+
+/** Claude Code 2.1.312's question panel at 120 columns, colors kept: two questions and the review (#2465) */
+const tabsPanel = (state: string): string =>
+  readFileSync(new URL(`../fixtures/claude-tabs-2.1.312-${state}-120.ansi`, import.meta.url), "utf8");
+
+describe("Claude Code's question tabs as the card's steps", () => {
+  const steps = (prompt: InteractivePrompt | null) => prompt?.steps?.map(({ label, answered, current, can_navigate }) => [label, answered, current, can_navigate ?? false]);
+
+  test("offers the other tabs from the one drawn on a background, and Back from all but the first", () => {
+    const first = parseInteractivePrompt("claude", tabsPanel("first"));
+    expect(first).toMatchObject({ title: "Device · 1 of 2", question: "Which device do you use?" });
+    expect(steps(first)).toEqual([["Device", false, true, false], ["Symptoms", false, false, true], ["Submit", false, false, true]]);
+    expect(first?.can_step_back).toBeUndefined();
+    // back on an answered question: its own name, not the first question still open
+    const back = parseInteractivePrompt("claude", tabsPanel("first-answered"));
+    expect(back).toMatchObject({ title: "Device · 1 of 2", question: "Which device do you use?" });
+    expect(steps(back)).toEqual([["Device", true, true, false], ["Symptoms", false, false, true], ["Submit", false, false, true]]);
+    const second = parseInteractivePrompt("claude", tabsPanel("second"));
+    expect(second).toMatchObject({ title: "Symptoms · 2 of 2", can_step_back: true });
+    expect(steps(second)).toEqual([["Device", true, false, true], ["Symptoms", false, true, false], ["Submit", false, false, true]]);
+  });
+
+  test("tells two tabs apart that ask the same question with the same options", () => {
+    // the same label, question and options on both tabs: only the tab shown says which is asked
+    const bar = (lit: number) => "← " + [" ☐ Device ", " ☐ Device ", " ✔ Submit "]
+      .map((tab, at) => at === lit ? `\u001b[38;2;0;0;0m\u001b[48;2;177;185;249m${tab}\u001b[0m` : tab).join("") + " →";
+    const on = (lit: number) => tabsPanel("first").split("\n").map((line) => line.replace(ANSI_RE, "").startsWith("←") ? bar(lit) : line).join("\n");
+    const first = parseInteractivePrompt("claude", on(0));
+    const second = parseInteractivePrompt("claude", on(1));
+    expect(first?.question).toBe(second?.question);
+    expect(first?.steps?.[0]?.current).toBe(true);
+    expect(second?.steps?.[1]?.current).toBe(true);
+    // a stale answer for one never reads as an answer for the other
+    expect(first?.id).not.toBe(second?.id);
+  });
+
+  test("gives the review its steps and Back", () => {
+    const review = parseInteractivePrompt("claude", tabsPanel("review"));
+    expect(review).toMatchObject({ kind: "menu", title: "Review your answers", can_step_back: true });
+    expect(steps(review)).toEqual([["Device", true, false, true], ["Symptoms", true, false, true], ["Submit", false, true, false]]);
+    const reviewBack = parseInteractivePrompt("claude", tabsPanel("review-back"));
+    expect(reviewBack).toMatchObject({ title: "Symptoms · 2 of 2", question: "Which problems do you see?", can_step_back: true });
+  });
+
+  test("offers no steps when the colors do not say which tab is shown, and keeps the card's id while it answers in order", () => {
+    for (const state of ["first", "first-answered", "second", "review", "review-back"]) {
+      const colored = parseInteractivePrompt("claude", tabsPanel(state));
+      const plain = parseInteractivePrompt("claude", tabsPanel(state).replace(ANSI_RE, ""));
+      expect(plain?.steps, state).toBeUndefined();
+      expect(plain?.can_step_back, state).toBeUndefined();
+      // on the first question still open, a poll whose colors could not be read is the same card;
+      // back on an answered one it is another, as the tab shown is part of the card (#2465)
+      expect(colored?.id === plain?.id, state).toBe(["first", "second", "review"].includes(state));
+    }
+    // two tabs on a background, or a bar the pane cut off at its edge: no tab to go from
+    const twoLit = tabsPanel("first").replace("\u001b[0m ☐ Symptoms ", "\u001b[0m\u001b[48;2;177;185;249m ☐ Symptoms \u001b[0m");
+    expect(parseInteractivePrompt("claude", twoLit)?.steps).toBeUndefined();
+    // no tab on a background, one in the default color among dimmed ones: a style, not the tab shown
+    const plainBar = "\u001b[2m←  \u001b[22m ☐ Device \u001b[2m ☐ Symptoms  ✔ Submit  →\u001b[0m";
+    const noBackground = tabsPanel("first").split("\n").map((line) => line.replace(ANSI_RE, "").startsWith("←") ? plainBar : line).join("\n");
+    expect(parseInteractivePrompt("claude", noBackground)?.question).toBe("Which device do you use?");
+    expect(parseInteractivePrompt("claude", noBackground)?.steps).toBeUndefined();
+    const cut = tabsPanel("first").replace("✔ Submit  →", "✔ Su");
+    expect(parseInteractivePrompt("claude", cut)?.steps).toBeUndefined();
   });
 });

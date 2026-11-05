@@ -344,6 +344,55 @@ describe("WebSocket submit", () => {
     }, 30_000);
   }
 
+  {
+    const plain = claudeInputScreen("\u276f do it");
+    const grey = claudeInputScreen("\u276f \u001b[0m\u001b[7md\u001b[0m\u001b[2mo it\u001b[0m");
+    // the same words, accepted with Tab: typed now, the cursor after them
+    const typedText = claudeInputScreen("\u276f do it\u001b[0m\u001b[7m \u001b[0m");
+    // what the send's last box check reads, in order: live, colored, live, colored (the screen scrolled)
+    const rewind = readFileSync(join(import.meta.dir, "fixtures", "claude-rewind-2.1.304-confirm-apple-summarize-from-120.txt"), "utf8");
+    const interleavings: [string, string[], string][] = [
+      // Tab pressed anywhere after the first colored read: the words stay, only the last read's colors change
+      ["the suggestion accepted with Tab", [plain, grey, plain, typedText], "input_draft"],
+      ["the suggestion dismissed, then a draft pasted", [plain, grey, claudeInputScreen("\u276f\u00a0"), claudeInputScreen("\u276f pasted words")], "input_draft"],
+      // a dialog that takes the box's place before the last read: Enter there would answer it
+      ["the rewind dialog opened", [plain, grey, plain, rewind], "rewind_dialog_open"],
+      ["the box gone from the screen", [plain, grey, plain, "Password:"], "input_draft"],
+      // the pane shrank: the last read reaches an older, empty box above a screen with none
+      ["the pane resized", [plain, grey, plain, `${claudeInputScreen("\u276f\u00a0")}\r\nPassword:`], "input_draft"],
+    ];
+    for (const [label, last, code] of interleavings) {
+      it(`refuses a scrolled send whose box changes across its last check's reads: ${label}`, async () => {
+        const socket = await Socket.connect();
+        const from = chunks(agent).length;
+        // the send makes two box checks of four reads each (live, colored, live, colored)
+        let reads = 0;
+        const seen: string[] = [];
+        const originalRead = herdr.paneRead;
+        const read = spyOn(herdr, "paneRead").mockImplementation(async (options, socketPath) => {
+          const result = await originalRead(options, socketPath);
+          if (options.paneId !== agent.pane) return result;
+          const index = reads++;
+          // the first check sees Claude's grey suggestion throughout; the last one reads the script
+          const text = index < 4 ? (options.format === "ansi" ? grey : plain) : last[index - 4] ?? last.at(-1)!;
+          if (index >= 4) seen.push(text);
+          return { ...result, text };
+        });
+        const scroll = spyOn(herdr, "paneScrollInfo").mockResolvedValue({ offset_from_bottom: 5, max_offset_from_bottom: 30, viewport_rows: 3 });
+        try {
+          socket.send({ type: "submit", id: 803, pane_id: agent.pane, text: "chat over grey", payload: "chat over grey" });
+          expect(await socket.result(803)).toMatchObject({ ok: false, code });
+          // refused in the last check, after reading all of it
+          expect(reads).toBe(8);
+          expect(seen).toEqual(last);
+          expect(typed(agent, from)).not.toContain("chat over grey");
+        } finally {
+          scroll.mockRestore(); read.mockRestore(); socket.close();
+        }
+      }, 30_000);
+    }
+  }
+
   it("refuses clearing when a prompt opens while the pane's state is read", async () => {
     const socket = await Socket.connect();
     let shown = claudeInputScreen("❯ named draft");
@@ -462,6 +511,84 @@ describe("WebSocket submit", () => {
       expect(read.slice(0, enter).map((chunk) => chunk.data).join("")).toBe(paste("line one\nline two"));
       expect(read[enter]!.data).toBe("\r");
       expect(read[enter]!.at - read[enter - 1]!.at).toBeGreaterThanOrEqual(SUBMIT_DELAY_MS);
+    } finally {
+      socket.close();
+    }
+  }, 30_000);
+
+  // #511: a message carrying comments on a reply starts with `> quote` lines, which a shell reads as a redirect
+  it("refuses a message only an agent may take in a pane without an agent, and types nothing of it", async () => {
+    const socket = await Socket.connect();
+    try {
+      const from = chunks(shell).length;
+      socket.send({ type: "submit", id: 1201, pane_id: shell.pane, text: "> quote\ncomment", payload: paste("> quote\rcomment"), agent_only: true });
+      expect(await socket.result(1201)).toMatchObject({ ok: false, code: "agent_not_ready" });
+      // the next ordinary message arrives alone: nothing of the refused one was typed before it
+      socket.send({ type: "submit", id: 1202, pane_id: shell.pane, text: "after", payload: paste("after") });
+      expect(await socket.result(1202)).toMatchObject({ ok: true });
+      expect((await received(shell, from, 1)).map((chunk) => chunk.data).join("")).toBe(`${paste("after")}\r`);
+    } finally {
+      socket.close();
+    }
+  }, 30_000);
+
+  it("hands an agent a message only an agent may take, as any other", async () => {
+    const socket = await Socket.connect();
+    try {
+      const from = chunks(agent).length;
+      socket.send({ type: "submit", id: 1203, pane_id: agent.pane, text: "> quote\ncomment", payload: paste("> quote\rcomment"), agent_only: true });
+      expect(await socket.result(1203)).toMatchObject({ ok: true });
+      const read = await received(agent, from, 1);
+      expect(read.map((chunk) => chunk.data).join("")).toBe(`${paste("> quote\ncomment")}\r`);
+    } finally {
+      socket.close();
+    }
+  }, 30_000);
+
+  it("types nothing of a message only an agent may take when the agent leaves as herdr is asked to prompt it", async () => {
+    const socket = await Socket.connect();
+    const prompt = spyOn(herdr, "agentPrompt").mockRejectedValue(new herdr.HerdrError("agent_not_found", "the agent exited"));
+    try {
+      const from = chunks(agent).length;
+      socket.send({ type: "submit", id: 1209, pane_id: agent.pane, text: "> quote\ncomment", payload: paste("> quote\rcomment"), agent_only: true });
+      expect(await socket.result(1209)).toMatchObject({ ok: false, code: "agent_not_ready" });
+      expect(prompt).toHaveBeenCalled();
+      prompt.mockRestore();
+      // control: the next ordinary message arrives alone, so nothing of the refused one was typed
+      socket.send({ type: "submit", id: 1210, pane_id: agent.pane, text: "after", payload: paste("after") });
+      expect(await socket.result(1210)).toMatchObject({ ok: true });
+      expect((await received(agent, from, 1)).map((chunk) => chunk.data).join("")).toBe(`${paste("after")}\r`);
+    } finally {
+      prompt.mockRestore();
+      socket.close();
+    }
+  }, 30_000);
+
+  it("refuses to queue or hold a message only an agent may take in a pane without an agent", async () => {
+    const socket = await Socket.connect();
+    try {
+      await attached(socket, shell.pane);
+      const from = chunks(shell).length;
+      for (const [id, delivery] of [[1206, "hold"], [1207, "queue"]] as const) {
+        socket.send({ type: "submit", id, pane_id: shell.pane, text: "> quote\ncomment", payload: "unused", delivery, agent_only: true });
+        expect(await socket.result(id)).toMatchObject({ ok: false, code: "agent_not_ready" });
+      }
+      expect(socket.seen.filter((frame) => frame.type === "pending-messages" && frame.pane_id === shell.pane && frame.messages.length > 0)).toEqual([]);
+      socket.send({ type: "submit", id: 1208, pane_id: shell.pane, text: "after", payload: paste("after") });
+      expect(await socket.result(1208)).toMatchObject({ ok: true });
+      expect((await received(shell, from, 1)).map((chunk) => chunk.data).join("")).toBe(`${paste("after")}\r`);
+    } finally {
+      socket.close();
+    }
+  }, 30_000);
+
+  it("refuses agent_only on anything but true, and on a terminal line", async () => {
+    const socket = await Socket.connect();
+    try {
+      socket.send({ type: "submit", id: 1204, pane_id: shell.pane, text: "x", payload: paste("x"), agent_only: false });
+      expect(await socket.result(1204)).toMatchObject({ ok: false, code: "invalid_delivery" });
+      socket.send({ type: "submit", id: 1205, pane_id: shell.pane, text: "x", payload: "x", typed: true, agent_only: true });
+      expect(await socket.result(1205)).toMatchObject({ ok: false, code: "invalid_delivery" });
     } finally {
       socket.close();
     }
@@ -867,6 +994,52 @@ describe("WebSocket submit", () => {
       screen.scroll.mockRestore();
       screen.read.mockRestore();
       socket.close();
+    }
+  }, 30_000);
+
+  it("clears the named draft and sends while the terminal is scrolled, through the box's redraw", async () => {
+    const socket = await Socket.connect();
+    // Claude draws in color (not NO_COLOR): its prompt marker is grey
+    const draft = claudeInputScreen("\u001b[38;2;153;153;153m\u276f\u001b[0m named draft");
+    let shown = draft;
+    // reads that still show the draft after the clearing keys: Claude redraws the box partway through a check
+    let lagging = 0;
+    const screen = mockClaudeInput(agent.pane, () => (lagging > 0 && lagging-- > 0 ? draft : shown));
+    screen.scroll.mockResolvedValue({ offset_from_bottom: 5, max_offset_from_bottom: 30, viewport_rows: 3 });
+    const prompt = spyOn(herdr, "agentPrompt").mockResolvedValue(undefined);
+    const sendKeys = spyOn(herdr, "paneSendKeys").mockImplementation(async () => {
+      shown = claudeInputScreen("\u001b[38;2;153;153;153m\u276f\u001b[0m\u00a0");
+      // the first poll after the keys reads the draft live and colored, then the empty box
+      lagging = 2;
+    });
+    try {
+      await nameDraft(socket, "named draft");
+      socket.send({ type: "submit", id: 76, pane_id: agent.pane, text: "chat message", payload: "chat message", clear_draft: "named draft" });
+      expect(await socket.result(76)).toMatchObject({ ok: true });
+      expect(sendKeys).toHaveBeenCalledTimes(1);
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(prompt).toHaveBeenCalledWith(agent.pane, "chat message", undefined, expect.any(Function));
+    } finally {
+      sendKeys.mockRestore();
+      prompt.mockRestore();
+      screen.scroll.mockRestore();
+      screen.read.mockRestore();
+      socket.close();
+    }
+  }, 30_000);
+
+  it("refuses a scrolled send over a colorless box, as under NO_COLOR, even when it reads like Claude's tip", async () => {
+    const socket = await Socket.connect();
+    const from = chunks(agent).length;
+    // typed by the user, in the very form of Claude's new-session tip, on a screen with no color at all
+    const screen = mockClaudeInput(agent.pane, claudeInputScreen("\u276f Try \"x\""));
+    screen.scroll.mockResolvedValue({ offset_from_bottom: 5, max_offset_from_bottom: 30, viewport_rows: 3 });
+    try {
+      socket.send({ type: "submit", id: 77, pane_id: agent.pane, text: "chat over a typed tip", payload: "chat over a typed tip" });
+      expect(await socket.result(77)).toMatchObject({ ok: false, code: "input_draft", box: "\u276f Try \"x\"" });
+      expect(typed(agent, from)).not.toContain("chat over a typed tip");
+    } finally {
+      screen.scroll.mockRestore(); screen.read.mockRestore(); socket.close();
     }
   }, 30_000);
 

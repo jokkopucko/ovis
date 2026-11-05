@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { ChevronDown, Terminal } from "lucide-react";
+import { ChevronDown, Plus, Terminal } from "lucide-react";
 
 import type { AgentKind } from "../../shared/protocol.ts";
 import { nativeModalOver } from "../lib/useFocusTrap.ts";
@@ -38,6 +38,8 @@ export interface AgentPickerProps {
   labelledBy: string;
   /** a word beside an agent's row on what its launch takes (NewSessionDialog: model, effort); rows without one say nothing */
   hints?: Readonly<Record<string, string>>;
+  /** a last row that picks no agent but opens the setup of one this PC does not have yet */
+  addAgent?: { label: string; onSelect: () => void };
   onChange: (kind: string) => void;
 }
 
@@ -49,7 +51,7 @@ function OptionMark({ kind }: { kind: string }) {
  * A select whose rows carry each agent's mark: a native <option> cannot hold an icon.
  * The marks are the inline SVGs the sidebar already renders, so the list costs nothing extra.
  */
-export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(function AgentPicker({ agents, value, shell = true, disabled, labelledBy, hints = {}, onChange }, ref) {
+export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(function AgentPicker({ agents, value, shell = true, disabled, labelledBy, hints = {}, addAgent, onChange }, ref) {
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -58,6 +60,8 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
   const options: AgentKind[] = shell ? [{ kind: "", label: SHELL_LABEL }, ...agents] : agents;
   const selectedIndex = Math.max(0, options.findIndex((option) => option.kind === value));
   const selected = options[selectedIndex]!;
+  // the Add row comes after the agents, at index options.length, and is never the value
+  const addIndex = addAgent ? options.length : null;
 
   useEffect(() => {
     if (!open) return;
@@ -127,12 +131,14 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
   };
 
   const choose = (index: number): void => {
-    onChange(options[index]!.kind);
     setOpen(false);
+    if (index === addIndex) addAgent!.onSelect();
+    // the Add row can go while the list is open (the device turned into a watching one): its index is then no row
+    else if (options[index] !== undefined) onChange(options[index].kind);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
-    const last = options.length - 1;
+    const last = addIndex ?? options.length - 1;
     if (!open) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === " ") {
         event.preventDefault();
@@ -141,8 +147,10 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
       return;
     }
     if (event.key === "Tab") {
-      // a select-only combobox takes the row it is on as focus moves on, as a native select does
-      choose(active);
+      // a select-only combobox takes the row it is on as focus moves on, as a native select does;
+      // leaving the Add row opens nothing
+      if (active === addIndex) setOpen(false);
+      else choose(active);
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
       setActive((index) => Math.min(last, index + 1));
@@ -198,6 +206,21 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
               {option.kind !== "" && hints[option.kind] !== undefined && <span className="menu-item-hint">{hints[option.kind]}</span>}
             </div>
           ))}
+          {addAgent && addIndex !== null && (
+            <div
+              id={`${listId}-${addIndex}`}
+              className="menu-item agent-picker-add"
+              role="option"
+              aria-selected={false}
+              data-active={active === addIndex || undefined}
+              onPointerEnter={() => setActive(addIndex)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => choose(addIndex)}
+            >
+              <span className="agent-picker-shell"><Plus aria-hidden="true" /></span>
+              <span className="menu-item-main">{addAgent.label}</span>
+            </div>
+          )}
         </div>
       )}
     </div>

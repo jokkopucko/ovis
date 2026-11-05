@@ -39,6 +39,27 @@ describe("read finishes shared by the browsers of a server", () => {
     expect(new SeenStore(dir).list()).toEqual(store.list());
   });
 
+  it("tells a pane brought into view as presented, even when its finish was already read, and how it was presented", async () => {
+    const ended = new Set<string>();
+    const store = new SeenStore(root(), (pc, epoch) => ended.has(`${pc}/${epoch}`));
+    const changed: [SeenFinish, string | undefined][] = [];
+    const presented: SeenFinish[] = [];
+    store.subscribe((finish, how) => changed.push([finish, how]));
+    store.onPresented((finish) => presented.push(finish));
+    const send = async (body: unknown) => (await post(store, JSON.stringify(body))).status;
+    expect(await send({ ...finish("a", 1), presented: "held" })).toBe(200);
+    expect(await send({ ...finish("a", 1), presented: "new" })).toBe(200);
+    expect(await send(finish("a", 1))).toBe(200);
+    // a word this server does not know is no presentation: an older server ignores the field, so it does too
+    expect(await send({ ...finish("a", 1), presented: "later" })).toBe(200);
+    expect(await send({ ...finish("a", 2), presented: "new" })).toBe(200);
+    ended.add("local/e1");
+    expect(await send({ ...finish("a", 3), presented: "new" })).toBe(200);
+    expect(changed).toEqual([[finish("a", 1), "held"], [finish("a", 2), "new"]]);
+    expect(presented).toEqual([finish("a", 1), finish("a", 2)]);
+    expect(store.list()).toEqual([]);
+  });
+
   it("drops the oldest records past the limit", () => {
     const store = new SeenStore(root());
     for (let pane = 0; pane <= MAX_SEEN; pane++) store.record(finish(`p${pane}`, 1));
@@ -391,5 +412,20 @@ describe("a damaged read-finish file", () => {
     expect(files(dir)).toEqual(["seen.json", "seen.json.bad"]);
     expect(told).toEqual([finish("a", 1)]);
     expect(new SeenStore(dir).list()).toEqual([finish("a", 1)]);
+  });
+});
+
+describe("a pane moved under a new ID (#1503)", () => {
+  it("reads under the new ID what was read under the old one, renumbered, on its own PC only, and tells every browser", () => {
+    const store = new SeenStore(root());
+    store.record(finish("w1:p1", 3, "answer"));
+    store.record({ ...finish("w1:p1", 2), pc: "other" });
+    const told: SeenFinish[] = [];
+    store.subscribe((changed) => told.push(changed));
+    store.moved("local", "w1:p1", "w2:p1", (id) => id + 4);
+    expect(told).toEqual([finish("w2:p1", 7, "answer")]);
+    expect(store.list()).toContainEqual(finish("w2:p1", 7, "answer"));
+    expect(store.list()).toContainEqual({ ...finish("w1:p1", 2), pc: "other" });
+    expect(store.list().some((kept) => kept.pc === "other" && kept.pane === "w2:p1")).toBe(false);
   });
 });

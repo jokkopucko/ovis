@@ -23,7 +23,7 @@ if (!xdg || !socket.startsWith(`${xdg}/`) || !/\/herdr\/sessions\/check-[0-9a-f]
 console.log(`HERDR_SOCKET=${socket} (isolated check session)`);
 
 const root = mkdtempSync(join(tmpdir(), "herdr-files-prompt-"));
-const shots = process.env["FILES_PROMPT_SHOTS"] ?? root;
+const shots = process.env["FILES_PROMPT_SHOTS"] || process.env["UI_EVIDENCE_DIR"] || root;
 mkdirSync(shots, { recursive: true });
 const workspaces: string[] = [];
 const results: Array<{ scenario: string; page: string; pass: boolean }> = [];
@@ -67,8 +67,49 @@ async function checkFiles(page: Page, label: string, phone: boolean, paneA: stri
   results.push({ scenario: "Files follows pane switch", page: label, pass });
   console.log(`${pass ? "PASS" : "FAIL"} Files ${label}: ${outcome}`);
   if (await dialog.isVisible()) {
+    // CI once saw this Escape leave the dialog open after a pane switch, never reproduced here (#2631):
+    // the key's path is recorded before it is pressed, and a failure says what decided it
+    await page.evaluate(() => {
+      const seen: unknown[] = [];
+      const describe = (node: EventTarget | null) => node instanceof Element ? `${node.tagName.toLowerCase()}${node.id ? `#${node.id}` : ""}.${String(node.className).trim().replace(/\s+/g, ".")}` : String(node);
+      const note = (phase: string) => (event: KeyboardEvent) => { if (event.key === "Escape") seen.push({ phase, target: describe(event.target), defaultPrevented: event.defaultPrevented, composing: event.isComposing }); };
+      window.addEventListener("keydown", note("window capture"), true);
+      window.addEventListener("keydown", note("window bubble"));
+      Object.assign(window, { escapeSeen_: seen });
+    });
     await page.keyboard.press("Escape");
-    await dialog.waitFor({ state: "hidden" });
+    try {
+      await dialog.waitFor({ state: "hidden" });
+    } catch (error) {
+      // what is gathered here never takes the place of the timeout: a page gone by now still fails on it
+      try {
+      const why = await page.evaluate(() => {
+        const describe = (node: Element | null) => node === null ? null : `${node.tagName.toLowerCase()}${node.id ? `#${node.id}` : ""}.${String(node.className).trim().replace(/\s+/g, ".")}`;
+        const active = document.activeElement;
+        const opens = (element: Element) => { try { return element.matches(":open"); } catch { return false; } };
+        return {
+          escapeSeen: (window as unknown as { escapeSeen_?: unknown[] }).escapeSeen_ ?? null,
+          activeElement: describe(active),
+          activeInFiles: active?.closest(".files-dialog") !== null && active !== null,
+          activeIn: describe(active?.closest("[role='dialog'], dialog, [aria-modal='true']") ?? null),
+          modalStack: [...document.querySelectorAll("[aria-modal='true'], dialog")].map((element) => ({ element: describe(element), open: element instanceof HTMLDialogElement ? element.open : true, modal: (() => { try { return element.matches(":modal"); } catch { return false; } })() })),
+          // FilesDialog stands its Escape down while a file or a diff it opened is over it (viewing) or a native modal is
+          fileViewerOpen: document.querySelector(".file-viewer") !== null,
+          diffOpen: document.querySelector(".repo-diff") !== null,
+          nativeModal: [...document.querySelectorAll("dialog")].some((element) => { try { return element.matches(":modal"); } catch { return false; } }),
+          openPickers: [...document.querySelectorAll("select, input")].filter(opens).map(describe),
+          filesPath: document.querySelector(".files-dialog .dir-browser-path")?.getAttribute("title") ?? null,
+          selection: sessionStorage.getItem("ovis:selection"),
+        };
+      });
+      console.log(`Files ${label}: Escape after the pane switch left the dialog open: ${JSON.stringify(why)}`);
+      writeFileSync(join(shots, `files-${label}-escape-diagnostics.json`), `${JSON.stringify(why, null, 2)}\n`);
+      await page.screenshot({ path: join(shots, `files-${label}-escape-stuck.png`) });
+      } catch (diagnostics) {
+        console.log(`Files ${label}: the Escape diagnostics could not be gathered: ${String(diagnostics)}`);
+      }
+      throw error;
+    }
   }
   // The shortcut is intentionally global, including while the Files dialog is open.
   assert.equal(await selectedPane(page), paneB);

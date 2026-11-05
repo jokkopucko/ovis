@@ -52,8 +52,11 @@ const becomesTurn = (text: string): boolean => !/^\s*[/!]/u.test(text);
 
 const turnTime = (turn: Turn): number => turn.ts === null ? Number.NaN : Date.parse(turn.ts);
 
-/** `answeredAt`: the newest time of the turns written after this one, NaN when none is. */
-function newerThanSend(send: WaitingSend, at: number, key: string, answeredAt: number): boolean {
+/**
+ * `answeredAt`: the newest time of the turns written after this one, NaN when none is dated.
+ * `last`: it is the last of the turns read, nothing after it, dated or not.
+ */
+function newerThanSend(send: WaitingSend, at: number, key: string, answeredAt: number, last: boolean): boolean {
   const after = send.after;
   // the send's own turn is written after its `at`, which is taken before submitting; a transcript
   // that keeps whole seconds (Grok's) may record it up to a second early
@@ -61,18 +64,22 @@ function newerThanSend(send: WaitingSend, at: number, key: string, answeredAt: n
   if (after === null) {
     if (at >= send.at) return true;
     // Stamped in the send's own second, with no turns shown before the send to tell them apart: an
-    // older message of that second reads the same. It is this send's once a turn after it was written
-    // in a later second; an older one was answered before this send, the agent being idle to take it
-    return coarse > 0 && at + coarse > send.at && answeredAt >= at + coarse;
+    // older message of that second reads the same. But an older one was answered before this send,
+    // the agent being idle to take it: a turn follows it, all within that second. So it is this send's
+    // when nothing at all was read after it, or once a turn after it was written in a later second.
+    // Known limits, both needing the same words twice in one second before the chat's first read: an
+    // older one whose answer the transcript never kept (stopped while thinking), or a read asked for
+    // before the older one was answered, lets the bubble go a moment before its own turn shows
+    return coarse > 0 && at + coarse > send.at && (last || answeredAt >= at + coarse);
   }
   if (after.keys.has(key)) return false;
   // written before the send, though the chat had not shown it yet: older than the send by any clock
   return after.latest === null || (at >= after.latest && at + coarse + (after.takenAt - after.latest) > send.at);
 }
 
-function turnMatches(send: WaitingSend, turn: Turn, key: string, answeredAt: number): boolean {
+function turnMatches(send: WaitingSend, turn: Turn, key: string, answeredAt: number, last: boolean): boolean {
   const at = turnTime(turn);
-  if (turn.role !== "user" || !Number.isFinite(at) || !newerThanSend(send, at, key, answeredAt)) return false;
+  if (turn.role !== "user" || !Number.isFinite(at) || !newerThanSend(send, at, key, answeredAt, last)) return false;
   return said(turn.parts.filter((part) => part.kind === "text").map((part) => part.text).join(" ")) === said(send.text);
 }
 
@@ -93,7 +100,7 @@ let nextId = 0;
 export const waitingKey = (machineId: string, paneId: string): string => `${machineId}:${paneId}`;
 
 /** Each user turn's identity, the same turn twice told apart by its place: only a user turn can be a send's. */
-function userTurns(turns: readonly Turn[]): { turn: Turn; key: string; answeredAt: number }[] {
+function userTurns(turns: readonly Turn[]): { turn: Turn; key: string; answeredAt: number; last: boolean }[] {
   const occurrences = new Map<string, number>();
   const laterTimes = new Array<number>(turns.length);
   let newest = Number.NaN;
@@ -107,7 +114,7 @@ function userTurns(turns: readonly Turn[]): { turn: Turn; key: string; answeredA
     const identity = JSON.stringify([turn.ts, turn.parts]);
     const occurrence = occurrences.get(identity) ?? 0;
     occurrences.set(identity, occurrence + 1);
-    return [{ turn, key: `${identity}:${occurrence}`, answeredAt: laterTimes[index]! }];
+    return [{ turn, key: `${identity}:${occurrence}`, answeredAt: laterTimes[index]!, last: index === turns.length - 1 }];
   });
 }
 
@@ -162,7 +169,7 @@ export function settleWaitingSends(key: string, turns: readonly Turn[], now = Da
   const pane = waiting.get(key);
   if (!pane || pane.sends.length === 0) return;
   const remaining = pane.sends.filter((send) => {
-    const match = candidates.find((candidate) => !pane.claimed.has(candidate.key) && turnMatches(send, candidate.turn, candidate.key, candidate.answeredAt));
+    const match = candidates.find((candidate) => !pane.claimed.has(candidate.key) && turnMatches(send, candidate.turn, candidate.key, candidate.answeredAt, candidate.last));
     if (!match) return true;
     pane.claimed.add(match.key);
     return false;

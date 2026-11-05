@@ -214,6 +214,15 @@ describe("updating herdr from the app", () => {
     expect(herdr.calls()).toEqual([]);
   });
 
+  it("offers nothing, and runs no herdr, while the server serves herdr-core", async () => {
+    const herdr = standIn("already up to date (0.9.3)");
+    herdr.status({ server: "0.9.3", binary: "0.9.3", stale: false });
+    const updater = new HerdrUpdater({ bin: herdr.path, coreServed: () => true });
+    expect(await updater.status()).toMatchObject({ supported: false, server_version: null });
+    expect(updater.start()).toBe("unsupported");
+    expect(herdr.calls()).toEqual([]);
+  });
+
   it("offers nothing where herdr does not run", async () => {
     const updater = new HerdrUpdater({ bin: join(root, "no-such-herdr") });
     expect((await updater.status()).supported).toBe(false);

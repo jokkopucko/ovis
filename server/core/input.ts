@@ -163,7 +163,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
           if (stop) typedIntoPty(text);
         }).catch(inputFailed);
       } else {
-        if (!sighting.write(message.text)) { inputFailed(); return; }
+        if (!sighting.write(message.text, message.automatic === true)) { inputFailed(); return; }
         typedIntoPty(message.text);
       }
       return;

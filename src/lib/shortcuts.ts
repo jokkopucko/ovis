@@ -23,6 +23,11 @@ export const SHORTCUTS = [
   { id: "split-down", label: "Split pane down", keys: [] },
   { id: "previous-pane", label: "Previous pane", keys: ["Mod", "Shift", "ArrowUp"] },
   { id: "next-pane", label: "Next pane", keys: ["Mod", "Shift", "ArrowDown"] },
+  // no default key either, as New tab: each person picks one in Settings
+  { id: "previous-tab", label: "Previous tab", keys: [] },
+  { id: "next-tab", label: "Next tab", keys: [] },
+  { id: "previous-workspace", label: "Previous workspace", keys: [] },
+  { id: "next-workspace", label: "Next workspace", keys: [] },
   { id: "settings", label: "Settings", keys: ["Mod", "Shift", ","] },
   // listed only: held, not dispatched; VoiceInput.tsx listens for it itself (isVoiceShortcut)
   { id: "voice", label: "Dictate (hold)", keys: ["Mod", "Shift", "Space"] },
@@ -155,6 +160,8 @@ export function isVoiceShortcut(event: ShortcutEventLike, platformIsMac: boolean
   return hasMod && event.shiftKey && !event.altKey && (event.code === "Space" || event.key === " ");
 }
 
+const STEP_SHORTCUTS: ReadonlySet<ShortcutId> = new Set(["previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace"]);
+
 /**
  * Mod+Shift+ArrowUp/ArrowDown move the selection in a text field (on a Mac Cmd+Shift+↑ selects to
  * the start of the text): in the message box or any other field with text they stay the field's, and
@@ -196,15 +203,15 @@ export function isAppShortcut(event: ShortcutEventLike, overrides: ShortcutOverr
 export { isMacPlatform };
 
 /**
- * Arrows, Home and End select or move in a field with text; there a matching binding gives way. A pane
- * step gives way only until the selection's moving end is at the edge the key goes to: then the key
- * has nothing left to do in the field. A pane switch focuses the next pane's message box, and a draft
- * there must not stop the next switch for good.
+ * Arrows, Home and End select or move in a field with text; there a matching binding gives way. A
+ * step to another pane, tab or workspace gives way only until the selection's moving end is at the
+ * edge the key goes to: then the key has nothing left to do in the field. A step focuses the next
+ * pane's message box, and a draft there must not stop the next step for good.
  */
 export function keepsKeyForText(event: { key: string; target: KeyTargetLike | EventTarget | null }, shortcut: ShortcutId): boolean {
   if (!(event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") || !keepsArrowsForText(event.target)) return false;
   const field = event.target as KeyTargetLike;
-  if (shortcut !== "previous-pane" && shortcut !== "next-pane") return true;
+  if (!STEP_SHORTCUTS.has(shortcut)) return true;
   // a field without a text selection (email, number, contenteditable) keeps the key while it has text
   if (typeof field.selectionStart !== "number" || typeof field.selectionEnd !== "number") return true;
   const moving = field.selectionDirection === "backward" ? field.selectionStart : field.selectionEnd;
@@ -290,6 +297,18 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
           break;
         case "next-pane":
           actions.selectAdjacentPane(1);
+          break;
+        case "previous-tab":
+          actions.selectAdjacentTab(-1);
+          break;
+        case "next-tab":
+          actions.selectAdjacentTab(1);
+          break;
+        case "previous-workspace":
+          actions.selectAdjacentWorkspace(-1);
+          break;
+        case "next-workspace":
+          actions.selectAdjacentWorkspace(1);
           break;
         case "settings":
           actions.openSettings();

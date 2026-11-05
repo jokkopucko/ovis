@@ -69,17 +69,20 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(HerdrShellPlugin.class);
-        String origin = PCStore.current(this);
+        // the PC's key: its origin, or its scope on the hosted shell's origin for a relay PC
+        String pc = PCStore.current(this);
+        String origin = pc == null ? null : PCStore.origin(pc);
         String host = origin == null ? null : Uri.parse(origin).getHost();
         if (host != null) {
             boolean debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
             // Capacitor makes server.url the bridge's origin rule, which takes no path, query or
             // trailing slash: such a rule throws, and Capacitor falls back to a bridge that every
             // frame (a preview's iframe included) can call. So server.url is the bare origin, and a
-            // pairing link's path and query come in as the start path until a PC page has loaded.
+            // pairing link's path, query and fragment (a relay offer's `#offer=`) come in as the start
+            // path until a PC page has loaded; a relay PC starts at its scope after that.
             config = new CapConfig.Builder(this)
                 .setServerUrl(origin)
-                .setStartPath(startPath(PCStore.pendingStart, origin))
+                .setStartPath(PCStore.startPath(PCStore.pendingStart, pc))
                 // No allowNavigation: the PC's own links (its host and scheme, any port) stay in the
                 // WebView already, and Capacitor turns each entry into another bridge origin rule
                 // (https://host, or a host starting with "http" as is: invalid, which again drops the
@@ -117,6 +120,7 @@ public class MainActivity extends BridgeActivity {
                             String last = PCStore.last(this);
                             JSObject state = new JSObject();
                             state.put("last", last == null ? "" : last);
+                            state.put("name", last == null ? "" : PCStore.names(this).optString(last, ""));
                             state.put("failure", PCStore.failure == null ? "" : PCStore.failure);
                             replyProxy.postMessage(state.toString());
                         } else if ("retry".equals(asked)) {
@@ -202,14 +206,14 @@ public class MainActivity extends BridgeActivity {
                     @Override
                     public void onPageLoaded(WebView webView) {
                         // Chromium reports a page that failed as loaded too, before the error page;
-                        // only a page of this very origin (scheme, host and port) counts
+                        // only a page of this very PC (its scheme, host and port, and its scope for a relay PC) counts
                         String url = webView.getUrl();
-                        if (pageFailed || url == null || !origin.equals(PCStore.origin(url))) return;
+                        if (pageFailed || url == null || !PCStore.belongs(url, pc)) return;
                         // the PC's page is up: a pairing link has done its work, and the PC is one worth keeping
                         PCStore.pendingStart = null;
                         PCStore.failure = null;
                         PCStore.redirects = 0;
-                        PCStore.remember(MainActivity.this, origin);
+                        PCStore.remember(MainActivity.this, pc);
                     }
                 }
             );
@@ -341,16 +345,6 @@ public class MainActivity extends BridgeActivity {
                 }
             });
         }, "ovis-redirect").start();
-    }
-
-    /** The path and query of a pairing link on `origin`, else the PC's root. */
-    static String startPath(String start, String origin) {
-        if (start == null || !origin.equals(PCStore.origin(start))) return "/";
-        Uri uri = Uri.parse(start);
-        String path = uri.getEncodedPath();
-        String query = uri.getEncodedQuery();
-        String fragment = uri.getEncodedFragment();
-        return (path == null || path.isEmpty() ? "/" : path) + (query == null ? "" : "?" + query) + (fragment == null ? "" : "#" + fragment);
     }
 
     /** Opens the current PC again from its first page. */

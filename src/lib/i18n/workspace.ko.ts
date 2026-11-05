@@ -92,4 +92,7 @@ export const WORKSPACE_KO: Record<string, string> = {
   "The folder could not be made.": "폴더를 만들 수 없습니다.",
   "Tab name (optional)": "탭 이름 (선택)",
   "Uses the workspace's folder": "워크스페이스의 폴더를 그대로 씁니다",
+  "Add another agent…": "다른 에이전트 추가…",
+  "It is installed, but this PC does not offer it here yet. Restart Ovis on the PC, or start it in a terminal tab.": "설치는 됐지만 이 PC가 아직 여기서 고를 수 있게 내놓지 않아요. PC에서 Ovis를 다시 시작하거나, 터미널 탭에서 시작하세요.",
+  "It is installed. Waiting for this PC to offer it here…": "설치됐어요. 이 PC에서 고를 수 있게 될 때까지 기다리는 중…",
 };

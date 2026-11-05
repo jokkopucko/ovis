@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { dlopen, FFIType, ptr } from "bun:ffi";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexHistoryTail, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
@@ -747,6 +747,95 @@ describe("Codex rollout resolution", () => {
     expect(matchCodexTranscript("Done", [{ path: "short", text: jsonl(message("assistant", "Done")) }])).toBeNull();
   });
 
+  // a finished turn as herdr read Codex 0.163.0 on macOS: the answer, then Codex's "Worked for" footer and the composer
+  const recordedScreen = "\r\n  >_ OpenAI Codex (v0.163.0)\r\n     /private/tmp/kiro2420-qa/proj\r\n\r\n\r\n› Write one paragraph of about 90 words about a ferryman named Oskar on the Elbe who counts swans at noon, with three\r\n  invented dates.\r\n\r\n\r\n• At noon, Oskar the ferryman rested his oars beside the Elbe and counted the swans as they drifted past: one, two,\r\n  then seven, whenever a ripple made him lose his place. He kept a little calendar in his coat, marked with three dates\r\n  nobody else had heard of: 31 Frostwake, 8 Swanrise, and 46 Lanternfall. Each was a day he swore the river had changed\r\n  its tune. When the last white neck slipped beneath the bridge, Oskar smiled, shut the calendar, and rowed toward the\r\n  far bank, carrying his strange year with him.\r\n\r\n  Worked for 4s • 7:05 PM                                                                                              \r\n\r\n\r\n\r\n› Ask Codex to do anything\r\n\r\n  GPT-6-Luna low · /private/tmp/kiro2420-qa/proj · Write Oskar’s Elbe paragraph\r\n  ← for agents · ? for shortcuts";
+  const recordedAnswer = "At noon, Oskar the ferryman rested his oars beside the Elbe and counted the swans as they drifted past: one, two, then seven, whenever a ripple made him lose his place. He kept a little calendar in his coat, marked with three dates nobody else had heard of: 31 Frostwake, 8 Swanrise, and 46 Lanternfall. Each was a day he swore the river had changed its tune. When the last white neck slipped beneath the bridge, Oskar smiled, shut the calendar, and rowed toward the far bank, carrying his strange year with him.";
+  it("matches an answer above Codex's completed-turn footer, and only that footer (regression)", () => {
+    // a turn as Codex 0.163 records it: the message asked, then the answer it finished on, by the turn's id
+    const turn = (id: string, asked: string, answer: string) => [
+      event({ type: "item_completed", turn_id: id, item: { type: "UserMessage", content: [{ type: "text", text: asked }] } }),
+      message("assistant", answer, "final_answer"),
+      event({ type: "task_complete", turn_id: id, last_agent_message: answer }),
+    ];
+    const asked = "Write one paragraph of about 90 words about a ferryman named Oskar on the Elbe who counts swans at noon, with three invented dates.";
+    const said = (path: string, ...records: unknown[]) => ({ path, text: jsonl(...records) });
+    const own = said("own", ...turn("t1", asked, recordedAnswer));
+    const other = said("other", message("assistant", "Another conversation's answer, long enough to be looked for on any screen that shows it."));
+    expect(matchCodexTranscript(recordedScreen, [other, own])).toBe("own");
+    // as Codex shows a turn: its prompt, the answer's first line after the bullet and each further line
+    // indented, its footer, then the composer idle and empty with Codex's own status rows below
+    const shownAs = (answer: string) => `\u2022 ${answer.replaceAll("\n", "\n  ")}`;
+    const footer = "  Worked for 4s \u2022 7:05 PM";
+    const idle = "\u203a Ask Codex to do anything\n\n  GPT-6-Luna low \u00b7 ~/proj\n  \u2190 for agents \u00b7 ? for shortcuts";
+    const done = (answer: string, below = footer, composer = idle) => `\u203a ${asked}\n\n${shownAs(answer)}\n\n${below}\n\n${composer}`;
+    for (const below of ["  Worked for <1s \u2022 11:19", "  Worked for 2m 14s \u2022 16:11", "  Worked for 0s", "  Worked for 4s \u2022 Oct 29 at 7:05 PM"]) {
+      expect(matchCodexTranscript(done(recordedAnswer, below), [own])).toBe("own");
+    }
+    expect(matchCodexTranscript(done(recordedAnswer, footer, "\u203a\n  GPT-6-Luna low \u00b7 ~/proj"), [own])).toBe("own");
+    // and only one of this folder: a conversation herdr reported, or a title named, of another folder owns no footer
+    expect(matchCodexTranscript(recordedScreen, [own], new Set(), new Map(), false, new Set(["another-own"]))).toBeNull();
+    expect(matchCodexTranscript(recordedScreen, [own], new Set(), new Map(), false, new Set(["own"]))).toBe("own");
+    // only the one conversation whose last finished turn was asked that and ended on exactly that answer
+    expect(matchCodexTranscript(recordedScreen, [own, said("twin", ...turn("t2", asked, recordedAnswer))])).toBeNull();
+    expect(matchCodexTranscript(recordedScreen, [said("elsewhere", ...turn("t9", "Something else entirely", recordedAnswer))])).toBeNull();
+    expect(matchCodexTranscript(recordedScreen, [said("moved-on", ...turn("t3", asked, recordedAnswer), ...turn("t4", "A later question", "A later answer, long enough to be looked for on a screen."))])).toBeNull();
+    expect(matchCodexTranscript(recordedScreen, [said("unfinished", message("assistant", recordedAnswer))])).toBeNull();
+    expect(matchCodexTranscript(recordedScreen, [said("unasked", message("assistant", recordedAnswer), event({ type: "task_complete", turn_id: "u", last_agent_message: recordedAnswer }))])).toBeNull();
+    // nor while another candidate's last turn may be the one shown, read loosely: the pane's own with an answer
+    // Codex rendered its own way, a prompt the read cut off, or a turn steered with another message
+    const rendered = said("own-bold", ...turn("r1", asked, recordedAnswer.replace("31 Frostwake", "**31 Frostwake**")));
+    expect(matchCodexTranscript(recordedScreen, [rendered, said("plain-twin", ...turn("r2", asked, recordedAnswer))])).toBeNull();
+    const coded = said("own-code", ...turn("r3", asked, recordedAnswer.replace("31 Frostwake", "`31 Frostwake`")));
+    expect(matchCodexTranscript(recordedScreen, [coded, said("plain-twin", ...turn("r2", asked, recordedAnswer))])).toBeNull();
+    const cut = said("own-cut", message("assistant", recordedAnswer), event({ type: "task_complete", turn_id: "r4", last_agent_message: recordedAnswer }));
+    expect(matchCodexTranscript(recordedScreen, [cut, said("plain-twin", ...turn("r2", asked, recordedAnswer))])).toBeNull();
+    const steered = said("own-steered", event({ type: "item_completed", turn_id: "r5", item: { type: "UserMessage", content: [{ type: "text", text: "First thought." }] } }),
+      ...turn("r5", asked, recordedAnswer));
+    expect(matchCodexTranscript(recordedScreen, [steered, said("plain-twin", ...turn("r2", asked, recordedAnswer))])).toBeNull();
+    // a character Unicode folds into another is another one: 46\u00b2 is not 462
+    expect(matchCodexTranscript(done(recordedAnswer.replace("46 Lanternfall", "462 Lanternfall")), [said("squared", ...turn("r6", asked, recordedAnswer.replace("46 Lanternfall", "46\u00b2 Lanternfall")))])).toBeNull();
+    // each answer pairs with the prompt of its own turn: a turn asked the first prompt that finished on the second answer is neither
+    const second = "A second answer of this pane, long enough to be looked for on any screen that shows it.";
+    const twoTurns = `${done(recordedAnswer, footer, "")}\n\u203a Second prompt\n\n${shownAs(second)}\n\n${footer}\n\n${idle}`.replace("\n\n\n\u203a Second", "\n\n\u203a Second");
+    expect(matchCodexTranscript(twoTurns, [said("crossed", ...turn("x", asked, second))])).toBeNull();
+    expect(matchCodexTranscript(twoTurns, [said("own2", ...turn("y", "Second prompt", second))])).toBe("own2");
+    // compared with whitespace collapsed and every other character as written: a space more or less, a star or
+    // a backtick, is another prompt or answer (one Codex renders with emphasis falls back, as on main)
+    expect(matchCodexTranscript(recordedScreen, [said("spaced-prompt", ...turn("s1", asked.replace("the Elbe", "theElbe"), recordedAnswer))])).toBeNull();
+    expect(matchCodexTranscript(recordedScreen, [said("spaced-answer", ...turn("s2", asked, recordedAnswer.replace("the Elbe", "theElbe")))])).toBeNull();
+    const starred = "The ferryman kept every count in one ledger column he called base*value, beside the river's tide table.";
+    expect(matchCodexTranscript(done(starred.replace("*", "")), [said("starred", ...turn("u3", asked, starred))])).toBeNull();
+    expect(matchCodexTranscript(done(starred), [said("starred", ...turn("u3", asked, starred))])).toBe("starred");
+    // a footer-shaped line a candidate's answer ends in, finished or not, may be what the screen shows: the
+    // footer path takes no side, and main's whole-answer match finds the one whose answer ends in that line
+    const literal = `${recordedAnswer}\n\n${footer.trim()}`;
+    expect(matchCodexTranscript(done(recordedAnswer), [own, said("ends-in-it", message("assistant", literal))])).toBe("ends-in-it");
+    expect(matchCodexTranscript(done(recordedAnswer), [own, said("ends-in-it", ...turn("t5", asked, literal))])).toBe("ends-in-it");
+    // and a finish record alone that ends in it (its message cut by the read) takes the footer path's side away too
+    expect(matchCodexTranscript(done(recordedAnswer), [own, said("recorded-only", event({ type: "item_completed", turn_id: "t6", item: { type: "UserMessage", content: [{ type: "text", text: asked }] } }), event({ type: "task_complete", turn_id: "t6", last_agent_message: literal }))])).toBeNull();
+    // characters Unicode folds together are other characters here: a full-width letter, a ligature
+    expect(matchCodexTranscript(done(recordedAnswer), [said("folded-prompt", ...turn("n1", asked.replace("Oskar", "\uff2fskar"), recordedAnswer))])).toBeNull();
+    expect(matchCodexTranscript(done(recordedAnswer), [said("folded-answer", ...turn("n2", asked, recordedAnswer.replace("swans", "swan\u017f")))])).toBeNull();
+    // nor while the composer is not idle and empty: a message sent below with Codex working, an indented
+    // working row, text in the composer, or no status rows below it (a read cut there)
+    expect(matchCodexTranscript(`${done(recordedAnswer, footer, "\u203a Next question\n\n\u2022 Working (3s \u2022 esc to interrupt)\n\n" + idle)}`, [own])).toBeNull();
+    expect(matchCodexTranscript(done(recordedAnswer, footer, "\u203a Ask Codex to do anything\n  Working (3s \u2022 esc to interrupt)"), [own])).toBeNull();
+    expect(matchCodexTranscript(done(recordedAnswer, footer, "\u203a Next question\n\n  GPT-6-Luna low \u00b7 ~/proj"), [own])).toBeNull();
+    expect(matchCodexTranscript(done(recordedAnswer, footer, "\u203a Ask Codex to do anything"), [own])).toBeNull();
+    // nor the screen a Codex left when it exited, nor a turn of an earlier Codex above the one shown now
+    expect(matchCodexTranscript(`${done(recordedAnswer)}\n\nToken usage so far: total=10,360\nuser@host proj % codex`, [own])).toBeNull();
+    expect(matchCodexTranscript(`${done(recordedAnswer)}\n\n  >_ OpenAI Codex (v0.163.0)\n\n${idle}`, [own])).toBeNull();
+    // nor is any other line a footer: an impossible clock, text after the bullet, a wrapped clock, no blank
+    // line above it, or more answer below it
+    for (const shown of [
+      done(recordedAnswer, "  Worked for 4s \u2022 31:05 PM"),
+      done(recordedAnswer, "  Worked for 4s \u2022 this is part of the answer"),
+      done(recordedAnswer, "  Worked for 4s \u2022\n  7:05 PM"),
+      `\u203a ${asked}\n\n${shownAs(recordedAnswer)}\n${footer}\n\n${idle}`,
+      `\u203a ${asked}\n\n${shownAs(recordedAnswer)}\n\n${footer}\n  and more of the answer\n\n${idle}`,
+    ]) expect(matchCodexTranscript(shown, [own])).toBeNull();
+  });
+
   it("matches an answer that links a file, which Codex shows as the label and a path relative to the cwd", () => {
     const linked = `${answer} [The report](/home/user/repo/output/test/REPORT.md)`;
     const candidates = [{ path: "linked", text: jsonl(message("assistant", linked, "final_answer")) }];
@@ -755,6 +844,50 @@ describe("Codex rollout resolution", () => {
     const middle = `See [the report](/home/user/repo/REPORT.md) for the numbers. ${answer}`;
     expect(matchCodexTranscript(`• See the report (REPORT.md) for the numbers. ${answer}`, [{ path: "middle", text: jsonl(message("assistant", middle)) }])).toBe("middle");
     expect(matchCodexTranscript("• The report (output/test/REPORT.md)", candidates)).toBeNull();
+  });
+
+  it("matches rendered local file links containing spaces without selecting an ambiguous conversation", () => {
+    for (const target of ["/home/user/My Project/Daily notes/report.md", "C:/Users/User/My Project/report.md",
+      "C:\\Users\\User\\My Project\\report.md", "</home/user/My Project/Daily notes/report.md>",
+      "<C:/Users/User/My Project/report.md>", "<C:\\Users\\User\\My Project\\report.md>"]) {
+      const linked = `${answer} [Daily report](${target})`;
+      const candidates = [{ path: "own", text: jsonl(message("assistant", linked, "final_answer")) }];
+      const screen = `• ${answer} Daily report (Daily notes/report.md)`;
+      expect(matchCodexTranscript(screen, candidates)).toBe("own");
+      expect(matchCodexTranscript(screen, [...candidates, { ...candidates[0]!, path: "copy" }])).toBeNull();
+      expect(matchCodexTranscript("• Daily report (Daily notes/report.md)", candidates)).toBeNull();
+    }
+  });
+
+  it("does not select a conversation from only an angle-wrapped file link containing parentheses", () => {
+    const filename = "report (old) with detailed quarterly analysis and supporting documentation for project milestones.md";
+    const linked = `${answer} [Daily report](</home/user/My Project/${filename}>)`;
+    const candidates = [{ path: "own", text: jsonl(message("assistant", linked, "final_answer")) }];
+    expect(matchCodexTranscript(`• Daily report (${filename})`, candidates)).toBeNull();
+    expect(matchCodexTranscript(`• ${answer} Daily report (${filename})`, candidates)).toBe("own");
+  });
+
+  it("keeps local link destinations containing a line break as literal answer text", () => {
+    for (const newline of ["\n", "\r", "\r\n"]) {
+      for (const target of [`/home/user/My Project${newline}Daily notes/report.md`,
+        `</home/user/My Project${newline}Daily notes/report (old).md>`]) {
+        const literal = `${answer} [Daily report](${target})`;
+        const candidates = [{ path: "own", text: jsonl(message("assistant", literal, "final_answer")) }];
+        expect(matchCodexTranscript(`• ${answer} Daily report`, candidates)).toBeNull();
+        // as Codex shows the answer: its second line indented below the bullet
+        expect(matchCodexTranscript(`• ${literal.replace(/\r?\n/g, "\n  ")}`, candidates)).toBe("own");
+      }
+    }
+  });
+
+  it("keeps unclosed local file links as literal answer text", () => {
+    for (const target of ["/home/user/My Project/Daily notes/report.md", "</home/user/My Project/Daily notes/report.md>",
+      "</home/user/My Project/Daily notes/report (old).md)"]) {
+      const literal = `${answer} [Daily report](${target}`;
+      const candidates = [{ path: "own", text: jsonl(message("assistant", literal, "final_answer")) }];
+      expect(matchCodexTranscript(`• ${answer} Daily report`, candidates)).toBeNull();
+      expect(matchCodexTranscript(`• ${literal}`, candidates)).toBe("own");
+    }
   });
 
   // issue #283: no answer of this session reaches 64 letters and digits (40, 29 and 38)
@@ -773,8 +906,10 @@ describe("Codex rollout resolution", () => {
     "• 세 화면이 모두 보이도록, 올려주신 순서대로 가로로 나란히 배치할게요.",
     "• imagegen으로 세 사진을 올려주신 순서대로 가로로 합쳤어요.\n\n  합친 이미지 다운로드 (.herdr-web-ui/combined-20261002.png)",
   ];
-  const answered = (...texts: string[]) => jsonl(...texts.map((text) => message("assistant", text)));
-  const bullets = (...texts: string[]) => texts.map((text) => `• ${text}`).join("\n");
+  // answers below the prompt they answered, as Codex shows them: short answers count only there
+  const asked = "Work through the fixture task";
+  const answered = (...texts: string[]) => jsonl(message("user", asked), ...texts.map((text) => message("assistant", text)));
+  const bullets = (...texts: string[]) => [`› ${asked}`, ...texts.map((text) => `• ${text}`)].join("\n");
 
   it("reads a session whose answers are all short by its newest answers shown together, in order", () => {
     const candidates = [
@@ -888,6 +1023,26 @@ describe("Codex rollout resolution", () => {
     expect(matchShortCodexAnswers(screen, [{ path: "older", text: answered(...older) }, { path: "live", text: answered(...live, ...Array.from({ length: 220 }, () => "Done.")) }])).toBeNull();
     // a linked answer of another rollout that says something else vetoes nothing
     expect(matchShortCodexAnswers(screen, [{ path: "older", text: answered(...older) }, { path: "else", text: answered("See [the notes](docs/notes.md) for the migration plan.") }])).toBe("older");
+  });
+
+  it("reads no short answers whose prompt is past the top of the read: another conversation may have said them to another", () => {
+    const texts = ["The build finished without errors this time.", "All checks on the feature branch pass again."];
+    expect(matchShortCodexAnswers(bullets(...texts), [{ path: "only", text: answered(...texts) }])).toBe("only");
+    expect(matchShortCodexAnswers(texts.map((text) => `• ${text}`).join("\n"), [{ path: "only", text: answered(...texts) }])).toBeNull();
+    // and none queued to be sent counts as their prompt or as an answer
+    expect(matchShortCodexAnswers(`  ↳ ${asked}\n${texts.map((text) => `• ${text}`).join("\n")}`, [{ path: "only", text: answered(...texts) }])).toBeNull();
+  });
+
+  it("reads no short answers below a prompt that differs from theirs only in punctuation, and reads a prompt wrapped over lines", () => {
+    const replies = ["The condition evaluates to true in this example.", "All checks on the feature branch pass again."];
+    const rollout = (prompt: string) => jsonl(message("user", prompt), ...replies.map((text) => message("assistant", text)));
+    const screen = (...prompt: string[]) => [`› ${prompt[0]}`, ...prompt.slice(1).map((line) => `  ${line}`), ...replies.map((text) => `• ${text}`)].join("\n");
+    for (const [said, shown] of [["Check whether a < b for these inputs", "Check whether a > b for these inputs"], ["Check the branch named feature-one", "Check the branch named feature_one"]] as const) {
+      expect(matchShortCodexAnswers(screen(shown), [{ path: "peer", text: rollout(said) }])).toBeNull();
+      expect(matchShortCodexAnswers(screen(said), [{ path: "peer", text: rollout(said) }])).toBe("peer");
+    }
+    const long = "Check the branch named feature-one, then compare a < b against the release branch";
+    expect(matchShortCodexAnswers(screen("Check the branch named feature-one, then compare", "a < b against the release branch"), [{ path: "own", text: rollout(long) }])).toBe("own");
   });
 
   it("reads no short answers when a rollout was not read whole, the one that shows them included", () => {
@@ -1026,6 +1181,8 @@ describe("Codex submitted first exchange", () => {
       "Worked for a while on this.",
       "Worked for 1s • unknown time",
       "Worked for 1s • 11:11 AM\nMore answer text",
+      // a line Codex 0.166 writes for a turn of another day, which this reader never took for its footer
+      "Worked for 1s • Oct 29 at 7:05 PM",
     ]) {
       expect(matchCodexFirstExchange(screen.replace(answer, answer + "\n\n" + suffix), [row()], started)).toBeNull();
     }
@@ -1164,5 +1321,132 @@ describe("incremental Codex records", () => {
     parser.write(final);
     expect(parser.snapshot()).toEqual(parseCodexTranscript(`${first}\n${second}\n${final}`));
     expect(parser.snapshot().at(-1)?.parts.at(-1)).toMatchObject({ phase: "final_answer", text: "Finished" });
+  });
+});
+
+describe("Codex's store, read whether or not a Codex holds it (#2444)", () => {
+  const made = (home: string) => {
+    const writer = new Database(join(home, "state_5.sqlite"));
+    writer.exec("PRAGMA journal_mode = WAL; CREATE TABLE threads (id TEXT, note TEXT); INSERT INTO threads (id) VALUES ('t1');");
+    return writer;
+  };
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reads a WAL-mode store left with no -wal or -shm, making nothing beside it", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    try {
+      made(home).close();
+      // as Codex leaves it once no Codex holds it: the store alone, which SQLite may not open read-only when
+      // it cannot make the -shm (macOS's SQLite; here a folder it may not write into)
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+      chmodSync(home, 0o555);
+      expect(() => new Database(join(home, "state_5.sqlite"), { readonly: true, create: false }).query("SELECT id FROM threads").all()).toThrow();
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(true);
+        expect(db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+    } finally {
+      chmodSync(home, 0o755);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses what it read once a Codex opened the store or wrote it meanwhile", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    try {
+      made(home).close();
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // a Codex opens the store and writes a thread: its -wal appears beside it
+        const writer = new Database(join(home, "state_5.sqlite"));
+        try {
+          writer.exec("INSERT INTO threads (id) VALUES ('t2')");
+          expect(opened.settled).toThrow(CodexStoreChanged);
+        } finally { writer.close(); }
+      } finally { opened.db.close(); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it("refuses what it read once a Codex wrote the store and closed it again meanwhile", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    try {
+      made(home).close();
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // Codex opens the store, writes, checkpoints and closes it: no side file is left, the file itself moved
+        const writer = new Database(join(home, "state_5.sqlite"));
+        // a row larger than a page, so the file surely grows: timestamps alone may not move within one tick
+        writer.query("INSERT INTO threads VALUES ('t2', ?)").run("x".repeat(64 * 1024));
+        writer.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+        writer.close();
+        expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+        expect(opened.settled).toThrow(CodexStoreChanged);
+      } finally { opened.db.close(); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("reads a store behind a link as the store a Codex holds, rows not yet checkpointed included", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const target = mkdtempSync(join(tmpdir(), "ovis-codex-store-target-"));
+    const writer = made(target);
+    try {
+      symlinkSync(join(target, "state_5.sqlite"), join(home, "state_5.sqlite"));
+      writer.exec("PRAGMA wal_autocheckpoint = 0; INSERT INTO threads (id) VALUES ('t2');");
+      // the live -wal lies beside the store, not beside the link to it
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(false);
+        expect(db.query("SELECT id FROM threads ORDER BY id").all()).toEqual([{ id: "t1" }, { id: "t2" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+    } finally {
+      writer.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("refuses what it read once the link to the store was pointed at another store", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const first = mkdtempSync(join(tmpdir(), "ovis-codex-store-a-"));
+    const second = mkdtempSync(join(tmpdir(), "ovis-codex-store-b-"));
+    try {
+      made(first).close();
+      made(second).close();
+      const link = join(home, "state_5.sqlite");
+      symlinkSync(join(first, "state_5.sqlite"), link);
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // another store now stands where the pane's Codex keeps its own
+        rmSync(link);
+        symlinkSync(join(second, "state_5.sqlite"), link);
+        expect(opened.settled).toThrow(CodexStoreChanged);
+      } finally { opened.db.close(); }
+    } finally {
+      for (const dir of [home, first, second]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a store a Codex holds open, rows not yet checkpointed included", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const writer = made(home);
+    try {
+      writer.exec("PRAGMA wal_autocheckpoint = 0; INSERT INTO threads (id) VALUES ('t2');");
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(false);
+        expect(db.query("SELECT id FROM threads ORDER BY id").all()).toEqual([{ id: "t1" }, { id: "t2" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+    } finally {
+      writer.close();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

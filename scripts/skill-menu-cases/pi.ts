@@ -35,7 +35,9 @@ export const expect = async ({ page, width, box, menu, scenario, log, clear, row
     assert.equal(await box.getAttribute("aria-expanded"), "true", "the same pane's own / menu opens");
     const rows = await rowNames();
     assert.ok(rows.includes("tree"), `the menu lists tree, a terminal command: ${rows.join(" ")}`);
-    assert.deepEqual([...rows].sort(), commands.map((command) => command.name).sort(), "every pi command is offered, once");
+    // /debug and the other builtins pi's own menu hides stay out of it, though pi runs them when typed
+    assert.deepEqual([...rows].sort(), commands.filter((command) => command.visibility !== "agent-hidden").map((command) => command.name).sort(), "every pi command but those pi hides is offered, once");
+    assert.ok(commands.some((command) => command.name === "debug" && command.visibility === "agent-hidden"), "pi's hidden builtins are still in its command list");
     const headings = await menu.locator(".menu-heading").allTextContents();
     assert.deepEqual(headings, ["Built in", "User", "Your skills", "Terminal commands"], "pi's builtins, the person's template, their skills and the terminal commands under their own headings");
     await menuFits("E");

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "bun:test";
-import { attachScreenStarted, screenGrid } from "./terminal-process.ts";
+import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
+import * as herdr from "../herdr/client.ts";
+import { attachScreenStarted, createSpawnAttachment, type PaneAttachment, screenGrid } from "./terminal-process.ts";
 
 // herdr 0.9.5 `terminal attach`, captured through the Rust PTY host with its two startup queries
 // taken out (AttachStartupProbes): the setup, then a screen or a refusal's teardown and line
@@ -70,5 +71,39 @@ describe("screenGrid", () => {
     expect(screenGrid(`\x1b[1;1H${marks}${rest}`)).toEqual({ cols: 91, rows: 24 });
     // a screen with no plain row says nothing of its width
     expect(screenGrid(`\x1b[1;1H${marks}`)).toBeNull();
+  });
+});
+
+describe("spawnAttachment", () => {
+  afterEach(() => mock.restore());
+
+  it("waits for a process retiring under the pane's ID that a move set while the terminal was looked up (#1503)", async () => {
+    const looked = Promise.withResolvers<void>();
+    spyOn(herdr, "sessionSnapshot").mockImplementation((async () => {
+      looked.resolve();
+      return { panes: [{ pane_id: "B", terminal_id: "t1" }], layouts: [] };
+    }) as unknown as typeof herdr.sessionSnapshot);
+    // the mirror's first read never ends: the test watches the attachment's creation only
+    spyOn(herdr, "paneRead").mockImplementation((() => new Promise(() => {})) as unknown as typeof herdr.paneRead);
+    const attachments = new Map<string, PaneAttachment>();
+    const retiring = new Map<string, Promise<void>>();
+    const mode = Promise.withResolvers<boolean>();
+    const { spawnAttachment } = createSpawnAttachment({
+      attachments, retiringAttachments: retiring, terminalAttach: () => mode.promise, isStopped: () => false,
+      closeAttachment() {}, broadcast() {}, sendOutput() {}, reconcileOutput() {}, holdPendingPane() {}, inputReady() {},
+      holdFor: 0, heldRetry: 0, retryFor: 0, relookupFor: 0,
+    });
+    const spawning = spawnAttachment("B", 80, 24, false);
+    // the move lands after the entry check: the old ID's process still holds herdr's slot
+    const exited = Promise.withResolvers<void>();
+    retiring.set("B", exited.promise);
+    mode.resolve(false);
+    await looked.promise;
+    for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+    expect(attachments.has("B")).toBe(false);
+    exited.resolve();
+    const made = await spawning;
+    expect(attachments.get("B")).toBe(made);
+    made.process.kill();
   });
 });

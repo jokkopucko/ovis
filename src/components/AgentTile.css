@@ -1,0 +1,117 @@
+/* AgentTile: one coding agent as a tile (the setup guide, Add another agent, Settings) */
+/* the agents, two to a line: one installed is picked by a tap; one missing has its Install */
+.setup-found {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-tile {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+button.setup-tile {
+  cursor: pointer;
+}
+
+button.setup-tile:hover:not(:disabled),
+button.setup-tile:focus-visible {
+  border-color: var(--accent);
+}
+
+.setup-tile[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 var(--hairline) var(--accent);
+}
+
+.setup-tile > svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
+
+.setup-tile[data-missing] .setup-found-name strong {
+  color: var(--text-dim);
+  font-weight: var(--fw-medium);
+}
+
+.setup-tile-install {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--space-2);
+  font-size: var(--fs-xs);
+}
+
+.setup-tile-install svg {
+  width: 13px;
+  height: 13px;
+}
+
+.setup-found-name {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--space-2);
+  min-width: 0;
+}
+.setup-found-name strong {
+  overflow: hidden;
+  color: var(--text-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--fw-semibold);
+}
+.setup-found-name span {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 768px) {
+  /* two tiles to a line leave no room for the word: Install is its icon (its name stays for screen readers) */
+  .setup-tile-install-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .setup-tile-install {
+    min-width: var(--touch-target);
+    justify-content: center;
+  }
+}
+
+/* the ring of the PC check and of an install on its tile */
+.setup-spin {
+  animation: setup-spin var(--dur-spin) steps(8) infinite;
+}
+
+@keyframes setup-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-spin {
+    animation: none;
+  }
+}

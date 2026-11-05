@@ -439,6 +439,15 @@ it.skipIf(!NATIVE)("answers a session Claude has not written yet as an empty con
   expect(await read(fresh.pane)).toEqual({ source: "scrollback", turns: [] });
 });
 
+it.skipIf(!NATIVE)("answers a session not written yet as empty while Herdr says working, as a /clear does for a moment (#2550)", async () => {
+  const cleared = "c1ea7ed0-2550-4a2b-9c3d-4e5f6a7b8c9d";
+  const fresh = await pane(cleared);
+  await herdrRpc("pane.report_agent", { pane_id: fresh.pane, source: "manual", agent: "claude", state: "working" });
+  expect(await read(fresh.pane)).toMatchObject({ source: "claude-transcript", turns: [], history_id: `unwritten:${cleared}` });
+  await herdrRpc("pane.report_agent", { pane_id: fresh.pane, source: "manual", agent: "claude", state: "blocked" });
+  expect(await read(fresh.pane)).toEqual({ source: "scrollback", turns: [] });
+});
+
 it.skipIf(!NATIVE)("keeps the existing Herdr hook path when no native PID record is available", async () => {
   const hooked = await pane(SECOND);
   rmSync(join(root, ".claude", "sessions", `${hooked.pid}.json`));

@@ -79,6 +79,58 @@ it("proves nothing from a scan whose owners moved before they were confirmed", a
   expect(await windowsHeldPaths(4242, holders, () => ["A", "B", "C"])).not.toHaveLength(1);
 });
 
+it("backs off a pid whose lock keeps changing hands during every scan", async () => {
+  resetWindowsScanCacheForTest();
+  const realNow = Date.now;
+  let now = 0;
+  Date.now = () => now;
+  try {
+    const scans: number[] = [];
+    let bCalls = 0;
+    // A stays held; B answers held and then free, so every pass sees its owners move
+    const holders = (path: string) => {
+      if (path === "A") scans.push(now);
+      return path === "A" || (path === "B" && ++bCalls % 2 === 1) ? [4242] : [];
+    };
+    for (now = 0; now <= 120_000; now += 6_000) expect(await windowsHeldPaths(4242, holders, () => ["A", "B"])).toEqual([]);
+    // the 5, 10, 20, 40, 60 second schedule, read on a six-second poll
+    expect([...new Set(scans)]).toEqual([0, 6_000, 18_000, 42_000, 84_000]);
+  } finally { Date.now = realNow; }
+});
+
+for (const recovery of ["a new lock file", "another pane's scan"]) {
+  it(`starts the backoff over after a moving lock settles through ${recovery}`, async () => {
+    resetWindowsScanCacheForTest();
+    const realNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      let moving = true, aCalls = 0, active = "";
+      let paths = ["A", "B"];
+      const holders = (path: string) => moving && path === "A" ? (++aCalls % 2 ? [4242] : []) : path === active ? [4242] : [];
+      const candidates = () => paths;
+      // the moving lock pushes the pid's backoff up to its 60-second cap
+      for (now of [0, 5_000, 15_000, 35_000, 75_000]) expect(await windowsHeldPaths(4242, holders, candidates)).toEqual([]);
+      moving = false;
+      now = 76_000;
+      if (recovery === "a new lock file") {
+        paths = ["A", "B", "C"];
+        expect(await windowsHeldPaths(4242, holders, candidates)).toEqual([]);
+        active = "C";
+        now = 82_000;
+        expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["C"]);
+      } else {
+        active = "A";
+        await windowsHeldPaths(4243, holders, candidates);
+        expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A"]);
+        active = "B";
+        now = 77_000;
+        expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["B"]);
+      }
+    } finally { Date.now = realNow; }
+  });
+}
+
 it("proves nothing from a scan in which a holder query failed", async () => {
   resetWindowsScanCacheForTest();
   const failing: RestartManagerApi = {
@@ -172,12 +224,16 @@ it("reads only presence locks as candidates, never another file beside them", ()
   writeFileSync(join(root, "presence", lock), "");
   writeFileSync(join(root, "presence", "state.json"), "{}");
   writeFileSync(join(root, "presence", "notes.lock"), "");
-  expect(windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root)).toEqual([join(root, "presence", lock)]);
+  try {
+    expect(windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root)).toEqual([join(root, "presence", lock)]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 it("names no candidate when the agent keeps no presence directory", () => {
   const root = mkdtempSync(join(tmpdir(), "agy-store-"));
-  expect(windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root)).toEqual([]);
+  try {
+    expect(windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root)).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 it("recognizes the agent's process name as herdr reports it on this platform", () => {

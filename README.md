@@ -5,7 +5,7 @@
 <h1 align="center">Ovis</h1>
 
 <p align="center">
-  <strong>Every coding agent, on every screen.</strong>
+  <strong>Herdr on your phone and in your browser.</strong>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
   <a href="#docs">docs</a>
 </p>
 
-Ovis shows the coding agents on your computer as chats you answer with a click or a tap, in any browser, the Mac app or your phone. A client for [herdr](https://github.com/herdrdev/herdr), formerly herdr web UI.
+Ovis brings the coding agents on your computer to your phone, any browser and the Mac app: most of them as a chat you answer with a tap or a click, their supported prompts and approvals as cards, and push alerts, once you turn them on, when one needs you. A client for [herdr](https://github.com/herdrdev/herdr) and the [Herdr desktop app's terminals](docs/guide.md#herdr-app-terminals), formerly herdr web UI.
 
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/hero.webp" alt="Screen recording of Ovis on the demo: in a desktop browser, a follow-up is sent to Claude Code and its turn streams in step by step; then the desktop and a phone side by side, where Codex asks Allow command? for git push origin feat/export-guard, Yes is tapped on the phone and the card closes on both screens; then a click on the release tab opens a shell pane as a live terminal running git log and bun test."></a>
@@ -53,26 +53,26 @@ Each one adds herdr and Bun if they are missing; Node is not needed. Other ways 
 - **Android:** the Google Play beta, from [ovis.sh/beta](https://ovis.sh/beta/).
 - **Browser:** no app needed; add the page to the home screen.
 
-With Tailscale on in both, scan the QR code your computer shows to connect.
+To connect, turn on the end-to-end encrypted **Ovis relay** under **Settings → Phone & devices** and scan its QR code with the Ovis app, or with the phone's camera to open Ovis in the phone's browser: it works from anywhere, with nothing to set up on the phone. [How it works →](docs/guide.md#through-the-ovis-relay) Using Tailscale? With it on in both, scan the QR code your computer shows instead.
 
 ## what you get
 
-- **Any agent herdr runs.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok and more, most as a chat. [Supported agents →](docs/guide.md#supported-agents)
-- **Prompts as cards.** Checked as still current before your answer is sent.
+- **Agents as a chat.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok and more, most as a chat, on your desk or on your phone. [Supported agents →](docs/guide.md#supported-agents)
+- **Prompts and approvals as cards.** For supported prompts, tap or click an answer; it is checked as still current before it is sent.
+- **Push alerts.** When an agent asks something or finishes, even with the app closed.
 - **The live terminal, one click away.** The same pane herdr shows, with a key bar on phones.
 - **Every workspace in one list.** Tabs, splits and other PCs over SSH, with the ones waiting on you marked.
-- **Push alerts.** When an agent asks something or finishes, even with the app closed.
 - **Free and MIT.** Runs on your own computer, with no account to sign up for.
 
 [All features →](docs/guide.md#features)
 
-**Limits:** Ovis needs [herdr](https://github.com/herdrdev/herdr) and your own computer, switched on, and your phone has to reach it (Tailscale, a VPN or an SSH tunnel).
+**Limits:** Ovis needs [herdr](https://github.com/herdrdev/herdr) and your own computer, switched on, and your phone has to reach it (the Ovis relay, Tailscale, a VPN or an SSH tunnel). The Herdr desktop app's terminals work on Linux and macOS only.
 
-**Privacy:** sessions stay on the computer that runs each agent, and Ovis has no account or hosted relay of its own. Anonymous usage counts are on by default; **Settings → About → Anonymous usage counts** shows what is sent and turns them off, as does `OVIS_TELEMETRY=0`. [What is sent →](docs/guide.md#anonymous-usage-counts)
+**Privacy:** sessions stay on the computer that runs each agent, and Ovis has no account. Its optional relay, off until you turn it on, sees which phone connects to which PC, from which address, when and how much, but can't read what is sent ([trust model](docs/relay.md#trust-model)). Anonymous usage counts are on by default; **Settings → About → Anonymous usage counts** shows what is sent and turns them off, as does `OVIS_TELEMETRY=0`. [What is sent →](docs/guide.md#anonymous-usage-counts)
 
 ## docs
 
-- **[User guide](docs/guide.md):** [quick start](docs/guide.md#quick-start) · [supported agents](docs/guide.md#supported-agents) · [features](docs/guide.md#features) · [phone](docs/guide.md#on-your-phone) · [remote PCs](docs/remote-pcs.md) · [access and safety](docs/guide.md#access-and-safety) · [configuration](docs/guide.md#configuration) · [keyboard shortcuts](docs/guide.md#keyboard-shortcuts)
+- **[User guide](docs/guide.md):** [quick start](docs/guide.md#quick-start) · [supported agents](docs/guide.md#supported-agents) · [features](docs/guide.md#features) · [phone](docs/guide.md#on-your-phone) · [remote PCs](docs/remote-pcs.md) · [Ovis relay](docs/relay.md) · [access and safety](docs/guide.md#access-and-safety) · [configuration](docs/guide.md#configuration) · [keyboard shortcuts](docs/guide.md#keyboard-shortcuts)
 - **[FAQ](docs/guide.md#faq):** herdr's own TUI, Tailscale, what leaves your machine, and how Ovis compares with collie, Happy, Paseo and others.
 - **[INSTALL.md](INSTALL.md):** every way to install, step by step, and what to do when a step fails.
 - **[Demo](https://ovis.sh/demo/):** the real app on a made-up session, in your browser.

@@ -62,9 +62,11 @@ export class OutputWindow {
    * frame as serialized (`wireBytes`) instead, and is never a reason to pause the pty the other
    * clients share. `ahead` is what the socket already has queued in front of the frame (on a
    * reconnect every attached pane's replay goes out back to back): it crosses the link first.
+   * `large` is a frame past the transport budget queued in front as well, a large session's
+   * snapshot (#2566): its crossing time is added beyond the cap.
    */
-  join(replay: string, ahead = 0, now = Date.now()): void {
-    this.joinUntil = now + Math.min(OUTPUT_JOIN_MAX_MS, OUTPUT_STALL_MS + crossingMs(ahead + wireBytes(replay)));
+  join(replay: string, ahead = 0, now = Date.now(), large = 0): void {
+    this.joinUntil = now + Math.min(OUTPUT_JOIN_MAX_MS, OUTPUT_STALL_MS + crossingMs(ahead + wireBytes(replay))) + crossingMs(large);
   }
 
   acknowledge(id: string, offset: number): boolean {
@@ -94,7 +96,7 @@ export class OutputWindow {
    * the time the oldest unacknowledged frame needs to cross a slow link: its ACK cannot come
    * before then.
    */
-  check(buffered: number, now = Date.now()): OutputVerdict {
+  check(buffered: number, now = Date.now(), large = 0): OutputVerdict {
     if (buffered >= OUTPUT_HARD_BYTES) return "stop";
     if (!this.blocked && (buffered < OUTPUT_HIGH_BYTES || this.pending <= OUTPUT_LOW_BYTES)) {
       this.stalledSince = undefined;
@@ -110,6 +112,14 @@ export class OutputWindow {
       this.joinUntil = undefined;
     }
     this.pausingSince ??= now;
+    // `large`: frames past the budget still queued on the socket, a session's snapshot (#2573). Output behind
+    // one cannot be acknowledged before it has crossed, whenever it was queued, so the stall clock starts once
+    // it is gone; the frame's own deadline (connections.ts `expire`) answers for a client that stops reading.
+    // The pane is still paused, and for no longer than any client may hold the shared pty paused.
+    if (large > 0) {
+      this.stalledSince = undefined;
+      return now - this.pausingSince >= OUTPUT_PAUSE_MAX_MS ? "stop" : "pause";
+    }
     const oldest = this.inFlight[this.head];
     const deadline = OUTPUT_STALL_MS + (oldest ? Math.min(OUTPUT_JOIN_MAX_MS - OUTPUT_STALL_MS, crossingMs(oldest.wire)) : 0);
     return now - this.stalledSince >= deadline || now - this.pausingSince >= OUTPUT_PAUSE_MAX_MS ? "stop" : "pause";
@@ -117,7 +127,7 @@ export class OutputWindow {
 }
 
 /** how long `wire` bytes take on the slowest link a budget allows for */
-function crossingMs(wire: number): number {
+export function crossingMs(wire: number): number {
   return Math.ceil(wire * 1000 / OUTPUT_JOIN_BYTES_PER_SECOND);
 }
 
@@ -185,6 +195,11 @@ export class ReplayBuffer {
     if (!this.tail) return "";
     const keys = this.modifyOtherKeys > 0 ? `\x1b[>4;${this.modifyOtherKeys}m` : "";
     return [...this.modes].map(([mode, state]) => `\x1b[?${mode}${state}`).join("") + keys + this.tail;
+  }
+
+  /** whether the output before the tail left the alternate screen on: the tail starts on it */
+  get alternateScreen(): boolean {
+    return this.modes.get("1049") === "h";
   }
 
   /** The raw tail, for matching herdr's own error text. */

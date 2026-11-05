@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Terminal } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
-import { createWebLinkOpener, hyperlinkFilter, isWebLink, terminalFileLinks } from "./terminalFileLinks.ts";
+import { bareNameLinks, createWebLinkOpener, hyperlinkFilter, isWebLink, terminalFileLinks } from "./terminalFileLinks.ts";
 
 describe("openWebLink", () => {
   it("keeps new-tab behavior by default and reuses one protected tab when asked", () => {
@@ -251,6 +251,100 @@ describe("terminal file links", () => {
     expect(texts(1)).toEqual([]);
     expect(texts(2)).toEqual(["src/App.tsx"]);
     expect(texts(3)).toEqual(["./notes.txt", "~/x/a.md", "/etc/hosts.conf"]);
+    term.dispose();
+  });
+  it("opens a bare file name on Cmd+click (Ctrl+click off a Mac) only, drawn while the key is held", async () => {
+    const term = new Terminal({ cols: 120, allowProposedApi: true });
+    await written(term, "설계 문서를 다시 썼습니다(11_two-version-design.md, push 완료). see src/App.tsx process.env Math.random 1.2.3");
+    for (const mac of [true, false]) {
+      const bare = bareNameLinks(mac);
+      const opened: string[] = [];
+      const links = terminalFileLinks(term.buffer.active, 1, (path) => opened.push(path), bare);
+      expect(links.map((link) => link.text)).toEqual(["11_two-version-design.md", "src/App.tsx"]);
+      const [name, folder] = links;
+      expect({ ...name?.decorations }).toEqual({ pointerCursor: false, underline: false });
+      expect(folder?.decorations).toBeUndefined();
+      const cmd = { button: 0, metaKey: true, ctrlKey: false } as MouseEvent;
+      const ctrl = { button: 0, metaKey: false, ctrlKey: true } as MouseEvent;
+      name?.activate(click);
+      name?.activate(mac ? ctrl : cmd);
+      expect(opened).toEqual([]);
+      // xterm reads the decorations as the pointer reaches the link: the key held is drawn
+      bare.update(mac ? cmd : ctrl);
+      expect({ ...name?.decorations }).toEqual({ pointerCursor: true, underline: true });
+      name?.activate(mac ? cmd : ctrl);
+      folder?.activate(click);
+      expect(opened).toEqual(["11_two-version-design.md", "src/App.tsx"]);
+      bare.reset();
+      expect({ ...name?.decorations }).toEqual({ pointerCursor: false, underline: false });
+    }
+    term.dispose();
+  });
+  it("redraws only the link under the pointer as the key goes down and up, and on a second hover", async () => {
+    const term = new Terminal({ cols: 120, allowProposedApi: true });
+    await written(term, "a.md b.md src/c.md");
+    const bare = bareNameLinks(false);
+    const [first, second, folder] = terminalFileLinks(term.buffer.active, 1, () => {}, bare);
+    // what xterm 5.5's Linkifier does (_handleNewLink, _linkHover, _linkLeave): a hovered link's
+    // drawing is read from its decorations, which are then swapped for an object whose getters and
+    // setters reach the link hovered now. A link hovered again on its row is read from that object
+    // while it still answers with how the link was drawn when the pointer left it.
+    type Drawn = { pointerCursor: boolean; underline: boolean };
+    const states = new Map<object, { state?: Drawn }>();
+    let current: { state?: Drawn } | undefined;
+    const hover = (link: typeof first) => {
+      const entry = states.get(link!) ?? {};
+      states.set(link!, entry);
+      current = entry;
+      entry.state = {
+        pointerCursor: link!.decorations === undefined ? true : link!.decorations.pointerCursor,
+        underline: link!.decorations === undefined ? true : link!.decorations.underline,
+      };
+      link!.hover?.({} as MouseEvent, link!.text);
+      const decorations = {} as Drawn;
+      Object.defineProperties(decorations, {
+        pointerCursor: { get: () => current?.state?.pointerCursor, set: (on: boolean) => { if (current?.state) current.state.pointerCursor = on; } },
+        underline: { get: () => current?.state?.underline, set: (on: boolean) => { if (current?.state) current.state.underline = on; } },
+      });
+      link!.decorations = decorations;
+    };
+    const leave = (link: typeof first) => {
+      link!.leave?.({} as MouseEvent, link!.text);
+      current = undefined;
+    };
+    const drawn = () => current?.state && { ...current.state };
+    const ctrl = (down: boolean) => bare.update({ metaKey: false, ctrlKey: down });
+    hover(first);
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
+    ctrl(true);
+    expect(drawn()).toEqual({ pointerCursor: true, underline: true });
+    ctrl(false);
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
+    // drawn under the key, left for blank cells of the row, the key let go, then back: plain text
+    ctrl(true);
+    leave(first);
+    ctrl(false);
+    hover(first);
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
+    // and the other way: left as text, the key held away from it, then back: a link
+    leave(first);
+    ctrl(true);
+    hover(first);
+    expect(drawn()).toEqual({ pointerCursor: true, underline: true });
+    // the pointer moves on to a path with a folder, drawn as a link without the key: letting go
+    // of the key must not undraw it through the bare name it left
+    leave(first);
+    expect(folder?.decorations).toBeUndefined();
+    hover(folder);
+    ctrl(false);
+    expect(drawn()).toEqual({ pointerCursor: true, underline: true });
+    leave(folder);
+    hover(second);
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
+    ctrl(true);
+    expect(drawn()).toEqual({ pointerCursor: true, underline: true });
+    bare.reset();
+    expect(drawn()).toEqual({ pointerCursor: false, underline: false });
     term.dispose();
   });
   it("recognizes files with line and column suffixes", async () => {

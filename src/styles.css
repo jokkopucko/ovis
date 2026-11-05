@@ -748,7 +748,7 @@
   --status-blocked-tint: rgba(144, 0, 27, 0.12);
   --status-done-tint: rgba(54, 80, 19, 0.12);
   --danger-tint: rgba(144, 0, 27, 0.1);
-  --notice: #8c6c3e;
+  --notice: #674f2e;
   --danger-text: #90001b;
   --scrim: rgba(39, 77, 171, 0.35);
   --term-bg: #e1e2e7;
@@ -858,7 +858,7 @@
   --status-blocked-tint: rgba(157, 0, 6, 0.12);
   --status-done-tint: rgba(93, 87, 0, 0.12);
   --danger-tint: rgba(157, 0, 6, 0.1);
-  --notice: #b57614;
+  --notice: #84560f;
   --danger-text: #9d0006;
   --scrim: rgba(60, 56, 54, 0.35);
   --term-bg: #fbf1c7;
@@ -968,7 +968,7 @@
   --status-blocked-tint: rgba(165, 17, 16, 0.12);
   --status-done-tint: rgba(1, 98, 11, 0.12);
   --danger-tint: rgba(165, 17, 16, 0.1);
-  --notice: #c18401;
+  --notice: #916301;
   --danger-text: #a51110;
   --scrim: rgba(56, 58, 66, 0.35);
   --term-bg: #fafafa;
@@ -1031,7 +1031,7 @@
   --status-blocked-tint: rgba(255, 188, 170, 0.14);
   --status-done-tint: rgba(194, 216, 93, 0.14);
   --danger-tint: rgba(255, 188, 170, 0.12);
-  --notice: #b58900;
+  --notice: #c29300;
   --danger-text: #ffbcaa;
   --scrim: rgba(0, 43, 54, 0.5);
   --term-bg: #002b36;
@@ -1078,7 +1078,7 @@
   --status-blocked-tint: rgba(182, 0, 6, 0.12);
   --status-done-tint: rgba(83, 99, 0, 0.12);
   --danger-tint: rgba(182, 0, 6, 0.1);
-  --notice: #b58900;
+  --notice: #826200;
   --danger-text: #b60006;
   --scrim: rgba(85, 106, 114, 0.35);
   --term-bg: #fdf6e3;
@@ -1188,7 +1188,7 @@
   --status-blocked-tint: rgba(149, 0, 43, 0.12);
   --status-done-tint: rgba(59, 82, 23, 0.12);
   --danger-tint: rgba(149, 0, 43, 0.1);
-  --notice: #77713f;
+  --notice: #605c33;
   --danger-text: #95002b;
   --scrim: rgba(84, 84, 100, 0.35);
   --term-bg: #f2ecbc;
@@ -1298,7 +1298,7 @@
   --status-blocked-tint: rgba(135, 58, 82, 0.12);
   --status-done-tint: rgba(22, 90, 116, 0.12);
   --danger-tint: rgba(135, 58, 82, 0.1);
-  --notice: #ea9d34;
+  --notice: #945c0f;
   --danger-text: #873a52;
   --scrim: rgba(70, 66, 97, 0.35);
   --term-bg: #faf4ed;
@@ -1545,6 +1545,43 @@ body {
   font-weight: var(--fw-regular);
   line-height: var(--lh-base);
   -webkit-font-smoothing: antialiased;
+}
+
+/* index.html's loading status, drawn until React's first frame replaces it (#2329): on a slow
+   link the app's script takes seconds, and a page with nothing on it looks frozen. It shows only
+   after a moment, so a fast start does not flash it. Its hidden words take a generic family no
+   @font-face backs: the app's faces would otherwise download beside the app's script, on the link
+   the spinner is waiting for. */
+.boot {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  font-family: sans-serif;
+  animation: boot-show 0s 400ms both;
+}
+
+.boot-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--text-dim);
+  border-radius: 50%;
+  animation: boot-spin var(--dur-spin) steps(8) infinite;
+}
+
+@keyframes boot-show {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes boot-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-spinner {
+    animation: none;
+  }
 }
 
 /* ---------- line breaking ---------- */
@@ -1919,6 +1956,51 @@ button {
   overflow: visible;
 }
 
+/* the connection said in the crumb's place (App.tsx, lib/headerConnection.ts): it shares the title's
+   line instead of wrapping out of sight, the title giving it room, so a phone reads it too and the
+   header keeps its height. A word swapped in place, never animated. */
+.context.has-connection {
+  flex-wrap: nowrap;
+}
+
+/* a larger text size or a narrow window may not fit the word: it shortens, it is never cut off unseen */
+.context-connection {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.context-connection > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-connection.is-reconnecting {
+  color: var(--status-working);
+}
+
+.context-connection.is-connected {
+  color: var(--status-done);
+}
+
+/* a phone has no room for both on one line: the word goes under the title, as a messenger's header
+   says it under a chat's name, both lines inside the header's height */
+@media (max-width: 768px) {
+  .context.has-connection {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    row-gap: 0;
+    max-height: none;
+  }
+
+  .context.has-connection .context-title {
+    min-height: 0;
+  }
+}
+
 /* the switch keeps its size; the pane title (.context) is the header's one flexible item */
 .view-switch {
   flex: 0 0 auto;
@@ -1958,6 +2040,38 @@ button {
   flex: 0 0 auto;
   margin-left: auto;
   font-size: var(--fs-xs);
+}
+
+/* how this device reaches Ovis (components/ConnectionRouteMark.tsx): a quiet glyph and a short word,
+   always there, never a button and never wrapped */
+.conn-route {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--chip-h);
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.conn-route svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+/* a phone gives the pane title the room: the glyph alone says the route there, except the relay,
+   whose word is the one most asked for; below 360px the relay's word goes too. The sentence stays
+   as the mark's title and accessible text. */
+@media (max-width: 480px) {
+  .conn-route:not([data-route="relay"], [data-route="portal"]) .conn-route-word {
+    display: none;
+  }
+}
+
+@media (max-width: 359px) {
+  .conn-route .conn-route-word {
+    display: none;
+  }
 }
 
 /* one chip for the connection, drawn only while the bridge is not live; the herdr version lives
@@ -2002,6 +2116,21 @@ button {
 .conn-reconnecting .conn-dot {
   background: var(--status-working);
   animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
+}
+
+/* The title area says the word (.context-connection): the chip keeps its pulsing dot, and the word
+   stays for a screen reader and in the chip's title, as on a narrow window below. */
+.conn-quiet {
+  gap: 0;
+}
+
+.conn-quiet .conn-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 /* A narrow window: the chip keeps its pulsing dot and gives its word's room to the pane title.

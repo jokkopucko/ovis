@@ -137,9 +137,14 @@ describe("showsGreeting", () => {
     expect(afterSettled(sent, true, "h1")).toBe(sent);
   });
 
-  test("an agent at work or asking is not asked what it should do", () => {
-    expect(showsGreeting({ ...shown, agentStatus: "working" })).toBe(false);
+  test("an agent asking is not asked what it should do", () => {
     expect(showsGreeting({ ...shown, agentStatus: "blocked" })).toBe(false);
+  });
+
+  // a /clear reports working for a moment with no turn (#2550): the read, not the status, ends it
+  test("a status at work over a chat read blank keeps it", () => {
+    expect(showsGreeting({ ...shown, agentStatus: "working" })).toBe(true);
+    expect(showsGreeting({ ...shown, agentStatus: "working", memory: afterRead(shown.memory, { ...read, blank: false, turns: 1 }) })).toBe(false);
   });
 
   test("held messages keep their place over the composer", () => {

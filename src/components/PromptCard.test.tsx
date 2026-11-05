@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { PromptCard } from "./PromptCard.tsx";
+import { PromptCard, type PromptCardProps } from "./PromptCard.tsx";
 
 const goal: InteractivePrompt = {
   id: "g", agent: "claude", kind: "menu", title: "Goal active", question: "the file hello.txt exists", body: "running 25s · 0 tokens",
@@ -13,12 +13,12 @@ const goal: InteractivePrompt = {
   own_text: { title: { key: "Goal active" }, labels: { 0: { key: "Close" } } },
 };
 
-const render = (prompt: InteractivePrompt, languages: string[], screenWords: string | null = null): string => {
+const render = (prompt: InteractivePrompt, languages: string[], screenWords: string | null = null, state: Pick<PromptCardProps, "answered" | "stale"> = {}): string => {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: languages });
   try {
     return renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(PromptCard, {
-      paneId: "w1:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {}, screenWords,
+      paneId: "w1:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {}, screenWords, ...state,
     }) }));
   } finally {
     if (saved) Object.defineProperty(navigator, "languages", saved);
@@ -27,6 +27,15 @@ const render = (prompt: InteractivePrompt, languages: string[], screenWords: str
 };
 
 describe("a prompt card's own words", () => {
+  it("shows both translated status messages when an answered card becomes stale", () => {
+    for (const language of ["en", "ko"] as const) {
+      const html = render(goal, [language], null, { answered: true, stale: true });
+      expect(html).toContain(translate(language, "Sending your answer…"));
+      expect(html).toContain(translate(language, "Not updated: the question on screen may have changed."));
+      expect(html).toContain('aria-busy="true"');
+    }
+  });
+
   it("shows the words the bridge wrote in the reader's language, and the agent's as written (#1482)", () => {
     for (const language of ["ko", "ja", "zh"] as const) {
       const html = render(goal, [language]);
@@ -93,5 +102,35 @@ describe("an omp Ask card in the agent's own Markdown (#1644)", () => {
     const html = render(plain, ["en"]);
     expect(html).toContain("Which **route** carries it?");
     expect(html).toContain("Use `local` socket");
+  });
+});
+
+describe("a form whose questions the agent's own keys move between", () => {
+  const form: InteractivePrompt = {
+    id: "f", agent: "omo", kind: "question", title: "Question 1 of 3", question: "Which color do you prefer?", body: null,
+    options: [{ label: "Red", description: null }, { label: "Blue", description: null }], multi_select: false, custom_option_index: 2,
+    steps: [{ label: "Color", answered: false, current: true }, { label: "Size", answered: false, current: false, can_navigate: true }, { label: "Shape", answered: false, current: false, can_navigate: true }],
+    can_step_next: true,
+  };
+
+  it("offers Next, and each other question as a step to tap, unanswered as they are", () => {
+    for (const language of ["en", "ko"] as const) {
+      const html = render(form, [language]);
+      expect(html).toContain('class="btn btn-ghost prompt-card-next"');
+      expect(html).toContain(translate(language, "Next"));
+      expect([...html.matchAll(/class="prompt-card-step-button"/g)]).toHaveLength(2);
+      expect(html).not.toContain("prompt-card-back");
+    }
+  });
+
+  it("offers no answered step the form itself does not mark as one to go to (Hermes past an answer)", () => {
+    const hermes: InteractivePrompt = { ...form, agent: "hermes", can_step_back: true, can_step_next: false,
+      steps: [{ label: "Colour", answered: true, current: false }, { label: "Size", answered: false, current: false, can_navigate: true }, { label: "Shape", answered: false, current: true }] };
+    expect([...render(hermes, ["en"]).matchAll(/class="prompt-card-step-button"/g)]).toHaveLength(1);
+  });
+
+  it("has no Next where the card cannot go on", () => {
+    const { can_step_next: _, ...last } = form;
+    expect(render(last, ["en"])).not.toContain("prompt-card-next");
   });
 });

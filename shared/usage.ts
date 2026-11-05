@@ -39,9 +39,36 @@ export interface ProviderUsage {
   readonly problem: UsageProblem | null;
   /** ISO 8601 time `windows` were read; null when they never were */
   readonly checked_at: string | null;
+  /**
+   * Claude refused a sign-in whose token has not expired (a 403, as a blocked network answers, not a
+   * real expiry), and Claude's limits are not read from its status line on this PC yet: turning that
+   * on (POST /api/usage/statusline) can stand in. Absent otherwise.
+   */
+  readonly statusline_offer?: true;
+}
+
+/** GET and POST /api/usage/statusline: whether Claude's limits are read from its status line on this PC. */
+export interface StatuslineState {
+  /** Claude Code's status line is wrapped (server/statusline-install.ts), and can be put back */
+  readonly installed: boolean;
+  /** false where the wrapper cannot run (Windows) */
+  readonly supported: boolean;
 }
 
 /** GET /api/usage: only providers a CLI on this PC is signed in to are listed, once per account. */
 export interface UsageReport {
   readonly providers: readonly ProviderUsage[];
+  /**
+   * Providers with no account found on this PC (a hub's accounts may still be listed) whose sign-in may be kept where this PC cannot look: the
+   * command that reads it is not installed (Antigravity's Linux keyring item needs `secret-tool`).
+   * Absent when there are none.
+   */
+  readonly missing_commands?: readonly MissingCommand[];
+  /** Accounts this PC still lists that were removed from Ovis (POST /api/usage/accounts restores one). Absent when there are none. */
+  readonly removed?: readonly ProviderUsage[];
+}
+
+export interface MissingCommand {
+  readonly provider: UsageProviderId;
+  readonly command: string;
 }

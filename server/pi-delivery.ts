@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { openSync, closeSync, readSync, statSync, fstatSync } from "node:fs";
+import { posix, win32 } from "node:path";
 
 import { MAX_PI_ENTRY_BYTES, MAX_PI_INDEX_ENTRIES } from "./pi-tree.ts";
 import { skillPromptMessage } from "./skill-activity.ts";
@@ -26,6 +27,8 @@ export interface PiDeliveryAnchor {
 export interface PiDeliveryCandidate {
   id: string;
   text: string;
+  /** The pane's catalog listed this `/name` as a prompt template when it was sent. */
+  template?: boolean;
   anchor: PiDeliveryAnchor;
 }
 
@@ -65,7 +68,9 @@ export class PiReceiptCapacity<Owner extends object> {
 }
 
 /** `at`: Pi's own submission time of a user message, or null where the record carries none. */
-type BranchEntry = { id: string; parent: string | null; role: string; text: string; at: number | null; start: number; end: number };
+/** `skill`: the skill and request of a record that is Pi's own expansion of `/skill:name request` */
+type PiSkillSend = { name: string; request: string };
+type BranchEntry = { id: string; parent: string | null; role: string; text: string; skill?: PiSkillSend; at: number | null; start: number; end: number };
 const TAIL_BYTES = 64 * 1024;
 const MAX_APPEND_BYTES = 32 * 1024 * 1024;
 /** Permanent for this anchor: retrying cannot shrink its append or retained history. */
@@ -119,9 +124,81 @@ function parseEntry(bytes: Buffer, start: number, end: number): BranchEntry {
   const message = piMessage(entry), user = message?.role === "user";
   const skill = user ? skillPromptMessage(entry) : null;
   const at = user && typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : null;
+  const text = user ? skill?.request ?? resultText(message.content) : "";
+  const expansion = user && !skill ? piSkillExpansion(text) : undefined;
   return { id: entry.id, parent: typeof entry.parentId === "string" ? entry.parentId : null,
-    role: typeof message?.role === "string" ? message.role : "",
-    text: user ? skill?.request ?? resultText(message.content) : "", at, start, end };
+    role: typeof message?.role === "string" ? message.role : "", text, ...(expansion ? { skill: expansion } : {}), at, start, end };
+}
+
+/**
+ * What Pi's submit handler reads of `text` sent from Chat: line ends and tabs as its editor pastes
+ * them (CRLF and a lone CR as LF, a tab as four spaces, other control characters dropped), trimmed.
+ */
+export function piRecordText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(/\t/g, "    ").replace(/[\u0000-\u0009\u000b-\u001f]/g, "").trim();
+}
+
+/**
+ * A `/name` send other than a skill is a prompt template Pi records only expanded, an extension's
+ * command Pi may record as nothing, or a message Pi records as typed: which one depends on what that
+ * Pi loaded, which Ovis cannot read. Pi records its sends in order, so the first user record after
+ * such a send is its own (its expansion, or its text), or that of a later send.
+ */
+const piMaybeCommand = (text: string): boolean => text.startsWith("/") && !text.startsWith("/skill:");
+
+/** Whether `entry` is the user record Pi writes for a send of `text`: as typed, or a skill's expansion. */
+function piRecordOf(text: string, entry: BranchEntry): boolean {
+  if (entry.role !== "user") return false;
+  if (entry.text === text) return true;
+  const skill = piSkillSend(text);
+  return skill !== undefined && entry.skill?.name === skill.name && entry.skill.request === skill.request;
+}
+
+/**
+ * The skill a `/skill:name request` send asks for, as Pi's `_expandSkillCommand` reads it: the name up
+ * to the first space, the rest trimmed. Where Pi knows no such skill it records the text as sent, so
+ * the send also matches its own text literally.
+ */
+function piSkillSend(text: string): PiSkillSend | undefined {
+  if (!text.startsWith("/skill:")) return undefined;
+  const space = text.indexOf(" ");
+  const name = text.slice(7, space === -1 ? undefined : space);
+  return name ? { name, request: space === -1 ? "" : text.slice(space + 1).trim() } : undefined;
+}
+
+// Pi 1.4's skill block: `References are relative to` the skill file's own directory, then the body.
+const PI_SKILL = /^<skill name="([^"\r\n]+)" location="([^"\r\n]+)">\nReferences are relative to ([^\r\n]+)\.\n\n([\s\S]*)$/;
+const CLOSE = "\n</skill>";
+
+/**
+ * Where the block ends: a closing tag that ends the record, or one followed by a blank line and the
+ * trimmed request. Pi inserts the SKILL.md body unescaped, so a body may hold such a tag too; with
+ * more than one place it could end, the request is not proven and the record is not read back.
+ */
+function skillRequest(rest: string): string | undefined {
+  const ends: string[] = [];
+  for (let at = rest.indexOf(CLOSE); at !== -1; at = rest.indexOf(CLOSE, at + 1)) {
+    const after = rest.slice(at + CLOSE.length);
+    if (after === "") ends.push("");
+    else if (after.startsWith("\n\n") && after.length > 2) ends.push(after.slice(2));
+  }
+  return ends.length === 1 ? ends[0] : undefined;
+}
+
+/**
+ * Pi records `/skill:name request` as a user message holding the whole SKILL.md, never as typed. Only
+ * a record in exactly the form Pi writes is read as that expansion, so a literal record (or one merely
+ * shaped like a skill block) is compared by its own text. Chained skills (`<skill-instruction>`
+ * blocks) are not one typed command, so such a send's receipt is not confirmed.
+ */
+function piSkillExpansion(text: string): PiSkillSend | undefined {
+  const block = PI_SKILL.exec(text);
+  if (!block) return undefined;
+  const [, name, location, baseDir, rest] = block;
+  // Pi's baseDir is its platform's dirname of the file, a root keeping its separator (`/`, `C:\`)
+  if (baseDir !== posix.dirname(location!) && baseDir !== win32.dirname(location!)) return undefined;
+  const request = skillRequest(rest!);
+  return request === undefined ? undefined : { name: name!, request };
 }
 
 /** Read just the final complete record, not the old branch or the shared tree index. */
@@ -248,9 +325,32 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       }
       if (parent !== anchor.leaf) { changed.push(candidate.id); continue; }
       const key = (entry: BranchEntry): string => JSON.stringify([path, file, session, entry.id]);
-      const same = chain.reverse().filter((entry) => entry.start > afterMatched && entry.role === "user"
-        && entry.text === candidate.text && !consumedEntries.has(key(entry)));
-      const match = same.find((entry) => entry.at === null || entry.at >= anchor.at);
+      const same = chain.reverse().filter((entry) => entry.start > afterMatched && piRecordOf(candidate.text, entry)
+        && !consumedEntries.has(key(entry)));
+      const fresh = (entry: BranchEntry): boolean => entry.at === null || entry.at >= anchor.at;
+      const first = piMaybeCommand(candidate.text)
+        ? chain.find((entry) => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry)))
+        : undefined;
+      const later = candidates.slice(index + 1);
+      const claims = first ? later.filter((next) => piRecordOf(next.text, first)).length : 0;
+      // a later Ovis send's record after it: Pi moved on past this send
+      const passed = first && chain.find((entry) => entry.start >= first.start && fresh(entry) && !consumedEntries.has(key(entry))
+        && later.some((next) => piRecordOf(next.text, entry)));
+      const own = same.find(fresh);
+      // Pi ran it where it moved on without recording it as typed, or where the record after a listed
+      // template is not its text (its expansion). Any other record is skipped, as for every receipt: it
+      // may be a message typed in the terminal, and this send's own record may still follow.
+      if (first && first.text !== candidate.text && !(own && (!passed || own.start < passed.start)) && (passed || candidate.template)) {
+        consumed.push(candidate.id);
+        // The record is its expansion, unless the later receipts it could be theirs claim every copy of
+        // it, as when an extension's command recorded nothing.
+        const copies = chain.filter((entry) => entry.start >= first.start && entry.role === "user" && entry.text === first.text && !consumedEntries.has(key(entry))).length;
+        if (copies > claims) {
+          matchedEntries.push(key(first)); afterMatched = first.start;
+        }
+        continue;
+      }
+      const match = same.find(fresh);
       const earlier = match ? undefined : same[0];
       if (match) consumed.push(candidate.id);
       else if (earlier) ambiguous.push(candidate.id);

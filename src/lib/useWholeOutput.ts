@@ -1,5 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useState } from "react";
 
+import { getTransport } from "./transport.ts";
+
 /** Each request belongs to one immutable pane/history/tool target. Aborting saves
  * work; identity checks also reject responses whose transport ignores cancellation. */
 export function useWholeOutput(url: string | null, scope: string) {
@@ -17,7 +19,7 @@ export function useWholeOutput(url: string | null, scope: string) {
     setResult({ owner, text: null, state: "loading" });
     void (async () => {
       try {
-        const response = await fetch(url, { signal: controller.signal });
+        const response = await getTransport().fetch(url, { signal: controller.signal });
         if (!response.ok) throw new Error(String(response.status));
         const text = await response.text();
         if (current()) setResult({ owner, text, state: "idle" });

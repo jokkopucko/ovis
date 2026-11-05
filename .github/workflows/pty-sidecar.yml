@@ -5,7 +5,10 @@ name: Rust PTY host binaries
 # SHA256SUMS. scripts/pty-sidecar.ts install fetches them by package.json's version.
 # Release calls this before it publishes and attaches the files to the release it creates, so a
 # tag never exists without them. pty-sidecar-attach.yml runs it by hand for a release that has none.
-# It only reads: a called workflow keeps its caller's event and may not ask for more permissions.
+# Building only reads. For Release and the repair run, the attest job then signs each binary's build
+# provenance (gh attestation verify --repo devswha/ovis), so an install can tell the bytes came from
+# this workflow and not only that they match the manifest beside them; a called workflow may not ask
+# for more permissions than its caller grants, so both callers grant id-token and attestations.
 # A pull request touching the host or the PTY code runs the same builds, cargo test, and on Linux
 # the PtySession checks on the built binary.
 on:
@@ -97,3 +100,23 @@ jobs:
           name: ovis-pty-sidecar
           path: pty-sidecar/*
           if-no-files-found: error
+  # Pull requests build without signing; a release cannot publish until this job has attested. The
+  # provenance names the run's own ref and commit, so a repair dispatched from another ref than the
+  # tag it builds attests nothing rather than a source the binaries were not built from.
+  attest:
+    needs: manifest
+    if: github.event_name != 'pull_request' && (inputs.ref == github.sha || inputs.ref == github.ref)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ovis-pty-sidecar
+          path: pty-sidecar
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: pty-sidecar/ovis-pty-sidecar-*

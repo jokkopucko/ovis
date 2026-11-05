@@ -257,16 +257,39 @@ describe("waitingText", () => {
     } finally { forgetWaitingSends(key); }
   });
 
-  it("settles a whole-second turn for a send made before the chat's first read once the agent answers it", () => {
+  it("settles a whole-second turn for a send made before the chat's first read on the turn itself when nothing was written after it", () => {
     const key = waitingKey("local", "whole-seconds-first-read");
     const second = Date.parse("2026-10-29T10:00:02Z");
-    const answer = { ...assistant("done"), ts: new Date(second + 1_000).toISOString() };
     try {
       rememberWaitingSend(key, "next", second + 500, waitingBaseline(key));
-      settleWaitingSends(key, [user("next", second)], second + 800, true);
-      // stamped in the send's own second: an older message of that second could read the same
+      // the agent took it and has written nothing since: no later turn ever comes to settle it
+      settleWaitingSends(key, [user("earlier", second - 60_000), user("next", second)], second + 800, true);
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); }
+  });
+
+  it("keeps a send made before the chat's first read waiting past a same-second turn with an undated turn after it", () => {
+    const key = waitingKey("local", "whole-seconds-first-read-undated");
+    const second = Date.parse("2026-10-29T10:00:02Z");
+    try {
+      rememberWaitingSend(key, "next", second + 500, waitingBaseline(key));
+      // an answer with no time is still an answer: the user turn before it may be an older message's
+      settleWaitingSends(key, [user("next", second), { ...assistant("ok"), ts: null }], second + 800, true);
       expect(currentWaitingSends(key).map((send) => send.text)).toEqual(["next"]);
-      settleWaitingSends(key, [user("next", second), answer], second + 1_400, true);
+    } finally { forgetWaitingSends(key); }
+  });
+
+  it("settles a whole-second turn for a send made before the chat's first read once a turn after it is in a later second", () => {
+    const key = waitingKey("local", "whole-seconds-first-read-answered");
+    const second = Date.parse("2026-10-29T10:00:02Z");
+    const sameSecond = { ...assistant("done"), ts: new Date(second).toISOString() };
+    const later = { ...assistant("more"), ts: new Date(second + 1_000).toISOString() };
+    try {
+      rememberWaitingSend(key, "next", second + 500, waitingBaseline(key));
+      // answered within its own second: an older message of that second, answered before the send, reads the same
+      settleWaitingSends(key, [user("next", second), sameSecond], second + 800, true);
+      expect(currentWaitingSends(key).map((send) => send.text)).toEqual(["next"]);
+      settleWaitingSends(key, [user("next", second), sameSecond, later], second + 1_400, true);
       expect(currentWaitingSends(key)).toEqual([]);
     } finally { forgetWaitingSends(key); }
   });

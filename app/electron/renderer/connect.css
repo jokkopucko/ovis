@@ -1,0 +1,27 @@
+/* The client's dark theme colours, as in app/web/shell.css */
+:root { color-scheme: dark; --bg: #12100e; --panel: #181613; --border: #2d2924; --text: #d8d0c3; --dim: #9b9183; --strong: #f2ebdf; --primary: #f0a830; --primary-text: #1b1407; --ok: #7fc97f; --danger: #ff7b70; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, system-ui, sans-serif; }
+body { display: flex; align-items: center; justify-content: center; }
+main { width: 100%; max-width: 30rem; padding: 2rem 1.5rem; }
+.logo { display: block; height: 54px; width: auto; margin-bottom: 1.25rem; }
+h1 { color: var(--strong); font-size: 1.35rem; font-weight: 600; margin: 0 0 1.25rem; }
+.steps { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: .7rem; background: var(--panel); }
+.steps li { display: flex; align-items: center; gap: .7rem; padding: .8rem 1rem; }
+.steps li + li { border-top: 1px solid var(--border); }
+.name { flex: 1; color: var(--strong); }
+.version { color: var(--dim); font-size: .85em; }
+.state { color: var(--dim); font-size: .9em; }
+.mark { width: .7rem; height: .7rem; border-radius: 50%; border: 2px solid var(--dim); flex: none; }
+li[data-state="pending"] .mark { border-color: var(--primary); border-top-color: transparent; animation: spin 0.9s linear infinite; }
+li[data-state="waiting"] .mark { border-color: var(--border); }
+li[data-state="ok"] .mark { background: var(--ok); border-color: var(--ok); }
+li[data-state="failed"] .mark, li[data-state="stopped"] .mark { background: var(--danger); border-color: var(--danger); }
+li[data-state="failed"] .state, li[data-state="stopped"] .state { color: var(--danger); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { li[data-state="pending"] .mark { animation: none; } }
+.detail { margin: 1rem 0 0; padding: .75rem .9rem; max-height: 14rem; overflow: auto; white-space: pre-wrap; word-break: break-word; font: .8rem/1.4 ui-monospace, monospace; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: .6rem; }
+.row { display: flex; gap: .6rem; margin-top: 1.25rem; }
+button { font: inherit; border-radius: .6rem; padding: .6rem 1rem; border: 1px solid var(--border); background: var(--panel); color: var(--strong); cursor: pointer; }
+button.primary { background: var(--primary); color: var(--primary-text); border-color: var(--primary); font-weight: 600; }
+button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }

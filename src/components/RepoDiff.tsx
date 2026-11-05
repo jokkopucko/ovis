@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_VIRTUAL_FILE_METRICS, parsePatchFiles, trimPatchContext, type FileDiffMetadata, type VirtualizedFileDiff, type Virtualizer as VirtualizerInstance } from "@pierre/diffs";
 import { FileDiff, useVirtualizer, Virtualizer, type FileDiffOptions } from "@pierre/diffs/react";
+import { Plus } from "lucide-react";
 
 import { DiffWorkerPool } from "./DiffWorkerPool.tsx";
 import { useT } from "../lib/i18n.ts";
@@ -24,6 +25,13 @@ export interface RepoDiffProps {
   active?: DiffMark | null;
   /** the active match is on a line the folded context leaves out: the host shows the context whole */
   onUnfold?: () => void;
+  /**
+   * A row was pointed at (#1603): `open` from the + a hovered row shows, which begins a note at once;
+   * otherwise a click or tap on the row, which only picks its line. The row by its side and number.
+   */
+  onLine?: (side: "deletions" | "additions", lineNumber: number, open: boolean) => void;
+  /** why no note can be begun (the hovered + then says so, disabled), or null */
+  noteBlocked?: string | null;
 }
 
 /** A logical line of the patch (an unchanged line is anchored to the new side) and the columns of a match in it. */
@@ -32,6 +40,8 @@ export interface DiffMark {
   line: number;
   start: number;
   end: number;
+  /** ringed where it is, never scrolled to: a line just clicked or tapped is in view already */
+  quiet?: boolean;
 }
 
 /** The CSS highlight the active match's text is painted with (styled in the shadow CSS below). */
@@ -131,8 +141,11 @@ function parseFile(text: string): FileDiffMetadata | null {
  * the virtualizer renders by identity, and its host fills the scroll root so it has a box before
  * the first anchor pass (the contracts VirtualSource measured).
  */
-export default function RepoDiff({ patch, style, folded, wrap, theme, colored, active = null, onUnfold }: RepoDiffProps) {
+export default function RepoDiff({ patch, style, folded, wrap, theme, colored, active = null, onUnfold, onLine, noteBlocked = null }: RepoDiffProps) {
   const t = useT();
+  const onLineRef = useRef(onLine);
+  onLineRef.current = onLine;
+  const noting = onLine !== undefined;
   const hostRef = useRef<HTMLDivElement>(null);
   const [lineHeight, setLineHeight] = useState<number | null>(null);
   const fileRef = useRef<VirtualizedFileDiff<undefined> | null>(null);
@@ -248,7 +261,7 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
   useEffect(() => {
     paint();
     const mark = activeRef.current;
-    if (mark === null) { reveal.current = null; return; }
+    if (mark === null || mark.quiet === true) { reveal.current = null; return; }
     reveal.current = { mark, passes: 0 };
     settle();
   }, [activeSide, activeLine, activeStart, activeEnd, style, wrap, theme, folded, paint, settle]);
@@ -264,9 +277,19 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     tokenizeMaxLength: colored ? VIRTUAL_HIGHLIGHT_LINES : 0,
     lineHoverHighlight: "disabled",
     enableLineSelection: false,
+    enableGutterUtility: noting,
+    // a click that ends a text selection (copying code) picks no line; a selection in the shadow rows reads as collapsed to the page, so its type tells
+    onLineClick: noting ? ({ annotationSide, lineNumber }) => { if (getSelection()?.type !== "Range") onLineRef.current?.(annotationSide, lineNumber, false); } : undefined,
     unsafeCSS: DIFF_SHADOW_CSS,
     onPostRender,
-  }), [style, wrap, theme, colored, onPostRender]);
+  }), [style, wrap, theme, colored, onPostRender, noting]);
+  const noteLabel = noteBlocked ?? t("Add a note on this line");
+  // the + stands beside the hovered row's number: a pointer's shortcut, so it takes no tab stop (keys pick a line in the viewer)
+  const renderGutterUtility = useCallback((hovered: () => { lineNumber: number; side: "deletions" | "additions" } | undefined) => <button type="button" className="repo-diff-line-note-plus" tabIndex={-1}
+    aria-label={noteLabel} title={noteLabel} aria-disabled={noteBlocked !== null}
+    onClick={() => { const row = hovered(); if (row !== undefined) onLineRef.current?.(row.side, row.lineNumber, noteBlocked === null); }}>
+    <Plus aria-hidden="true" />
+  </button>, [noteLabel, noteBlocked]);
   const metrics = useMemo(() => (lineHeight === null ? null : { ...DEFAULT_VIRTUAL_FILE_METRICS, lineHeight }), [lineHeight]);
 
   if (fileDiff === null || fileDiff.hunks.length === 0) return <p className="repo-diff-note">{t("No lines changed.")}</p>;
@@ -279,7 +302,7 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     <DiffWorkerPool>
       <Virtualizer className="repo-diff-scroll" contentClassName="repo-diff-column" config={SCROLL_CONFIG}>
         <VirtualizerProbe onInstance={onVirtualizer} />
-        {metrics !== null && <FileDiff className="repo-diff-file" fileDiff={fileDiff} options={options} metrics={metrics} selectedLines={selected} />}
+        {metrics !== null && <FileDiff className="repo-diff-file" fileDiff={fileDiff} options={options} metrics={metrics} selectedLines={selected} renderGutterUtility={noting ? renderGutterUtility : undefined} />}
       </Virtualizer>
     </DiffWorkerPool>
   </div>;

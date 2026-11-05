@@ -56,8 +56,8 @@ function omoPane(holderPids: number[], foreground: Foreground[]) {
     omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 1_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
   });
   const settle = async () => { for (let turn = 0; turn < 6; turn++) { await tail.catch(() => {}); await new Promise(setImmediate); } };
-  const queue = async (text: string) => {
-    await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text, payload: text, delivery: "queue" });
+  const queue = async (text: string, agentOnly = false) => {
+    await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text, payload: text, delivery: "queue", ...(agentOnly ? { agent_only: true } : {}) });
     await settle();
     const queued = frames.find((frame) => frame.type === "submit-result") as Extract<ServerMessage, { type: "submit-result" }> | undefined;
     return delivery.pending.get(owner, "p", queued!.pending!.id)!;
@@ -106,4 +106,22 @@ it("binds a queued command's outcome to the OmO it was queued for when another h
   // the pending checks read the holders for the queued process; the binding reads none of its own
   expect(holderReads.mock.calls.map((call) => call[3])).toEqual(holderReads.mock.calls.map(() => parent.pid));
   expect(holderReads).toHaveBeenCalled();
+});
+
+// #511: a session holder record outlives an exec at its PID (same PID, start and cwd), so it is no proof of the agent for a
+// message only an agent may take: after the OmO execs ash under its paste, the Enter is held back
+it("holds back the Enter of an agent-only message when the OmO holding its session execs ash after the paste", async () => {
+  const omoProgram: Foreground = { pid: 41001, name: "omo", argv: ["/usr/local/bin/omo"] };
+  const fixture = omoPane([omoProgram.pid], [omoProgram]);
+  const enter = client.paneSendKeys as unknown as { mock: { calls: unknown[] } };
+  (client.paneSendText as unknown as { mockImplementation: (run: (pane: string, text: string) => Promise<void>) => void }).mockImplementation(async (_pane, text) => {
+    fixture.writes.push(text);
+    fixture.state.foreground = [{ pid: 41001, name: "ash", argv: ["ash"] }];
+  });
+  const item = await fixture.queue("> backup.txt\nkeep it", true);
+  expect(item.identity.processPid).toBe(omoProgram.pid);
+  await fixture.drain();
+  expect(fixture.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~"]);
+  expect(enter.mock.calls).toEqual([]);
+  expect(item.message).toMatchObject({ state: "uncertain", error: { code: "pasted_not_sent" } });
 });

@@ -1,14 +1,15 @@
 import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
-import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote } from "./compose.ts";
+import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
-import type { SlashCommand } from "../../shared/protocol.ts";
+import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paneCommands } from "../../server/commands.ts";
+import { NO_AGENT_MESSAGE, PASTED_NOT_SENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
 
 describe("menu rows", () => {
@@ -140,6 +141,12 @@ describe("composerMessage and submitNote", () => {
     expect(submitNote("submit_timeout", "x")).toMatch(/^Not sent: .*nothing was typed/);
     expect(submitNote("disconnected", "x")).toMatch(/^Not confirmed: .*Check the terminal/);
     expect(submitNote("pane_not_found", "pane w1:p9 not found")).toBe("Not sent: pane w1:p9 not found");
+    // #511: the no-agent sentence is for the bridge's no-agent refusal alone; an unknown input state keeps its own words
+    expect(submitNote("agent_not_ready", NO_AGENT_MESSAGE)).toBe("Not sent: no agent is running in this pane. Your message stayed here.");
+    expect(submitNote("agent_not_ready", "The agent's current input state is not known")).toBe("Not sent: The agent's current input state is not known");
+    // a paste left in the input line says so, and is never taken for a refusal that typed nothing
+    expect(submitNote("pasted_not_sent", PASTED_NOT_SENT_MESSAGE)).toBe("Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.");
+    expect(submitNotTyped("pasted_not_sent")).toBe(false);
   });
 
   it("knows a refusal that typed nothing from a message that may have reached the pane", () => {
@@ -214,6 +221,30 @@ describe("sameMessage", () => {
     expect(sameMessage("fix the login bug\nthen run tests", "fix the login\u00a0bug\n  then run tests")).toBe(true);
     expect(sameMessage("fix the login bug", "fix the logout bug")).toBe(false);
     expect(sameMessage("  ", "")).toBe(false);
+  });
+});
+
+describe("a stopped send's turn", () => {
+  const turn = (role: ConversationTurn["role"], text: string, ts: string): ConversationTurn => ({ role, ts, parts: [{ kind: "text", text }] });
+  const words = "Rename the backup job\nand rerun it";
+  const page = [turn("assistant", "earlier answer", "2026-11-01T00:00:01Z"), turn("user", words, "2026-11-01T00:00:02Z")];
+
+  it("is the same turn in a later read whose earlier turns changed, until a newer turn", () => {
+    const stopped = stoppedTurn(page, "Rename the backup job and rerun it");
+    expect(stopped).not.toBeNull();
+    // a new turns array: an earlier turn edited, the stopped turn a new object with the same time and words
+    expect(endsWithTurn([turn("assistant", "earlier answer, edited", "2026-11-01T00:00:01Z"), { ...page[1]! }], stopped)).toBe(true);
+    expect(endsWithTurn([...page, turn("assistant", "answer", "2026-11-01T00:00:03Z")], stopped)).toBe(false);
+    // the same words sent again are a newer turn
+    expect(endsWithTurn([page[0]!, turn("user", words, "2026-11-01T00:00:04Z")], stopped)).toBe(false);
+    expect(stoppedTurn(page, "other words")).toBeNull();
+  });
+
+  it("taken while the copy was in the box, still names it after a read that answers no copy", () => {
+    // the send empties the box: a read before the send's receipt answers no restored copy
+    const taken = stoppedTurn(page, words);
+    expect(stoppedTurn(page, null)).toBeNull();
+    expect(endsWithTurn(page, taken)).toBe(true);
   });
 });
 

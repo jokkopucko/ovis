@@ -2,7 +2,7 @@ import type { StreamSource } from "./conversation-shared.ts";
 import { claudePeerNotice, piMessage, piPromptImages } from "./transcript-records.ts";
 import type { TranscriptEntry } from "./claude-transcript.ts";
 import { claudeImages, isCommandEntry, senpiPrompt, withoutPictureBytes } from "./claude-transcript.ts";
-import { copilotRootRecord } from "./copilot.ts";
+import { copilotPromptOpens, copilotRootRecord } from "./copilot.ts";
 import { musePrompt } from "./muse.ts";
 import { lettaPrompt } from "./letta.ts";
 
@@ -121,8 +121,7 @@ function opensTurn(source: StreamSource, line: string, blobs: string | null): bo
   let entry: { type?: unknown; uuid?: unknown; origin?: unknown; permissionMode?: unknown; data?: { content?: unknown }; isMeta?: unknown; isCompactSummary?: unknown; payload?: { type?: unknown }; message?: { role?: unknown; content?: unknown } };
   try { entry = JSON.parse(line); } catch { return false; }
   if (entry === null || typeof entry !== "object") return false;
-  if (source === "copilot-transcript") return entry.type === "user.message" && copilotRootRecord(entry)
-    && typeof entry.data?.content === "string" && !!entry.data.content.trim();
+  if (source === "copilot-transcript") return entry.type === "user.message" && copilotRootRecord(entry) && copilotPromptOpens(entry.data);
   if (source === "codex-transcript") return entry.type === "event_msg" && entry.payload?.type === "task_started";
   if (source === "muse-transcript") return musePrompt(entry as Record<string, unknown>) !== null;
   if (source === "letta-transcript") return lettaPrompt(entry as Record<string, unknown>) !== null;

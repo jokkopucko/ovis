@@ -1,5 +1,5 @@
 import { paneRead } from "../herdr/client.ts";
-import { ANSI_RE, type OmoAsk, PI_MODEL_HINT_RE, type ParsedPrompt, SOLID_RULE_RE, cleanLine, findLastIndex, isDivider, wrapped } from "./shared.ts";
+import { ANSI_RE, type OmoAsk, PI_MODEL_HINT_RE, PROMPT_LINE_RE, type ParsedPrompt, SOLID_RULE_RE, cleanLine, findLastIndex, isDivider, wrapped } from "./shared.ts";
 import { registry } from "./registry.ts";
 import { CODEX_ASK_HINT_RE, CODEX_ASYNC_ASK_HINT_RE, CODEX_CONTINUE_HINT_RE } from "./codex.ts";
 import { OMO_FOOTER_LINES, OMO_HINT_LINES, OMO_NOT_FOOTER_RE, OMO_OPTIONS_HINT_RE, OMO_PENDING_HINT_RE, OMO_REVIEW_HINT_RE, OMO_TYPING_HINT_RE, omoModelListWaits } from "./omo.ts";
@@ -151,24 +151,44 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
     if (at < 0 || box < 0 || box - at > 60 || !cleanLines[box - 1]!.startsWith("─")) return false;
     return omoFooterIsActive(cleanLines.slice(box + 1));
   }
-  // pi keeps its footer under every dialog — the pane's folder, then its context meter — so the
-  // hint sits near the end without being it. A dialog already answered leaves its hint far
-  // above whatever came after, which is what keeps this window narrow.
-  if (prompt.responder === "pi-model") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, PI_FOOTER_LINES);
-  if (prompt.responder === "pi-thinking") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, PI_FOOTER_LINES, PI_THINKING_HINT_LINES);
+  // pi keeps its footer under every dialog — the pane's folder, then its stats line, then any
+  // extension status (piFooterLines) — so the hint sits near the end without being it. A dialog
+  // already answered leaves its hint far above whatever came after, which is what keeps this window narrow.
+  if (prompt.responder === "pi-model") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, piFooterLines(shown));
+  if (prompt.responder === "pi-thinking") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, piFooterLines(shown), PI_THINKING_HINT_LINES);
   if (prompt.responder === "omo-model") return omoModelListWaits(screen);
   // its reader already found the picker ending the screen, which only an open picker does
   if (prompt.responder === "omp-model") return true;
   if (prompt.responder === "pi-question" || prompt.responder === "pi-confirm" || prompt.responder === "pi-input") {
-    return hintAtEnd(shown, PI_MENU_HINT_AT_END_RE, PI_FOOTER_LINES, 4)
-      || hintAtEnd(shown, PI_INPUT_HINT_AT_END_RE, PI_FOOTER_LINES, 4);
+    return hintAtEnd(shown, PI_MENU_HINT_AT_END_RE, piFooterLines(shown), 4)
+      || hintAtEnd(shown, PI_INPUT_HINT_AT_END_RE, piFooterLines(shown), 4);
   }
   // Command Code's permission footer names its keys at the dialog's end and wraps on a narrow
   // pane: `↑/↓ navigate · enter select · ctrl+e explain · Run cmd --yolo to bypass all …`
   if (prompt.responder === "cmd-question") return cmdFooterStart(shown) >= 0;
   // its footer ends the screen, wrapped or not (dialogs/opencode.ts)
   if (prompt.responder === "opencode-v1-question") return openCodeV1QuestionActive(screen);
-  return ends(/ctrl\+g to edit|shift\+tab to approve with this feedback/i);
+  // Claude's plan: its footer, wrapped or not, ends the screen
+  return ends(/ctrl\+g to edit|shift\+tab to approve with this feedback/i) || claudePlanFooterEnds(shown);
+}
+
+const CLAUDE_PLAN_FOOTER_RE = /^ctrl\+g to edit in [^·]+?[ \n]·[ \n]([^]+)$/i;
+
+/**
+ * Whether Claude's plan footer, `ctrl+g to edit in VS Code · ~/.claude/plans/x.md`, ends the screen. A narrow pane
+ * wraps it with nothing marking the breaks: at a space before the path, or anywhere inside the path, even
+ * between `.m` and `d`, and over as many lines as the path needs. So the path's lines are joined as one
+ * word, and `.md` may show only at its very end: output under an answered plan (`⏺ Updated README.md`, a bare
+ * `README.md`, even one written on the footer's last row) comes after a path already complete, so it never
+ * extends it; a plan folder with `.md` in its name goes unread instead. The folder may hold a `·`
+ * (`CLAUDE_CONFIG_DIR`), so only the first `·` after the editor's name separates the path.
+ */
+function claudePlanFooterEnds(shown: string[]): boolean {
+  const at = findLastIndex(shown, (line) => /^ctrl\+g to edit\b/i.test(line));
+  const path = at < 0 ? undefined : CLAUDE_PLAN_FOOTER_RE.exec(shown.slice(at).join("\n"))?.[1];
+  if (path === undefined) return false;
+  const joined = path.replaceAll("\n", "");
+  return joined.indexOf(".md") === joined.length - 3;
 }
 /**
  * The same two hints told from the end of the window. A phone leaves pi a pane barely wide enough
@@ -183,9 +203,38 @@ const PI_INPUT_HINT_AT_END_RE = new RegExp(`${PI_INPUT_HINT_RE.source}$`, "i");
 const PI_MODEL_HINT_AT_END_RE = new RegExp(`${PI_MODEL_HINT_RE.source}$`, "i");
 /**
  * pi's own footer, under `/model` and under every dialog alike: the pane's folder, then its
- * context meter. A hint is allowed this many lines of it before the bottom of the screen.
+ * stats line. A hint is allowed this many lines of it before the bottom of the screen, one more
+ * under an extension's status (piFooterLines).
  */
 const PI_FOOTER_LINES = 2;
+
+/**
+ * pi's stats line, its second footer line: usage counters (`↑1.2k ↓300 R… W… CH…% $0.012 (sub)`), then
+ * the context meter (`3.7%/1.0M`, `?/200k`). The meter comes last, and a narrow pane cuts the line
+ * with `...` before it (`↑52 ↓5.3k R460k W33k CH98.9% $0.461 (sub) 3.7...`), so the line is told by how
+ * it starts: both counters (`↑52 ↓5.3k`), or the meter alone when pi has no usage yet (pi 1.4.0's footer).
+ */
+const PI_STATS_LINE_RE = /^(?:↑[\d.]+[kKmMbB]? ↓[\d.]+[kKmMbB]?|(?:\d+(?:\.\d+)?%|\?)\/[\d.]+[kKmMbB]?)(?:\s|\.\.\.|$)/u;
+
+/** pi's first footer line, the pane's folder: `~/app (main)`, `/tmp/app`, `C:\work\app`. */
+const PI_FOLDER_LINE_RE = /^(?:~(?:[\\/]|\s|$)|\/|[A-Za-z]:[\\/])/u;
+
+/**
+ * An extension's `ctx.ui.setStatus` adds a third footer line under the stats line: pi joins every
+ * status into that one line and truncates it to the pane's width, so it never wraps (pi 1.4.0's
+ * footer). pi mounts its footer last, so while it runs nothing else can follow the stats line, and a
+ * single line there is taken for that status, but only under pi's whole footer (its folder line, then
+ * its stats line). A prompt there, or more output than that one line, still buries the hint. A screen
+ * pi left behind when it ended looks the same with one line of the shell's under it, so a card answers
+ * only while pi still holds the pane's input (piOwnsInput in prompt.ts).
+ */
+function piFooterLines(shown: string[]): number {
+  // Windows names no foreground process to tell a live pi from the shell under its last screen: no status line there
+  if (process.platform === "win32") return PI_FOOTER_LINES;
+  const status = shown.at(-1) ?? "";
+  const footer = PI_FOLDER_LINE_RE.test(shown.at(-3) ?? "") && PI_STATS_LINE_RE.test(shown.at(-2) ?? "");
+  return footer && !PROMPT_LINE_RE.test(status) ? PI_FOOTER_LINES + 1 : PI_FOOTER_LINES;
+}
 
 /**
  * Whether a hint is the last thing before an agent's footer, allowing for a phone's pane being

@@ -405,3 +405,64 @@ describe("a service worker of a new build", () => {
     expect(await worker.get("/assets/katex-a.js")).toBe("");
   });
 });
+
+describe("a PC's worker in the hosted shell", () => {
+  const ID = "0123456789abcdef0123456789abcdef";
+  const OTHER = "fedcba9876543210fedcba9876543210";
+  type Window = { url: string; focused: boolean; visibilityState: string; told: unknown[]; postMessage(data: unknown): void; focus(): Promise<void> };
+  const windowAt = (path: string, visibilityState = "hidden"): Window => ({
+    url: `https://app.test${path}`, focused: false, visibilityState, told: [],
+    postMessage(data) { this.told.push(data); }, focus: async () => undefined,
+  });
+
+  /** public/sw.js registered at `/s/<ID>/`, with `windows` open on the origin (every PC's). */
+  function scoped(windows: Window[]) {
+    const listeners = new Map<string, (event: unknown) => void>();
+    const opened: string[] = [];
+    const shown: { silent: boolean }[] = [];
+    const self = {
+      registration: { scope: `https://app.test/s/${ID}/`, showNotification: async (_title: string, options: { silent: boolean }) => { shown.push(options); } },
+      clients: { matchAll: async () => windows, openWindow: async (url: string) => { opened.push(url); return null; } },
+      addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
+    };
+    new Function("self", readFileSync(join(publicDir, "sw.js"), "utf8"))(self);
+    const fire = async (type: string, event: Record<string, unknown>): Promise<void> => {
+      let done: Promise<unknown> = Promise.resolve();
+      listeners.get(type)!({ ...event, waitUntil: (work: Promise<unknown>) => { done = work; } });
+      await done;
+    };
+    const click = (paneId: string | null) => fire("notificationclick", { notification: { data: { pane_id: paneId, machine_id: "local" }, close: () => undefined } });
+    return { click, push: () => fire("push", { data: { json: () => ({ title: "t" }) } }), opened, shown };
+  }
+
+  it("opens a tap in the PC's own scope, not the shell's front page", async () => {
+    const worker = scoped([]);
+    await worker.click("w1:p1");
+    await worker.click(null);
+    expect(worker.opened).toEqual([`/s/${ID}/#machine=local&pane=w1%3Ap1&view=chat`, `/s/${ID}/`]);
+  });
+
+  it("never hands a tap to another PC's window on the same origin", async () => {
+    const other = windowAt(`/s/${OTHER}/`);
+    const front = windowAt("/");
+    const worker = scoped([other, front]);
+    await worker.click("w1:p1");
+    expect(other.told).toEqual([]);
+    expect(front.told).toEqual([]);
+    expect(worker.opened).toEqual([`/s/${ID}/#machine=local&pane=w1%3Ap1&view=chat`]);
+
+    const own = windowAt(`/s/${ID}/`);
+    const open = scoped([other, own]);
+    await open.click("w1:p1");
+    expect(own.told).toHaveLength(2);
+    expect(open.opened).toEqual([]);
+  });
+
+  it("rings for its PC's alert while only another PC's window is in view", async () => {
+    const watchingOther = scoped([windowAt(`/s/${OTHER}/`, "visible")]);
+    await watchingOther.push();
+    const watchingOwn = scoped([windowAt(`/s/${ID}/`, "visible")]);
+    await watchingOwn.push();
+    expect([watchingOther.shown[0]!.silent, watchingOwn.shown[0]!.silent]).toEqual([false, true]);
+  });
+});

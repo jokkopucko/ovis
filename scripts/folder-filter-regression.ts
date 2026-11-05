@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { Page, Locator } from "playwright-core";
+import type { Page, Locator, Route } from "playwright-core";
 
 /** The owned fixture directory has only a and b; no workspace is created by this check. */
 export async function checkFolderFilter(page: Page, dialog: Locator, createRequests: () => number): Promise<void> {
@@ -16,6 +16,11 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
   await filter.waitFor();
   await filter.fill("A");
   await until(async () => (await dialog.locator(".dir-browser-item").allTextContents()).join() === "a", "case-insensitive folder filter");
+  const [pickBox, listBox] = await Promise.all([
+    dialog.getByRole("button", { name: "Use this folder", exact: true }).boundingBox(),
+    dialog.locator(".dir-browser-list").boundingBox(),
+  ]);
+  assert.ok(pickBox && listBox && pickBox.y + pickBox.height <= listBox.y, "Use this folder sits above the folder list");
   const composition = await filter.evaluate((input) => [
     { key: "Enter", isComposing: true },
     { key: "Enter", keyCode: 229 },
@@ -31,9 +36,25 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
   await filter.press("Escape");
   assert.equal(await filter.inputValue(), "");
   assert.equal(await dialog.isVisible(), true, "Escape clears before closing");
-  await filter.fill("a");
-  await dialog.locator(".dir-browser-item").click();
-  await until(async () => (await filter.inputValue()) === "", "navigation clears the filter");
+  const eye = dialog.getByRole("button", { name: "Show hidden", exact: true });
+  let releaseDirectory: (() => void) | null = null;
+  const holdDirectory = async (route: Route): Promise<void> => {
+    if (releaseDirectory === null) await new Promise<void>((resolve) => { releaseDirectory = resolve; });
+    await route.continue();
+  };
+  await page.route("**/api/workspace/directories**", holdDirectory);
+  try {
+    await filter.fill("a");
+    await dialog.locator(".dir-browser-item").click();
+    await until(async () => releaseDirectory !== null, "the child listing request is held");
+    await until(async () => eye.isDisabled(), "Show hidden waits while a folder opens");
+    assert.equal(await eye.isDisabled(), true, "Show hidden cannot replace the folder being opened");
+    releaseDirectory?.();
+    await until(async () => (await filter.inputValue()) === "", "navigation clears the filter");
+  } finally {
+    releaseDirectory?.();
+    await page.unroute("**/api/workspace/directories**", holdDirectory);
+  }
   const directory = dialog.getByLabel(/^Directory/);
   // Browse writes the opened folder into Directory, so Start would use it without Use this folder
   await until(async () => {
@@ -45,6 +66,39 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
     const value = await directory.inputValue();
     return !value.endsWith("/a") && value !== "a";
   }, "Directory follows Browse back to the parent");
+  // a long path is cut on the controls' row, not wrapped: the bar keeps its height between folders
+  const bar = dialog.locator(".dir-browser-bar");
+  const path = dialog.locator(".dir-browser-path");
+  const rowHeight = Math.round((await bar.boundingBox())?.height ?? 0);
+  const longListing = async (route: Route): Promise<void> => {
+    const response = await route.fetch();
+    const listing = await response.json() as { path: string };
+    await route.fulfill({ response, json: { ...listing, parent: listing.path, path: `${listing.path}/${"a-folder-with-a-long-name/".repeat(4)}end` } });
+  };
+  await page.route("**/api/workspace/directories**", longListing);
+  try {
+    await eye.click();
+    await until(async () => ((await path.textContent()) ?? "").endsWith("/end"), "the long path is shown");
+    assert.equal(Math.round((await bar.boundingBox())?.height ?? 0), rowHeight, "a long path keeps the path bar on one row");
+  } finally {
+    await page.unroute("**/api/workspace/directories**", longListing);
+  }
+  await dialog.getByRole("button", { name: "Parent folder", exact: true }).click();
+  await until(async () => !((await path.textContent()) ?? "").endsWith("/end") && await eye.isEnabled(), "back from the long path");
+  await eye.click();
+  await until(async () => (await eye.getAttribute("aria-pressed")) === "false" && await eye.isEnabled(), "hidden folders off again");
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: 176, height: 844 });
+  const newFolder = dialog.getByRole("button", { name: "New folder", exact: true });
+  const boxes = async () => Promise.all([bar.boundingBox(), newFolder.boundingBox()]);
+  await until(async () => {
+    const [barBox, newFolderBox] = await boxes();
+    return barBox !== null && newFolderBox !== null && newFolderBox.x >= barBox.x && newFolderBox.x + newFolderBox.width <= barBox.x + barBox.width;
+  }, "New folder stays inside the path bar at 176px");
+  const [barBox, newFolderBox] = await boxes();
+  assert.ok(barBox && newFolderBox && newFolderBox.x >= barBox.x && newFolderBox.x + newFolderBox.width <= barBox.x + barBox.width, "New folder stays inside the path bar at 176px");
+  assert.equal(await bar.evaluate((element) => element.scrollWidth > element.clientWidth), false, "the path bar does not clip controls at 176px");
+  if (viewport) await page.setViewportSize(viewport);
   await dialog.getByRole("button", { name: "Use this folder", exact: true }).click();
   await filter.waitFor({ state: "detached" });
   // a typed path that does not open shows home in its place, and Directory keeps what was typed:

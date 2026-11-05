@@ -2,3 +2,6 @@
 # with a git clone and runs its shell scripts with sh: on WSL a clone that inherits Windows'
 # core.autocrlf=true gets CRLF scripts, and sh stops at `set -u\r` ("set: Illegal option -").
 * text=auto eol=lf
+
+# raw terminal output recorded from real CLIs: kept byte for byte, carriage returns included
+server/fixtures/**/*.pty -text

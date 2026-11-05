@@ -156,6 +156,17 @@ if (typeof window !== "undefined") {
   /** the popstate this module last handled: one asked about before it is handled is answered by the step on its way */
   let heard: Event | null = null;
   sheetStep.lands = (event) => event === heard ? steppedOff : stepping !== null;
+  sheetStep.takeLeaving = (state) => {
+    const id = sheetOf(state);
+    const timer = id === null ? undefined : leaving.get(id);
+    // whoever takes it over goes back past every entry down to where it opened, an address the sheet's
+    // item wrote on its entry included (leaveSheet would keep that entry as the item's own)
+    if (id === null || timer === undefined) return false;
+    clearTimeout(timer);
+    leaving.delete(id);
+    addresses.delete(id);
+    return true;
+  };
   window.addEventListener("popstate", (event) => {
     heard = event;
     const landed = sheetOf(event.state);

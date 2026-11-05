@@ -8,7 +8,7 @@ import { userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { darwinProcess } from "./claude-store.ts";
-import { paneProcessInfo } from "./herdr/client.ts";
+import { paneProcessInfo, type ProcessInfo } from "./herdr/client.ts";
 import { heldTranscript, runsAgent, storeRelative, type StoreRoots, transcriptHeader } from "./gjc-runtime.ts";
 import { ompProcessMemory, ompRoutingEnviron, processStartTicks } from "./omp-process.ts";
 
@@ -301,8 +301,10 @@ export interface OmpRoute {
  * argv herdr left out could not be read, since nothing then says which store, or which session,
  * the pane shows. omp's helpers count for nothing.
  */
-export async function ompPaneRoute(paneId: string): Promise<OmpRoute | "unproved" | null> {
-  const info = await paneProcessInfo(paneId).catch(() => null);
+export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): Promise<OmpRoute | "unproved" | null> {
+  // `known`: herdr's answer the caller's poll already read for this pane. One that named no processes is asked again:
+  // with no omp seen herdr's reported session is trusted, and an omp started since may keep another store
+  const info = known ?? await paneProcessInfo(paneId).catch(() => null);
   let layout: OmpLayout | null = null;
   const pids: number[] = [];
   const launchDirs = new Set<string | null>();

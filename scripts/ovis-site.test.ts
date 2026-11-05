@@ -281,11 +281,14 @@ describe("ovis-site/llms.txt", () => {
   const llms = read("ovis-site/llms.txt");
   const links = [...llms.matchAll(/\]\((https?:\/\/[^)\s]+)\)|(?<!\w)(https?:\/\/[^\s)`>]+[^\s)`>.,;:])/g)].map(([, inMarkdown, bare]) => inMarkdown ?? bare!);
   const redirects = read("ovis-site/_redirects").split("\n").filter((line) => line.trim() && !line.startsWith("#")).map((line) => line.trim().split(/\s+/)[0]!);
+  // paths _routes.json sends to _worker.js are served by it (the demo), not by a file or a redirect
+  const routed = existsSync(join(repo, "ovis-site/_worker.js")) ? (JSON.parse(read("ovis-site/_routes.json")) as { include: string[] }).include : [];
+  const covers = (from: string, path: string): boolean => from.endsWith("/*") ? path.startsWith(from.slice(0, -1)) : from === path || `${from}/` === path;
   const served = (url: string): boolean => {
     const path = new URL(url).pathname;
     const file = fileOf(url)!;
     if (existsSync(join(repo, file))) return true;
-    return redirects.some((from) => from.endsWith("/*") ? path.startsWith(from.slice(0, -1)) : from === path || `${from}/` === path);
+    return [...redirects, ...routed].some((from) => covers(from, path));
   };
 
   it("opens as llmstxt.org asks: the name as H1, then a blockquote summary", () => {
@@ -297,7 +300,7 @@ describe("ovis-site/llms.txt", () => {
   it("links only to ovis.sh paths and repository files that exist", () => {
     fail(links.length > 5 ? [] : [`${links.length} links found`], "This test found almost no links in ovis-site/llms.txt: keep the docs as [name](https://…) Markdown links, or update the link pattern in this test:");
     const offenders = links.flatMap((url) => {
-      if (url.startsWith(`${ORIGIN}/`) || url === ORIGIN) return served(url) ? [] : [`${url}: no file in ovis-site/ and no rule in ovis-site/_redirects`];
+      if (url.startsWith(`${ORIGIN}/`) || url === ORIGIN) return served(url) ? [] : [`${url}: no file in ovis-site/, no rule in ovis-site/_redirects and no route in ovis-site/_routes.json`];
       const blob = /^https:\/\/github\.com\/devswha\/ovis\/blob\/main\/(.+)$/.exec(url);
       if (blob) return existsSync(join(repo, blob[1]!.split("#")[0]!)) ? [] : [`${url}: no ${blob[1]} in the repository`];
       return url.includes("devswha/herdr-web-ui") ? [`${url}: the repository is https://github.com/devswha/ovis now`] : [];

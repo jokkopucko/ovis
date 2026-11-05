@@ -35,6 +35,8 @@ export function useChatCallbacks(deps: ChatCallbacksDeps) {
   }, []);
   // bumped as a composer message goes out: the chat must not title the turn before it as running
   const [chatSent, setChatSent] = useState(0);
+  // bumped as such a message is refused with nothing typed
+  const [chatUnsent, setChatUnsent] = useState(0);
   const [chatMetadata, setChatMetadata] = useState<{ pane: string; value: ConversationMetadata | null } | null>(null);
   // What each pane's chat last read, and whether a message went out since: kept per pane here,
   // not in the chat, so a message sent ends the greeting at once and neither another lens, another
@@ -62,7 +64,7 @@ export function useChatCallbacks(deps: ChatCallbacksDeps) {
   const [greetingRoom, setGreetingRoom] = useState(true);
   const greetingRef = useRef<HTMLDivElement | null>(null);
   // The prompt the chat shows: while it waits, a message from the composer answers it.
-  const [chatPrompt, setChatPrompt] = useState<{ pane: string; value: InteractivePrompt } | null>(null);
+  const [chatPrompt, setChatPrompt] = useState<{ pane: string; value: InteractivePrompt; answered: boolean } | null>(null);
   const [promptRefresh, setPromptRefresh] = useState(0);
   // what the agent suggests typing next (Claude's grey input text), for the composer's placeholder
   const [chatSuggestion, setChatSuggestion] = useState<{ pane: string; value: string } | null>(null);
@@ -94,8 +96,8 @@ export function useChatCallbacks(deps: ChatCallbacksDeps) {
   const clearPendingAnswer = useCallback((pane: string, promptId?: string) => {
     setPendingAnswer((current) => current?.pane === pane && (promptId === undefined || current.promptId === promptId) ? null : current);
   }, []);
-  const onChatPrompt = useCallback((pane: string, value: InteractivePrompt | null) => {
-    setChatPrompt((current) => value !== null ? { pane, value } : current?.pane === pane ? null : current);
+  const onChatPrompt = useCallback((pane: string, value: InteractivePrompt | null, answered = false) => {
+    setChatPrompt((current) => value !== null ? { pane, value, answered } : current?.pane === pane ? null : current);
     // a typed pick belongs to the prompt it was typed for: once that prompt changes or goes
     // away (a tap in the card, an answer in the terminal), the same question asked again
     // later opens clean, not with the old pick waiting one tap from Confirm
@@ -114,5 +116,5 @@ export function useChatCallbacks(deps: ChatCallbacksDeps) {
       && previous.value?.context?.window === value?.context?.window ? previous : { pane, value });
   }, []);
 
-  return { conversationPushes, setConversationPushes, onConversationWatch, chatOutputRef, onTerminalOutput, chatSent, setChatSent, chatMetadata, redrawGreeting, onChatRead, greetingRoom, setGreetingRoom, greetingRef, chatPrompt, promptRefresh, setPromptRefresh, chatSuggestion, chatRestored, pendingAnswer, setPendingAnswer, promptDock, setPromptDock, onPromptAnswered, clearPendingAnswer, onChatPrompt, onChatMetadata, onChatSuggestion, onChatRestored };
+  return { conversationPushes, setConversationPushes, onConversationWatch, chatOutputRef, onTerminalOutput, chatSent, setChatSent, chatUnsent, setChatUnsent, chatMetadata, redrawGreeting, onChatRead, greetingRoom, setGreetingRoom, greetingRef, chatPrompt, promptRefresh, setPromptRefresh, chatSuggestion, chatRestored, pendingAnswer, setPendingAnswer, promptDock, setPromptDock, onPromptAnswered, clearPendingAnswer, onChatPrompt, onChatMetadata, onChatSuggestion, onChatRestored };
 }

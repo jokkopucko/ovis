@@ -11,13 +11,16 @@ import { Turn } from "./ChatView.tsx";
 const text = (value: string): ConversationPart => ({ kind: "text", text: value });
 const tool = (command: string): ConversationPart => ({ kind: "tool", name: "Bash", summary: command, input: JSON.stringify({ command }), output: "" });
 
-const render = (parts: ConversationPart[], state: { live: boolean; waiting?: boolean }, role: ConversationTurn["role"] = "assistant"): string => {
+/** what Settings → Chat says about the chat's folds: off unless a test turns it on */
+type Folds = { showThinking?: boolean; expandThinking?: boolean; foldWork?: boolean };
+
+const render = (parts: ConversationPart[], state: { live: boolean; waiting?: boolean }, role: ConversationTurn["role"] = "assistant", folds: Folds = {}): string => {
   const turn: ConversationTurn = { role, ts: "2026-01-01T12:00:00Z", end_ts: "2026-01-01T12:01:00Z", parts };
   const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
   try {
     return renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(Turn, {
-      paneId: "w1:p1", turn, rowKey: "turn:1", live: state.live, waiting: state.waiting ?? false, showThinking: false,
+      paneId: "w1:p1", turn, rowKey: "turn:1", live: state.live, waiting: state.waiting ?? false, showThinking: false, ...folds,
     }) }));
   } finally {
     if (languages) Object.defineProperty(navigator, "languages", languages);
@@ -27,6 +30,8 @@ const render = (parts: ConversationPart[], state: { live: boolean; waiting?: boo
 
 const titles = (html: string) => [...html.matchAll(/class="work-block-title">([^<]*)</g)].map((match) => match[1]);
 const expanded = (html: string) => [...html.matchAll(/class="work-block-head" aria-expanded="(true|false)"/g)].map((match) => match[1] === "true");
+const thoughtsOpen = (html: string) => [...html.matchAll(/class="work-row work-row-thinking"><button type="button" class="work-row-head" aria-expanded="(true|false)"/g)].map((match) => match[1] === "true");
+const reasoning: ConversationPart = { kind: "thinking", text: "Weighing it." };
 
 describe("a bash-mode command", () => {
   it("shows the command, then what it printed, and the output of a failed one as an error", () => {
@@ -66,6 +71,36 @@ describe("an agent turn's work blocks", () => {
     const html = render([tool("ls"), tool("cat a"), text("Done.")], { live: false });
     expect(titles(html)).toEqual(["Worked for 1m"]);
     expect(html.indexOf("Worked for 1m")).toBeLessThan(html.indexOf("Done."));
+  });
+});
+
+describe("the folds Settings → Chat starts a turn with", () => {
+  const commentary = (value: string): ConversationPart => ({ kind: "text", text: value, phase: "commentary" });
+
+  it("starts every work block folded with Collapse work on, the running one included, but one that needs you (#2228)", () => {
+    const parts = [tool("ls"), tool("cat a")];
+    const running = render(parts, { live: true }, "assistant", { foldWork: true });
+    expect(titles(running)).toEqual(["Working…"]);
+    expect(expanded(running)).toEqual([false]);
+    // the folded head still says what the turn did
+    expect(running).toContain("2 commands");
+    expect(expanded(render(parts, { live: true, waiting: true }, "assistant", { foldWork: true }))).toEqual([true]);
+    expect(expanded(render([...parts, commentary("Still looking.")], { live: false }, "assistant", { foldWork: true }))).toEqual([false]);
+    // off, as before: the running block open, a settled one open only for words after its answer
+    expect(expanded(render(parts, { live: true }))).toEqual([true]);
+    expect(expanded(render([...parts, commentary("Still looking.")], { live: false }))).toEqual([true]);
+  });
+
+  it("starts the agent's reasoning open with Expand thinking on, and folded otherwise (#2346)", () => {
+    const parts = [reasoning, tool("ls")];
+    const open = render(parts, { live: true }, "assistant", { showThinking: true, expandThinking: true });
+    expect(thoughtsOpen(open)).toEqual([true]);
+    expect(open).toContain("Weighing it.");
+    const folded = render(parts, { live: true }, "assistant", { showThinking: true });
+    expect(thoughtsOpen(folded)).toEqual([false]);
+    expect(folded).not.toContain("Weighing it.");
+    // reasoning the chat does not show stays out, whatever it would start as
+    expect(thoughtsOpen(render(parts, { live: true }, "assistant", { expandThinking: true }))).toEqual([]);
   });
 });
 
@@ -109,21 +144,68 @@ describe("an agent turn's folded work, drawn again", () => {
   let memory: ChatRowMemory;
   let renderer: ReactTestRenderer | undefined;
 
-  const view = (parts: ConversationPart[]) => createElement(ChatRowMemoryContext.Provider, { value: memory, children: createElement(SettingsProvider, { children: createElement(Turn, {
-    paneId: "w1:p1", turn: { role: "assistant", ts: "2026-01-01T12:00:00Z", parts }, rowKey: "turn:1", live: true, waiting: false, showThinking: false,
+  const view = (parts: ConversationPart[], folds: Folds = {}) => createElement(ChatRowMemoryContext.Provider, { value: memory, children: createElement(SettingsProvider, { children: createElement(Turn, {
+    paneId: "w1:p1", turn: { role: "assistant", ts: "2026-01-01T12:00:00Z", parts }, rowKey: "turn:1", live: true, waiting: false, showThinking: false, ...folds,
   }) }) });
-  const draw = async (parts: ConversationPart[]) => {
-    await act(async () => { if (renderer) renderer.update(view(parts)); else renderer = create(view(parts)); });
+  const draw = async (parts: ConversationPart[], folds: Folds = {}) => {
+    await act(async () => { if (renderer) renderer.update(view(parts, folds)); else renderer = create(view(parts, folds)); });
   };
   const heads = () => renderer!.root.findAll((node) => node.props.className === "work-block-head");
   const opened = () => heads().map((node) => node.props["aria-expanded"] as boolean);
   const toggle = async (index: number) => { await act(async () => { heads()[index]!.props.onClick(); }); };
+  const thoughts = () => renderer!.root.findAll((node) => node.type === "div" && node.props.className === "work-row work-row-thinking").map((row) => row.findByType("button"));
+  const thoughtOpened = () => thoughts().map((node) => node.props["aria-expanded"] as boolean);
   // the row scrolled out of the list and back: only its memory is left
-  const remount = async (parts: ConversationPart[]) => {
+  const remount = async (parts: ConversationPart[], folds: Folds = {}) => {
     await act(async () => { renderer!.unmount(); });
     renderer = undefined;
-    await draw(parts);
+    await draw(parts, folds);
   };
+  // the next message: a row of its own, with nothing chosen in it yet
+  const nextMessage = async (parts: ConversationPart[], folds: Folds = {}) => {
+    memory = { toggles: new Map(), outputs: new Map(), runs: new Map(), dormant: new Map() };
+    await remount(parts, folds);
+  };
+
+  it("keeps a work block as the reader opened or closed it for its message, whatever Collapse work says", async () => {
+    const fold = { foldWork: true };
+    await draw([tool("ls")], fold);
+    expect(opened()).toEqual([false]);
+    await toggle(0);
+    expect(opened()).toEqual([true]);
+    // the turn goes on, scrolls away and back, and the setting is turned off and on again
+    await draw([tool("ls"), tool("cat a")], fold);
+    expect(opened()).toEqual([true]);
+    await remount([tool("ls"), tool("cat a")], fold);
+    expect(opened()).toEqual([true]);
+    await draw([tool("ls"), tool("cat a")]);
+    await toggle(0);
+    await draw([tool("ls"), tool("cat a")], fold);
+    await draw([tool("ls"), tool("cat a")]);
+    expect(opened()).toEqual([false]);
+    // a block nobody touched follows the setting
+    await nextMessage([tool("ls")], fold);
+    expect(opened()).toEqual([false]);
+    await draw([tool("ls")]);
+    expect(opened()).toEqual([true]);
+  });
+
+  it("keeps reasoning as the reader opened or closed it for its message, whatever Expand thinking says", async () => {
+    const expand = { showThinking: true, expandThinking: true };
+    await draw([reasoning, tool("ls")], expand);
+    expect(thoughtOpened()).toEqual([true]);
+    await act(async () => { thoughts()[0]!.props.onClick(); });
+    expect(thoughtOpened()).toEqual([false]);
+    await draw([reasoning, tool("ls"), tool("cat a")], expand);
+    expect(thoughtOpened()).toEqual([false]);
+    await remount([reasoning, tool("ls"), tool("cat a")], expand);
+    expect(thoughtOpened()).toEqual([false]);
+    // the next message starts open again, and folded once the setting is off
+    await nextMessage([reasoning, tool("ls")], expand);
+    expect(thoughtOpened()).toEqual([true]);
+    await draw([reasoning, tool("ls")], { showThinking: true });
+    expect(thoughtOpened()).toEqual([false]);
+  });
 
   beforeEach(() => {
     for (const key of ["window", "document", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));

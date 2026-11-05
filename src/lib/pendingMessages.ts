@@ -1,9 +1,9 @@
-import type { PendingMessage } from "../../shared/protocol.ts";
+import type { PendingMessage, PendingRemoval } from "../../shared/protocol.ts";
 import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
 
 export interface PendingMessageView extends PendingMessage { serverOwned: boolean; resendInFlight?: true; resendGeneration?: number }
 type StoragePort = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-type Removal = { id: string; outcome: "sent" | "discarded" | "consumed" | "dismissed" };
+type Removal = PendingRemoval;
 const PREFIX = "ovis:pending:";
 const piReceipt = (message: PendingMessage): boolean => message.id.startsWith("pi:")
   && (message.error?.code === "pi_transcript_pending" || message.error?.code === "transcript_unconfirmed");
@@ -16,7 +16,8 @@ export class PendingMessageStore {
   private rows = new Map<string, PendingMessageView[]>();
   private scopes = new Map<string, Map<string, string>>();
   private removed = new Map<string, Map<string, Set<string>>>();
-  private settledPi = new Map<string, Set<string>>();
+  /** ids an exact resumed receipt settled (a consumed Pi id, or a resumed sent/discarded one): no saved copy brings them back */
+  private settledResumed = new Map<string, Set<string>>();
   private receiptOrder: Array<{ owner: string; id: string; scope: string }> = [];
   private saved = new Map<string, string | null>();
   private unsaved = new Set<string>();
@@ -26,6 +27,10 @@ export class PendingMessageStore {
   /** the recovery record kept for a row this page alone holds (keepUnconfirmed), by owner and row */
   private recovery = new Map<string, string>();
   private listeners = new Set<() => void>();
+  /** rows moved off an owner (move), by id: the server lists them under the pane's new ID now */
+  private movedAway = new Map<string, Set<string>>();
+  /** rows a move left while this page had their send on its way, with the ID they go to once it ends */
+  private afterSend = new Map<string, string>();
   // the pane's herdr's storage, or this page's memory (lib/paneLifetime.ts)
   constructor(
     private storage: () => StoragePort = () => paneLifetimes.paneStorage,
@@ -56,7 +61,8 @@ export class PendingMessageStore {
         return [{ id: message.id, request_id: message.request_id, text: message.text, created_at: message.created_at,
           state: message.state === "held" && message.resendInFlight !== true ? "held" as const : "uncertain" as const,
           ...(typeof message.resendGeneration === "number" && Number.isSafeInteger(message.resendGeneration) && message.resendGeneration >= 0 ? { resendGeneration: message.resendGeneration } : {}),
-          ...(message.resendInFlight === true ? { resendInFlight: true as const } : {}), ...(restoredError ? { error: restoredError } : {}), serverOwned: false }];
+          ...(message.resendInFlight === true ? { resendInFlight: true as const } : {}), ...(restoredError ? { error: restoredError } : {}),
+          ...(message.agent_only === true ? { agent_only: true as const } : {}), serverOwned: false }];
       });
     } catch { return []; }
   }
@@ -74,7 +80,7 @@ export class PendingMessageStore {
     try {
       const raw = this.storage().getItem(PREFIX + owner);
       if (this.saved.get(owner) === raw) return;
-      const next = this.restored(raw).filter((message) => !piReceipt(message) || !this.settledPi.get(owner)?.has(message.id));
+      const next = this.restored(raw).filter((message) => !this.settledResumed.get(owner)?.has(message.id));
       // Another tab cannot alter or discard a live connection's authoritative rows.
       for (const own of this.read(owner).filter((message) => this.unsaved.has(owner) || message.serverOwned || this.isBusy(owner, message.id))) {
         const at = next.findIndex((message) => message.id === own.id);
@@ -122,8 +128,9 @@ export class PendingMessageStore {
     }
   }
   accept(owner: string, message: PendingMessage, scope: string | null): void {
+    if (this.movedAway.get(owner)?.has(message.id)) return;
     const seen = this.removed.get(owner)?.get(message.id);
-    if (piReceipt(message) && this.settledPi.get(owner)?.has(message.id) || (scope === null ? (seen?.size ?? 0) > 0 : seen?.has(scope))) return;
+    if (this.settledResumed.get(owner)?.has(message.id) || (scope === null ? (seen?.size ?? 0) > 0 : seen?.has(scope))) return;
     this.refresh(owner);
     const proofs = this.scopes.get(owner) ?? new Map<string, string>();
     this.scopes.set(owner, proofs);
@@ -150,15 +157,21 @@ export class PendingMessageStore {
     const unproved = new Set(this.read(owner).filter((message) => message.request_id < 0 && !message.serverOwned && proofs?.get(message.id) === undefined).map((message) => message.id));
     // A consumed Pi ID is an exact server-attested receipt, replayed only to the same
     // browser/device on attach. It can settle a saved non-authoritative copy across
-    // connection epochs; text, request IDs, and empty snapshots never can.
-    const resumed = new Set(this.read(owner).filter((message) => piReceipt(message) && !message.serverOwned && proofs?.get(message.id) === undefined).map((message) => message.id));
+    // connection epochs; text, request IDs, and empty snapshots never can. A `resumed` sent or discarded
+    // receipt is the same for any follow-up's saved copy (#2421).
+    const saved = (message: PendingMessage & { serverOwned: boolean }): boolean => !message.serverOwned && proofs?.get(message.id) === undefined;
+    const resumed = new Set(this.read(owner).filter((message) => piReceipt(message) && saved(message)).map((message) => message.id));
+    const copies = new Set(this.read(owner).filter(saved).map((message) => message.id));
     const deleted = new Set(removed.filter((item) => proofs?.get(item.id) === scope || unproved.has(item.id)
-      || item.outcome === "consumed" && resumed.has(item.id)).map((item) => item.id));
-    for (const item of removed) if (item.outcome === "consumed" && deleted.has(item.id) && item.id.startsWith("pi:")) {
-      const settled = this.settledPi.get(owner) ?? new Set<string>();
+      || item.outcome === "consumed" && resumed.has(item.id) || item.resumed === true && copies.has(item.id)).map((item) => item.id));
+    // A resumed receipt is remembered even before its copy is saved (another tab may save it later), but
+    // never for a row a live connection here proves under another scope.
+    for (const item of removed) if (item.outcome === "consumed" && deleted.has(item.id) && item.id.startsWith("pi:")
+      || item.resumed === true && (proofs?.get(item.id) === undefined || proofs.get(item.id) === scope)) {
+      const settled = this.settledResumed.get(owner) ?? new Set<string>();
       settled.add(item.id);
       if (settled.size > 1024) settled.delete(settled.values().next().value!);
-      this.settledPi.set(owner, settled);
+      this.settledResumed.set(owner, settled);
     }
     const receipts = this.removed.get(owner) ?? new Map<string, Set<string>>();
     this.removed.set(owner, receipts);
@@ -209,7 +222,7 @@ export class PendingMessageStore {
       const pane = paneStateKey(PREFIX + owner);
       if (pane?.machineId !== machineId) continue;
       const kept = rows.filter((message) => message.serverOwned);
-      if (this.unsaved.has(owner)) for (const message of rows) if (!message.serverOwned) this.lifetimes.keep(machineId, pane.paneId, "pending", message.text);
+      if (this.unsaved.has(owner)) for (const message of rows) if (!message.serverOwned) this.lifetimes.keep(machineId, pane.paneId, "pending", message.text, false, message.agent_only === true);
       // a row storage took on the same herdr (lib/paneLifetime.ts storeMemory) is offered again after a
       // reload, so its recovery copy goes; a row left to recovery has only its record now
       let durable = new Set<string>();
@@ -224,6 +237,56 @@ export class PendingMessageStore {
       this.unsaved.delete(owner);
     }
     this.notify();
+  }
+  /**
+   * herdr moved the pane under a new ID (#1503): its rows go there as they are (the server holds its own for an
+   * explicit send and lists them under the new ID), with the proof of the connection that has them; one settled
+   * there already does not come back. A row whose send this page has on its way follows once that send ends
+   * (`end`), as its answer looks for it under the old ID. `only`: that row alone.
+   */
+  move(from: string, to: string, only?: string): void {
+    if (from === to) return;
+    this.refresh(from);
+    this.refresh(to);
+    const rows = this.read(from).filter((message) => only === undefined || message.id === only);
+    // rows still waiting on a send under an earlier ID that moved here go on to the new one
+    for (const [key, next] of this.afterSend) if (next === from) this.afterSend.set(key, to);
+    for (const message of rows) if (this.isBusy(from, message.id)) this.afterSend.set(`${from}\0${message.id}`, to);
+    const moving = rows.filter((message) => !this.isBusy(from, message.id));
+    if (moving.length === 0) return;
+    const target = this.read(to);
+    const have = new Set(target.map((message) => message.id));
+    const fromProofs = this.scopes.get(from), toProofs = this.scopes.get(to) ?? new Map<string, string>();
+    // settled there as publish settles a row: an exact resumed receipt, or a receipt of the connection that proves it
+    const settled = (id: string): boolean => {
+      const proof = fromProofs?.get(id);
+      return this.settledResumed.get(to)?.has(id) === true || (proof !== undefined && this.removed.get(to)?.get(id)?.has(proof) === true);
+    };
+    const carried = moving.filter((message) => !have.has(message.id) && !settled(message.id));
+    const carriedIds = new Set(carried.map((message) => message.id));
+    const away = this.movedAway.get(from) ?? new Set<string>();
+    // moved back to an ID it left before: the server's lists there count for it again
+    const back = this.movedAway.get(to);
+    for (const message of moving) back?.delete(message.id);
+    if (back?.size === 0) this.movedAway.delete(to);
+    for (const message of moving) {
+      // the server's lists under the old ID, told before or as it moved the row, bring none back here
+      away.add(message.id);
+      const proof = fromProofs?.get(message.id);
+      fromProofs?.delete(message.id);
+      if (proof !== undefined && carriedIds.has(message.id) && !toProofs.has(message.id)) toProofs.set(message.id, proof);
+      const kept = this.recovery.get(`${from}\0${message.id}`);
+      if (kept === undefined) continue;
+      this.recovery.delete(`${from}\0${message.id}`);
+      if (carriedIds.has(message.id)) this.recovery.set(`${to}\0${message.id}`, kept); else this.lifetimes.discard(kept);
+    }
+    while (away.size > 1024) away.delete(away.values().next().value!);
+    this.movedAway.set(from, away);
+    if (fromProofs?.size === 0) this.scopes.delete(from);
+    if (toProofs.size > 0) this.scopes.set(to, toProofs);
+    const gone = new Set(moving.map((message) => message.id));
+    this.write(to, [...target, ...carried]);
+    this.write(from, this.read(from).filter((message) => !gone.has(message.id)));
   }
   suspendScope(scope: string): void { for (const owner of this.rows.keys()) this.suspend(owner, scope); }
   begin(owner: string, id: string): boolean {
@@ -257,6 +320,11 @@ export class PendingMessageStore {
     this.busy.delete(`${owner}\0${id}`);
     this.rows.set(owner, [...this.read(owner)]);
     this.notify();
+    // its pane moved while the send was on its way: the row follows now
+    const to = this.afterSend.get(`${owner}\0${id}`);
+    if (to === undefined) return;
+    this.afterSend.delete(`${owner}\0${id}`);
+    this.move(owner, to, id);
   }
   fail(owner: string, id: string, error: { code: string; message: string }, uncertain: boolean, attemptedGeneration?: number): void {
     this.unconfirmed.delete(`${owner}\0${id}`);

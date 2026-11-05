@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fail, files as scan, read, repo } from "../scripts/source-scan.ts";
+import { fail, lineOf, files as scan, read, repo } from "../scripts/source-scan.ts";
 
 // Client conventions from AGENTS.md and src/AGENTS.md that used to be prose only. Each failure
 // says what to change; server rules are in server/conventions.test.ts, repo-wide ones in
@@ -182,6 +182,19 @@ describe("UI wording", () => {
       .flatMap((file) => read(file).split("\n").flatMap((line, index) =>
         /^\s*(?:\/\/|\/?\*)/.test(line) || !/\bNew [Ss]ession\b/.test(line) ? [] : [`${file}:${index + 1}: ${line.trim()}`]));
     fail(offenders, "UI text says \"New workspace\", not \"New session\" (AGENTS.md, UI wording). Change the string and its i18n entries in src/lib/i18n.*.ts or src/lib/i18n/*.ts.");
+  });
+});
+
+describe("regular expressions", () => {
+  // Safari before 16.4 cannot parse a lookbehind, and one in any module stops the whole app from
+  // loading there (#2534); the build does not rewrite regular expressions.
+  it("use no lookbehind in the client's code", () => {
+    const offenders = [...scan("src/**/*.{ts,tsx}"), ...scan("shared/**/*.ts")].filter((name) => !/\.test\./.test(name)).flatMap((file) => {
+      // read as written: comment stripping takes a `/*` in a regex class for a comment and hides what follows
+      const source = read(file);
+      return [...source.matchAll(/\(\?<[=!]/g)].map((match) => `${file}:${lineOf(source, match.index)}`);
+    });
+    fail(offenders, "No lookbehind ((?<= or (?<!) in the client: match the character before with the pattern, or check it in code (shared/lookbehind.ts).");
   });
 });
 

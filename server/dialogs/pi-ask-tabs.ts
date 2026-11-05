@@ -20,8 +20,11 @@ export function piAskTabs(raw: string): { steps: InteractivePromptStep[]; index:
   return { steps, index, identity: JSON.stringify(tabs.map(tab => [tab[2], tab[1]])) };
 }
 
-/** SGR evidence only: plain text never establishes the current tab. Offsets exclude ANSI. */
-export function piActiveTab(raw: string, markers: number[]): number | null {
+/**
+ * SGR evidence only: plain text never establishes the current tab. Offsets exclude ANSI.
+ * `backgroundOnly`: a tab on a background alone counts, never the one tab in the default color.
+ */
+export function piActiveTab(raw: string, markers: number[], backgroundOnly = false): number | null {
   const backgrounds: boolean[] = [];
   const dimmed: boolean[] = [];
   const defaultForegrounds: boolean[] = [];
@@ -59,6 +62,7 @@ export function piActiveTab(raw: string, markers: number[]): number | null {
   dimmed.push(...Array<boolean>(raw.length - offset).fill(dim));
   defaultForegrounds.push(...Array<boolean>(raw.length - offset).fill(defaultForeground));
   const active = markers.flatMap((at, index) => backgrounds[at] ? [index] : []);
+  if (backgroundOnly) return active.length === 1 ? active[0]! : null;
   const normal = markers.flatMap((at, index) => !dimmed[at] && defaultForegrounds[at] ? [index] : []);
   // Never infer a position from plain text or from conflicting/ambiguous style evidence.
   return active.length > 1 || active.length === 1 && normal.length === 1 && active[0] !== normal[0]

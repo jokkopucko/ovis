@@ -90,7 +90,7 @@ try {
   assert.equal(bytes.size, 7, "the page should address every picture: the prompt's and the six the tools returned");
 
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+  const page = await browser.newPage({ viewport: { width: 1200, height: 800 }, locale: "en-US" });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
@@ -188,7 +188,7 @@ try {
 
   // a picture the endpoint cannot answer leaves the line and the count, and the one before it moves up
   bytes.delete("pi:call-2:3");
-  const reloaded = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+  const reloaded = await browser.newPage({ viewport: { width: 1200, height: 800 }, locale: "en-US" });
   await reloaded.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
   await reloaded.goto(`http://127.0.0.1:${server.port}/`);
   const reloadedLine = reloaded.locator(".work-block-line .work-images");
@@ -200,7 +200,7 @@ try {
   console.log("PASS a picture that fails to load leaves the line, and the line fills from the ones before it");
 
   // beside a finger each thumbnail is a --touch-target square, three to the line
-  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
   const small = await phone.newPage();
   await small.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
   await small.goto(`http://127.0.0.1:${server.port}/`);
@@ -209,8 +209,31 @@ try {
   assert.equal(await smallLine.locator(".work-image:not(.is-more)").count(), 3);
   const boxes = await smallLine.locator(".work-image").evaluateAll((buttons) => buttons.map((button) => [button.getBoundingClientRect().width, button.getBoundingClientRect().height]));
   assert.deepEqual(boxes, [[44, 44], [44, 44], [44, 44], [44, 44]], "every thumbnail and the tile is a 44px square");
-  const [head, strip] = [await small.locator(".work-block-head").boundingBox(), await smallLine.boundingBox()];
-  assert.ok(head !== null && strip !== null && strip.x + strip.width <= 390 && Math.abs(strip.y - head.y) < 1, "the strip stays on the folded line, inside the screen");
+  // the virtual list first places its rows at estimated heights and moves them once it has measured
+  // them: two separate reads can fall on either side of that move. Both boxes come from one frame's
+  // layout, taken once two frames in a row agree. The deadline is a timer, not a frame: a page that
+  // stops drawing frames still fails here instead of leaving the evaluate waiting forever
+  type Box = { x: number; y: number; width: number; height: number };
+  const [head, strip] = await small.evaluate(() => new Promise<[Box, Box]>((settled, fail) => {
+    let before = "";
+    const deadline = setTimeout(() => fail(new Error(`the phone's folded line never settled: ${before}`)), 5000);
+    const box = (selector: string): Box => {
+      const found = document.querySelectorAll(selector);
+      if (found.length !== 1) throw new Error(`expected one ${selector}, found ${found.length}`);
+      const { x, y, width, height } = found[0]!.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    const frame = () => {
+      let boxes: [Box, Box];
+      try { boxes = [box(".work-block-head"), box(".work-block-line .work-images")]; } catch (error) { clearTimeout(deadline); return fail(error); }
+      const now = JSON.stringify(boxes);
+      if (now === before) { clearTimeout(deadline); return settled(boxes); }
+      before = now;
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }));
+  assert.ok(strip.x + strip.width <= 390 && Math.abs(strip.y - head.y) < 1, "the strip stays on the folded line, inside the screen");
   await smallLine.locator(".work-image:not(.is-more)").first().tap();
   await small.getByRole("dialog", { name: "Image viewer" }).waitFor();
   assert.equal(await small.locator(".work-image-preview").count(), 0, "a tap opens the viewer, with no hover preview");

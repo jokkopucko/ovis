@@ -23,6 +23,18 @@
   --chat-fs-body: calc(var(--fs-chat) * var(--chat-scale, 1));
   --chat-fs-lg: calc(var(--fs-lg) * var(--chat-scale, 1));
   --chat-fs-xl: calc(var(--fs-xl) * var(--chat-scale, 1));
+  /* the space between and inside its blocks scales the same way, as iOS scales a layout's
+     metrics with its Dynamic Type (UIFontMetrics): at the page's spacing a small text sat loose
+     between wide gaps and a large one cramped */
+  --chat-space-1: calc(var(--space-1) * var(--chat-scale, 1));
+  --chat-space-2: calc(var(--space-2) * var(--chat-scale, 1));
+  --chat-space-3: calc(var(--space-3) * var(--chat-scale, 1));
+  --chat-space-4: calc(var(--space-4) * var(--chat-scale, 1));
+  --chat-space-5: calc(var(--space-5) * var(--chat-scale, 1));
+  --chat-space-6: calc(var(--space-6) * var(--chat-scale, 1));
+  --chat-space-8: calc(var(--space-8) * var(--chat-scale, 1));
+  --chat-chip-h: calc(var(--chip-h) * var(--chat-scale, 1));
+  --chat-control-h: calc(var(--control-h) * var(--chat-scale, 1));
 }
 
 .chat-transcript,
@@ -38,7 +50,27 @@
   font-size: var(--fs-md);
 }
 
+/* The view's edges keep the page's spacing (the chat's padding, which the virtual list sets inside
+   the transcript from --chat-edge, and a file's margin: only its blocks take the scaled one), and
+   a finger's targets keep --touch-target: a meta row shrinks under the reach of its copy target,
+   and a work block's head keeps a --touch-target row on a touch screen */
+.chat-transcript,
+.file-viewer-markdown > * {
+  --space-1: var(--chat-space-1);
+  --space-2: var(--chat-space-2);
+  --space-3: var(--chat-space-3);
+  --space-4: var(--chat-space-4);
+  --space-5: var(--chat-space-5);
+  --space-6: var(--chat-space-6);
+  --space-8: var(--chat-space-8);
+  --chip-h: var(--chat-chip-h);
+  --control-h: var(--chat-control-h);
+}
+
 .chat-view {
+  /* its edges, at the page's spacing: the transcript's inside follows the chat's text size */
+  --chat-edge: var(--space-4);
+  --chat-edge-end: var(--space-5);
   position: absolute;
   inset: 0;
   /* up under a phone's glass header (styles.css), into the room the stack keeps for it */
@@ -48,11 +80,11 @@
   /* at its top, a drag down for older messages is still the transcript's: handed on to the
      page, Android Chrome takes it for pull-to-refresh and reloads the app */
   overscroll-behavior: contain;
-  padding: var(--space-4) var(--space-4) var(--space-5);
+  padding: var(--chat-edge) var(--chat-edge) var(--chat-edge-end);
   /* a phone's glass header lies over the transcript's top, and the input card over its end
      (styles.css, Composer.css): the first and last lines start clear of both */
-  padding-top: calc(var(--space-4) + var(--header-over, 0px));
-  padding-bottom: calc(var(--space-5) + var(--composer-over, 0px));
+  padding-top: calc(var(--chat-edge) + var(--header-over, 0px));
+  padding-bottom: calc(var(--chat-edge-end) + var(--composer-over, 0px));
   scroll-padding-top: var(--header-over, 0px);
   /* and a row brought into view (an opened screen preview) stops clear of the card, not under it */
   scroll-padding-bottom: var(--composer-over, 0px);
@@ -65,11 +97,11 @@
   .terminal-host:first-child .chat-view::before {
     content: "";
     position: sticky;
-    top: calc(-1 * var(--space-4));
+    top: calc(-1 * var(--chat-edge));
     z-index: 1;
     display: block;
     height: var(--space-5);
-    margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) calc(-1 * var(--space-1));
+    margin: calc(-1 * var(--chat-edge)) calc(-1 * var(--chat-edge)) calc(-1 * var(--space-1));
     background: linear-gradient(var(--bg), transparent);
     pointer-events: none;
   }
@@ -87,6 +119,8 @@
   flex-direction: column;
   /* an answer sits close under its prompt; the larger space falls between exchanges */
   gap: var(--space-3);
+  /* the tallest a picture in the chat is drawn: a tall screenshot never takes several screens */
+  --chat-image-max-h: 70vh;
 }
 
 .chat-turn {
@@ -100,6 +134,40 @@
 
 .chat-terminal-fallback summary { cursor: pointer; }
 .chat-terminal-fallback pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.chat-terminal-snapshot {
+  min-width: 0;
+  width: 100%;
+  color: var(--text);
+}
+
+.chat-terminal-snapshot-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.chat-terminal-snapshot-head > span {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chat-terminal-snapshot-head svg { width: var(--fs-sm); height: var(--fs-sm); }
+
+.chat-terminal-snapshot pre {
+  min-width: 0;
+  max-width: 100%;
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--chat-fs-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* a user turn opens a new exchange: space separates it from the answer above, not a rule
    (the one rule of an exchange closes its folded work) */
@@ -349,10 +417,37 @@
   margin-bottom: var(--space-3);
 }
 
+/* a $$ formula KaTeX cannot draw (or not yet): its own lines, as written */
+.markdown-math-source {
+  display: block;
+  white-space: pre-wrap;
+  margin-bottom: var(--space-3);
+}
+
+/* as wide as the lane at most and never past its own size; a tall screenshot stops at --chat-image-max-h,
+   its aspect kept (contain covers an authored width) */
 .markdown-image {
   max-width: 100%;
+  max-height: var(--chat-image-max-h);
   height: auto;
+  object-fit: contain;
 }
+
+/* A Markdown picture keeps its prose size and opens the chat's image viewer. */
+.markdown-image-open {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: start;
+  line-height: 0;
+  vertical-align: middle;
+  cursor: zoom-in;
+}
+
+.markdown-image-open.is-standalone { display: block; width: 100%; }
+
+.markdown-image-retry { margin-inline-start: var(--space-2); }
 
 /* an image holds its box until it decodes (Markdown.tsx ReservedImage, lib/imageBox.ts): the wrapper
    is the box while the bytes arrive and after a failure, and gives it up once the picture is in, so
@@ -404,6 +499,15 @@
   border-radius: var(--radius-lg);
 }
 
+/* an image that decoded before (a reopened chat, a row scrolled back in) holds the box
+   .markdown-image will take: its own width at most, narrower where the height bound stops it, its ratio */
+.markdown .image-slot.is-loading.is-sized {
+  /* no bound outside .chat-transcript, as for .markdown-image */
+  width: min(100%, var(--image-width), calc(var(--chat-image-max-h, 100000px) * var(--image-aspect)));
+  aspect-ratio: var(--image-ratio);
+  max-height: var(--chat-image-max-h);
+}
+
 /* a README's centered logo and badges (shared/markdownHtml.ts) */
 .markdown .markdown-center {
   text-align: center;
@@ -421,9 +525,10 @@
   cursor: zoom-in;
 }
 
-.markdown-mermaid svg {
+.markdown-mermaid svg,
+.markdown-mermaid img {
   max-width: 100%;
-  max-height: 24rem;
+  max-height: var(--chat-image-max-h, 24rem);
   height: auto;
 }
 
@@ -1032,6 +1137,7 @@ ol.markdown-list {
 .chat-tool-images {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: var(--space-2);
   margin-top: var(--space-2);
 }
@@ -1174,6 +1280,9 @@ ol.markdown-list {
 
 .chat-activity-line svg { width: 1em; height: 1em; flex: none; }
 
+/* the Working head while herdr's status may still trail an answer: its place is kept, unseen */
+.chat-activity-reserved { visibility: hidden; }
+
 /* a pending block's head opens nothing until its rows are drawn */
 .work-block.is-pending .work-block-head,
 .work-block.is-pending .work-block-head:hover {
@@ -1281,6 +1390,7 @@ ol.markdown-list {
 @media (max-width: 480px) {
   .chat-view { padding-inline: var(--space-3); }
   .chat-bubble { max-width: 92%; }
+  .chat-transcript { --chat-image-max-h: 60vh; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1534,11 +1644,15 @@ ol.markdown-list {
   }
 }
 
-/* images the user sent: thumbnails above their bubble, opened full size on a tap */
+/* images the user sent: above their bubble, opened in the viewer on a tap */
 .chat-user-images {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  /* pictures of different heights each keep their own box, never stretched to the tallest */
+  align-items: flex-end;
+  /* as wide as the lane, not its pictures: a slot still loading has no width of its own to give */
+  align-self: stretch;
   gap: var(--space-2);
   margin-bottom: var(--space-2);
 }
@@ -1551,19 +1665,36 @@ ol.markdown-list {
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
   cursor: zoom-in;
+  max-width: 100%;
+  min-width: 0;
 }
 
-/* a fixed box: a lazy thumbnail must not grow the bubble (and shift the scroll) when it loads, and
-   its slot is the same box while it loads or after it failed (Markdown.tsx ReservedImage) */
-.chat-user-image img,
+/* shown whole, as a desktop chat app (the Claude and ChatGPT apps) shows a picture: up to the lane's
+   width and --chat-image-max-h, never past its own size, so an icon stays an icon. While it loads
+   or after it failed its slot is a lane-wide 16:9 box no taller than a picture may be (Markdown.tsx
+   ReservedImage), half the lane when the message holds more than one, and the list keeps the view
+   still when the picture lands at its own size (ChatTimeline.tsx maintainVisibleContentPosition) */
+.chat-user-image img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: var(--chat-image-max-h);
+}
+
 .chat-user-image .image-slot.is-loading,
 .chat-user-image .image-slot.is-failed {
   display: block;
-  width: min(9rem, 38vw);
-  height: 7rem;
+  width: 100%;
+  max-height: var(--chat-image-max-h);
+  aspect-ratio: 16 / 9;
 }
 
-.chat-user-image img { object-fit: cover; }
+.chat-user-image:has(> .image-slot.is-loading, > .image-slot.is-failed) { width: 100%; }
+
+:is(.chat-user-images, .chat-tool-images):has(> :nth-child(2)) > .chat-user-image:has(> .image-slot.is-loading, > .image-slot.is-failed) {
+  width: calc((100% - var(--space-2)) / 2);
+}
 
 /* where a compaction folded the conversation: a quiet divider, its summary on request */
 .chat-compact {
@@ -1874,6 +2005,15 @@ ol.markdown-list {
 }
 
 .chat-outcome-state > svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+/* beside a terminal snapshot that does not show it: which command the state is for */
+.chat-outcome-command {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
 
 /* the reason a skill went as plain text: the chip's second line, in its own quiet register */
 .chat-outcome-note {

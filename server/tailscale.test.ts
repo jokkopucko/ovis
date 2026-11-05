@@ -154,6 +154,62 @@ describe("the owner's grant read, by Host and by outcome", () => {
   });
 });
 
+describe("loginIdentity", () => {
+  /** a source whose reads answer `reads` in turn (the last one from then on), on a clock the test moves */
+  function source(reads: (string | null)[]) {
+    let now = 1_000_000;
+    let count = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const identities = new TailnetIdentitySource(async () => reads[Math.min(count++, reads.length - 1)] ?? null);
+    return { identities, reads: () => count, later: (ms: number) => { now += ms; }, restore: () => clock.mockRestore() };
+  }
+  const booting = JSON.stringify({ BackendState: "NoState", Self: { DNSName: "" } });
+
+  it("reads again after a boot read named no owner, at most every two seconds", async () => {
+    const s = source([booting, booting, tailnet([42, undefined])]);
+    try {
+      expect((await s.identities.loginIdentity()).owner).toBeNull();
+      // within two seconds of a read, requests answer from it: nothing can keep the CLI spawning
+      for (let i = 0; i < 20; i++) await s.identities.loginIdentity();
+      expect(s.reads()).toBe(1);
+      s.later(2_000);
+      expect((await s.identities.loginIdentity()).owner).toBeNull();
+      s.later(2_000);
+      expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
+      expect(s.reads()).toBe(3);
+      // known, it stands for the cache's life
+      s.later(2_000);
+      await s.identities.loginIdentity();
+      expect(s.reads()).toBe(3);
+    } finally { s.restore(); }
+  });
+
+  it("keeps a known owner through a failed read and a daemon that is not Running", async () => {
+    const s = source([tailnet([42, undefined]), null, booting]);
+    try {
+      expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
+      for (let i = 0; i < 2; i++) {
+        s.later(6 * 60_000);
+        await s.identities.freshIdentity(HOST);
+        expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
+      }
+      expect(s.reads()).toBe(3);
+    } finally { s.restore(); }
+  });
+
+  it("reads the new login on a login request after the daemon restarts under another account", async () => {
+    const s = source([tailnet([42, undefined]), booting, tailnet([43, undefined])]);
+    try {
+      expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
+      s.later(6 * 60_000);
+      await s.identities.freshIdentity(HOST);
+      s.later(2_000);
+      expect((await s.identities.loginIdentity()).owner).toBe("user43@example.com");
+      expect(s.reads()).toBe(3);
+    } finally { s.restore(); }
+  });
+});
+
 describe("parseTailscaleIp", () => {
   it("picks this PC's IPv4 tailnet address, and nothing when there is none", () => {
     expect(parseTailscaleIp(JSON.stringify({ Self: { TailscaleIPs: ["fd7a:115c:a1e0::1", "100.64.0.7"] } }))).toBe("100.64.0.7");

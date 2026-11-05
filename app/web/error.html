@@ -13,7 +13,8 @@
     <p id="what">The app could not open it.</p>
     <p class="error" id="reason"></p>
     <p id="tailscale" hidden data-ko="Tailscale 주소입니다. 이 휴대폰에서 Tailscale이 꺼져 있을 수 있습니다. Tailscale 앱에서 연결을 켠 뒤 다시 시도를 누르세요.">This is a Tailscale address, and Tailscale may be off on this phone. Turn it on in the Tailscale app, then tap Try again.</p>
-    <p data-ko="PC가 켜져 있는지, 거기서 Ovis가 실행 중인지, 이 휴대폰이 PC에 닿을 수 있는지(Tailscale이면 둘 다 같은 tailnet에 있는지) 확인하세요.">Check that the PC is on, that Ovis runs there, and that this phone can reach it (on Tailscale, both in the same tailnet).</p>
+    <p id="relay" hidden data-ko="이 PC는 Ovis 릴레이를 거쳐 열립니다. 릴레이에 연결할 수 없었습니다. 이 휴대폰이 인터넷에 연결되어 있는지 확인한 뒤 다시 시도를 누르세요.">This PC opens through the Ovis relay. The relay could not be reached: check that this phone is online, then tap Try again.</p>
+    <p id="check" data-ko="PC가 켜져 있는지, 거기서 Ovis가 실행 중인지, 이 휴대폰이 PC에 닿을 수 있는지(Tailscale이면 둘 다 같은 tailnet에 있는지) 확인하세요.">Check that the PC is on, that Ovis runs there, and that this phone can reach it (on Tailscale, both in the same tailnet).</p>
     <div class="row">
       <button type="button" class="primary" id="retry" data-ko="다시 시도">Try again</button>
       <button type="button" id="change" data-ko="PC 바꾸기">Change PC</button>
@@ -49,10 +50,21 @@
     document.getElementById("reason").textContent = state.failure ?? "";
     // a MagicDNS name or a Tailscale IP that sent no answer (an HTTP error came through Tailscale) (100.64.0.0/10, fd7a:115c:a1e0::/48) opens only while Tailscale is connected on the phone
     let host = "";
+    let relay = false;
     const pc = state.current || state.last;
-    try { host = pc ? new URL(pc).hostname.replace(/^\[|\]$/g, "").toLowerCase() : ""; } catch {}
+    try {
+      const url = new URL(pc);
+      host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+      // a PC paired over the Ovis relay is saved by its scope on the app's origin (/s/<server_id>/)
+      relay = /^\/s\/[0-9a-f]{32}\/$/.test(url.pathname);
+    } catch {}
+    if (relay && state.name) {
+      document.getElementById("what").textContent = korean ? `앱이 ${state.name}을(를) 열지 못했습니다.` : `The app could not open ${state.name}.`;
+    }
+    document.getElementById("relay").hidden = !relay;
+    document.getElementById("check").hidden = relay;
     const ipv4 = host.match(/^100\.(\d+)\.\d+\.\d+$/);
-    document.getElementById("tailscale").hidden = /^HTTP \d{3}\b/.test(state.failure ?? "") || !(host.endsWith(".ts.net") || (ipv4 && Number(ipv4[1]) >= 64 && Number(ipv4[1]) <= 127) || host.startsWith("fd7a:115c:a1e0:"));
+    document.getElementById("tailscale").hidden = relay || /^HTTP \d{3}\b/.test(state.failure ?? "") || !(host.endsWith(".ts.net") || (ipv4 && Number(ipv4[1]) >= 64 && Number(ipv4[1]) <= 127) || host.startsWith("fd7a:115c:a1e0:"));
   </script>
 </body>
 </html>

@@ -565,6 +565,56 @@ function parity(host: "node" | "rust") {
       } finally { burst.session.kill(); }
     }, 15_000);
 
+    // a signal's end is never the 0 of a success: told as a shell tells it
+    it.skipIf(process.platform === "win32")("reports a command a signal ended as 128 plus the signal's number", async () => {
+      const ended = run("sh", ["-c", "kill -TERM $$"]);
+      try {
+        expect(await ended.exited).toBe(143);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
+    // that wait ends the moment the command has exited: a plain exit is not held for it (timing is the
+    // behaviour here, bounded well past a host's start and well under the 200 ms wait plus a quiet one)
+    it.skipIf(process.platform === "win32")("ends a plain exit without waiting out the hold for a closed terminal", async () => {
+      const started = performance.now();
+      const ended = run("sh", ["-c", "exit 7"]);
+      try {
+        expect(await ended.exited).toBe(7);
+        expect(performance.now() - started).toBeLessThan(150);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
+    // the host waits (EXIT_QUIET) for a command that closed its terminal, as a dying one does, before hanging it up:
+    // time is the behaviour here, a command exiting 50 ms after it closed its terminal is well within that wait
+    it.skipIf(process.platform === "win32")("lets a command that closed its terminal exit with its own code", async () => {
+      const ended = run("sh", ["-c", "exec 0<&- 1>&- 2>&-; sleep 0.05; exit 3"]);
+      try {
+        expect(await ended.exited).toBe(3);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
+    it.skipIf(process.platform === "win32")("hangs up a command that closed its terminal and kept running as an end of its own, not a signal", async () => {
+      const ended = run("sh", ["-c", "exec 0<&- 1>&- 2>&-; sleep 5"]);
+      try {
+        expect(await ended.exited).toBe(0);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
+    // past that wait the host ends the command itself: only the signals it sent are its own end
+    it.skipIf(process.platform === "win32")("reports a signal the command sent itself after the host hung it up, as that signal", async () => {
+      const ended = run("sh", ["-c", "trap '' HUP; exec 0<&- 1>&- 2>&-; sleep 0.45; kill -TERM $$"]);
+      try {
+        expect(await ended.exited).toBe(143);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
+    it.skipIf(process.platform === "win32")("ends a command that closed its terminal and ignores the hangup, as an end of its own", async () => {
+      const ended = run("sh", ["-c", "trap '' HUP; exec 0<&- 1>&- 2>&-; sleep 30"]);
+      try {
+        expect(await ended.exited).toBe(0);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
     it.skipIf(process.platform === "win32")("signals SIGWINCH to the command without changing its size", async () => {
       const winch = run("node", ["-e", `
         process.on("SIGWINCH", () => process.stdout.write("WINCH " + process.stdout.columns + "x" + process.stdout.rows, () => process.exit(0)));
@@ -684,7 +734,27 @@ function parity(host: "node" | "rust") {
       }
     }, 15_000);
 
-    it.skipIf(host !== "rust")("holds output paused when the command exits, and delivers all of it on resume", async () => {
+    // the Node host kills the group once node-pty's exit timer ends, also while it holds paused output; the Rust
+    // host hangs it up at the exit and kills it after the drain
+    it.skipIf(host !== "node" || process.platform === "win32")("kills what is left of the command's process group when the command exits, while output is paused", async () => {
+      const tag = sleepTag();
+      // the tag's seconds as an argument: the host's own command line must not match `tag`
+      const leaving = run("sh", ["-c", `trap '' HUP; sleep "$1" & printf READY; read -r _; exit 4`, "sh", tag.slice("sleep ".length)]);
+      try {
+        await leaving.until("READY", (output) => output.includes("READY"));
+        leaving.session.pause();
+        leaving.session.write("go\r");
+        expect(await gone(tag)).toBe(true);
+        leaving.session.resume();
+        expect(await leaving.exited).toBe(4);
+      } finally {
+        leaving.session.kill();
+        Bun.spawnSync(["pkill", "-KILL", "-f", tag]);
+      }
+    }, 15_000);
+
+    // node-pty on Windows reads ConPTY through its own pipe, not the Unix socket pty-host.mjs holds open
+    it.skipIf(host === "node" && process.platform === "win32")("holds output paused when the command exits, and delivers all of it on resume", async () => {
       const dir = mkdtempSync(join(tmpdir(), "ovis-pty-exit-paused-"));
       const wrote = join(dir, "wrote");
       const ending = run("node", ["-e", `

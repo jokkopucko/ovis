@@ -6,11 +6,11 @@ export interface OmoDetachedCell {
 // The runtime's own wording. A cell detaches while it runs, while it waits for its kernel, or
 // queued behind other cells (a list that can be empty); one notice can report several cells
 // that ended together, each on its own line.
-const DETACHED = /^Eval cell (\S+) (?:detached and is (?:still )?running in the (?:js|py) kernel|is detached and waiting for the (?:js|py) kernel to be ready|is queued behind [^\n]*? in the (?:js|py) kernel and detached)/;
+export const DETACHED = /^Eval cell (\S+) (?:detached and is (?:still )?running in the (?:js|py) kernel|is detached and waiting for the (?:js|py) kernel to be ready|is queued behind [^\n]*? in the (?:js|py) kernel and detached)/;
 const ENDED = /(?:^|\n)(?:<system-reminder>)?Detached eval cell (\S+) \((?:js|py)\) (?:completed|failed|cancelled|was killed[^\n]*)\./g;
 
 /** A notification's text: a string, or the text parts of a list that also carries images. */
-function notificationText(content: unknown): string {
+export function notificationText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content.flatMap((part) => typeof part === "object" && part !== null && "type" in part && part.type === "text"

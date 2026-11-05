@@ -79,8 +79,15 @@ export interface AgentCatalogEntry {
   detect: {
     /** the executables that mean it is installed, in the order they are looked for */
     binaries: readonly string[];
+    /**
+     * other executables it needs to run, looked for the same way: while one is missing it reads as not
+     * installed (DeepSeek Harness: dsh-tui found, but not the dsh launcher it starts sessions with)
+     */
+    needs?: readonly string[];
     version_args: readonly string[];
-    /** platforms where finding the binary proves nothing (another program has its name), and why */
+    /** how long its version flag may take, when longer than the detector's default (5 s) */
+    version_timeout_ms?: number;
+    /** platforms where finding the binary proves nothing (another program has its name), or where Ovis cannot start it, and why */
     unreliable_on?: Readonly<Partial<Record<CatalogPlatform, string>>>;
     /**
      * where the vendor's installer puts the binary, looked in when PATH has no such binary: an install
@@ -91,7 +98,7 @@ export interface AgentCatalogEntry {
   };
   /** null: it needs no sign-in */
   sign_in: {
-    /** the account sign-in Ovis already runs (Settings → Subscription usage), when it has one for this agent */
+    /** the account sign-in Ovis already runs (Settings → Agents), when it has one for this agent */
     provider: UsageProviderId | null;
     /** the agent's own sign-in command, outside its TUI */
     command: readonly string[] | null;
@@ -117,7 +124,10 @@ export interface AgentInstallState {
   /** false: found only in the installer's folder (detect.install_dirs), not on PATH: a new terminal finds it */
   on_path: boolean | null;
   version: string | null;
-  /** why an installed agent has no version: its flag ran too long, printed none, or did not start */
+  /**
+   * why an installed agent has no version: its flag ran too long (timeout), succeeded without one on
+   * stdout (unreadable), or did not start or exited with an error (failed: a broken install)
+   */
   version_error: "timeout" | "unreadable" | "failed" | null;
   meets_min_version: boolean | null;
 }
@@ -127,6 +137,14 @@ export interface AgentCatalogRow extends Omit<AgentCatalogEntry, "install" | "no
   install: PlatformInstall | null;
   no_install: string | null;
   state: AgentInstallState;
+}
+
+/** What POST /api/agent-catalog/install or /sign-in answers: the tab it opened, and the exact text typed there. */
+export interface AgentTabStarted {
+  pane_id: string;
+  workspace_id: string;
+  command: string;
+  shell: InstallShell;
 }
 
 export interface AgentCatalogResponse {
@@ -139,6 +157,15 @@ export interface AgentCatalogResponse {
 export function catalogRow({ install, no_install, ...entry }: AgentCatalogEntry, platform: CatalogPlatform | null, state: AgentInstallState): AgentCatalogRow {
   if (platform === null) return { ...entry, install: null, no_install: "Ovis has no install commands for this operating system.", state };
   return { ...entry, install: install[platform], no_install: install[platform] === null ? no_install[platform] ?? null : null, state };
+}
+
+/**
+ * Whether the agent is there and runs: found, and its version flag neither failed nor hung. One whose
+ * version cannot be read still runs; one whose flag fails (a wrapper's missing target) does not, and
+ * is never offered as ready.
+ */
+export function agentRuns(state: AgentInstallState): boolean {
+  return state.installed === true && state.version_error !== "failed" && state.version_error !== "timeout";
 }
 
 /** The catalog platform of a Node `process.platform`. */
@@ -167,9 +194,9 @@ export function meetsMinVersion(version: string, min: string): boolean {
 
 /** Every address a command names, whatever its scheme: a quote, a pipe, a semicolon or a bracket ends one. */
 const URL_IN_COMMAND = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'|;)]+/gi;
-/** The package managers a catalog command may install with, and the package each install names. */
+/** The package managers a catalog command may install with, and the packages each install names (npm takes several at once). */
 const PACKAGE_INSTALLS: readonly (readonly [string, RegExp])[] = [
-  ["npm", /\bnpm\s+(?:install|i)\s+-g\s+(\S+)/g],
+  ["npm", /\bnpm[ \t]+(?:install|i)[ \t]+-g((?:[ \t]+[^\s&|;]+)+)/g],
   ["brew", /\bbrew\s+install\s+(?:--cask\s+)?(\S+)/g],
   ["winget", /\bwinget\s+install\s+(\S+)/g],
   ["uv", /\buv\s+tool\s+install\s+(\S+)/g],
@@ -250,6 +277,8 @@ export const APPROVED_COMMANDS: ReadonlySet<string> = new Set([
   "macos|curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
   "linux|curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
   "windows|iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
+  "macos|npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui",
+  "linux|npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui",
 ]);
 
 /** An allowed address: HTTPS, a host, and a path on it, so a prefix can never stand for a whole host. */
@@ -280,9 +309,13 @@ export function commandProblems(entry: AgentCatalogEntry): string[] {
       let installs = 0;
       for (const [manager, pattern] of PACKAGE_INSTALLS) {
         for (const match of command.matchAll(pattern)) {
-          installs++;
-          const name = manager === "npm" ? npmName(match[1]!) : match[1]!;
-          if (!entry.packages.includes(`${manager}:${name}`)) at(`installs ${manager}:${name}, not one of the vendor's packages`);
+          for (const spec of match[1]!.trim().split(/[ \t]+/)) {
+            // a flag after the packages (--ignore-scripts, --prefix) changes what the install does
+            if (spec.startsWith("-")) { at(`passes ${manager} ${spec}, which the vendor's command does not`); continue; }
+            installs++;
+            const name = manager === "npm" ? npmName(spec) : spec;
+            if (!entry.packages.includes(`${manager}:${name}`)) at(`installs ${manager}:${name}, not one of the vendor's packages`);
+          }
         }
       }
       if (urls.length === 0 && installs === 0) at("names no address or package it installs from");
@@ -297,9 +330,13 @@ const method = (shell: InstallShell, command: string, requires: readonly Install
   ({ shell, command, requires, admin: extra.admin ?? false, known_issues: extra.known_issues ?? [], tested: extra.tested ?? [] });
 const only = (primary: InstallMethod, ...alternatives: InstallMethod[]): PlatformInstall => ({ primary, alternatives });
 
-const DEVIN_LOGIN = "Ends by starting a sign-in: with no browser it stops at \"Login canceled\" and exits 1, though Devin is installed.";
+const DEVIN_LOGIN = "Ends by starting its own sign-in (devin setup): with no browser it stops at \"Login canceled\" and exits 1, or waits until you press Ctrl+C. Devin is installed either way: sign in afterwards with devin auth login.";
+const OMP_BUN = "Stops when an older Bun (before 1.4.4) is on PATH, as Ovis's own installer may have put there: run bun upgrade first.";
 const PI_NODE = "Needs Node.js 22.19 or later: without it, it asks in the terminal whether to install it, and without a terminal it stops.";
 const PI_NODE_SUDO = "Needs Node.js 22.19 or later: without it, it asks in the terminal whether to install it (which may ask for sudo), and without a terminal it stops.";
+const DSH_PNPM = "dsh-tui sets up its dsh profile with pnpm on its first start: without pnpm it stops there. Install it first: npm install -g pnpm.";
+const DSH_WINDOWS = "Ovis cannot start DeepSeek Harness on Windows yet, so it neither installs it nor offers it there.";
+const DSH_VERSIONS = "dsh 0.2.1-rc.5 refuses dsh-tui 0.17.0 as an untested pair on its first start (\"nothing was installed\"). To accept that risk, run the command dsh prints, dsh plugin --profile dsh-tui allow-version @deepseek-harness-tui/dsh-tui@0.17.0 --dsh-version 0.2.1-rc.5 --accept-risk, then start dsh-tui again.";
 const CURL_BASH: readonly InstallRequirement[] = [{ tool: "curl" }, { tool: "bash" }];
 const CURL_SH: readonly InstallRequirement[] = [{ tool: "curl" }, { tool: "sh" }];
 const POWERSHELL: readonly InstallRequirement[] = [{ tool: "powershell" }];
@@ -610,6 +647,14 @@ export const COMMAND_TESTS: Readonly<Record<string, readonly CommandTest[]>> = {
       result: "ok",
       note: "0.22.5"
     }
+  ],
+  "linux|npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui": [
+    {
+      on: "2026-11-01",
+      where: "docker node:24-bookworm-slim x64; Node 24, npm; no Python, build tools or pnpm",
+      result: "ok",
+      note: "dsh 0.2.1-rc.5, dsh-tui 0.17.0; its first start needs pnpm, and on a fresh dsh home dsh refuses that dsh-tui until allow-version --accept-risk (checked on Linux 2026-11-01)"
+    }
   ]
 };
 
@@ -674,7 +719,7 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     packages: ["brew:copilot-cli", "npm:@github/copilot", "winget:GitHub.Copilot"],
     sources: [source("https://github.com/github/copilot-cli/blob/84ee80ea6490ce02d6000439356a609fcefbb9ae/README.md")],
     detect: { binaries: ["copilot"], version_args: ["--version"], install_dirs: { macos: ["~/.local/bin"], linux: ["~/.local/bin"] } },
-    sign_in: { provider: "copilot", command: null, in_agent: "/login", api_keys: ["GH_TOKEN", "GITHUB_TOKEN"], required: true },
+    sign_in: { provider: "copilot", command: ["copilot", "login"], in_agent: "/login", api_keys: ["GH_TOKEN", "GITHUB_TOKEN"], required: true },
     after_install: ["Needs an active GitHub Copilot plan."],
     min_version: null,
   },
@@ -695,7 +740,10 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     sources: [source("https://github.com/anomalyco/opencode/blob/f023f7c36c090260a49c6e4da0ff69cbbd10c168/README.md"), source("https://opencode.ai/docs/cli/")],
     detect: { binaries: ["opencode"], version_args: ["--version"], install_dirs: { macos: ["~/.opencode/bin"], linux: ["~/.opencode/bin"] } },
     sign_in: { provider: "opencode", command: ["opencode", "auth", "login"], in_agent: null, api_keys: [], required: false },
-    after_install: ["OpenCode 1 and 2 are both run as opencode: installing 2 replaces 1."],
+    after_install: [
+      "OpenCode 1 and 2 are both run as opencode: installing 2 replaces 1.",
+      "Its installer for macOS and Linux puts ~/.opencode/bin first on PATH in your shell's startup file (~/.bashrc, ~/.zshrc): an opencode command of your own elsewhere (a wrapper in ~/.local/bin) is no longer the one that runs.",
+    ],
     min_version: { version: "2.0.0", reason: "answering its questions from Chat" },
   },
   {
@@ -765,9 +813,9 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     kind: "harness",
     description: "A coding agent with IDE features and built-in tools.",
     install: {
-      macos: only(method("posix", "curl -fsSL https://omp.sh/install | sh", CURL_SH)),
-      linux: only(method("posix", "curl -fsSL https://omp.sh/install | sh", CURL_SH)),
-      windows: only(method("powershell", "irm https://omp.sh/install.ps1 | iex", POWERSHELL, { known_issues: ["Stops when an older Bun (before 1.4.4) is on PATH, as Ovis's own installer may have put there: run bun upgrade first."] })),
+      macos: only(method("posix", "curl -fsSL https://omp.sh/install | sh", CURL_SH, { known_issues: [OMP_BUN] })),
+      linux: only(method("posix", "curl -fsSL https://omp.sh/install | sh", CURL_SH, { known_issues: [OMP_BUN] })),
+      windows: only(method("powershell", "irm https://omp.sh/install.ps1 | iex", POWERSHELL, { known_issues: [OMP_BUN] })),
     },
     no_install: {},
     url_prefixes: ["https://omp.sh/install"],
@@ -908,6 +956,32 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     min_version: null,
   },
   {
+    // herdr labels a dsh-tui pane `dsh-tui`, and New tab starts that TUI: dsh itself has no chat in a terminal
+    id: "dsh-tui",
+    name: "DeepSeek Harness",
+    vendor: "DeepSeek",
+    kind: "harness",
+    description: "DeepSeek's agent harness in a terminal UI. Needs a DeepSeek API key or another provider.",
+    install: {
+      macos: only(method("posix", "npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui", [{ tool: "node" }, { tool: "npm" }], { known_issues: [DSH_PNPM, DSH_VERSIONS] })),
+      linux: only(method("posix", "npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui", [{ tool: "node" }, { tool: "npm" }], { known_issues: [DSH_PNPM, DSH_VERSIONS] })),
+      windows: null,
+    },
+    no_install: { windows: DSH_WINDOWS },
+    url_prefixes: [],
+    packages: ["npm:@deepseek-ai/dsh", "npm:@deepseek-harness-tui/dsh-tui"],
+    sources: [
+      { url: "https://github.com/deepseek-ai/deepseek-harness/blob/31ba15da2b7c07408caaa31e30b755acc297234f/README.md", checked: "2026-11-01" },
+      { url: "https://github.com/ccch1mneyyy/dsh-TUI/blob/acfe80f10170292a7aa93808b214b5a7b12bc609/README.md", checked: "2026-11-01" },
+    ],
+    // dsh-tui first: Debian's distributed shell is a /usr/bin/dsh too
+    detect: { binaries: ["dsh-tui"], needs: ["dsh"], version_args: ["--version"], unreliable_on: { windows: DSH_WINDOWS } },
+    // Sign in opens dsh-tui itself: the key goes into its own first-run prompt; Ovis has no field that asks for it
+    sign_in: { provider: null, command: null, in_agent: "on its first start: a DeepSeek API key from https://platform.deepseek.com/api_keys typed into its own prompt, or an OpenAI- or Anthropic-compatible provider", api_keys: ["DEEPSEEK_API_KEY"], required: true },
+    after_install: ["It needs a model before it can work: a DeepSeek API key (https://platform.deepseek.com/api_keys) or an OpenAI- or Anthropic-compatible provider, entered in dsh-tui's own first-run prompt: Ovis does not ask for the key."],
+    min_version: null,
+  },
+  {
     id: "hermes",
     name: "Hermes",
     vendor: "Nous Research",
@@ -922,7 +996,8 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     url_prefixes: ["https://hermes-agent.nousresearch.com/install.sh", "https://hermes-agent.nousresearch.com/install.ps1"],
     packages: [],
     sources: [source("https://hermes-agent.nousresearch.com/docs/getting-started/installation"), source("https://hermes-agent.nousresearch.com/docs/user-guide/messaging/")],
-    detect: { binaries: ["hermes"], version_args: ["--version"], install_dirs: { macos: ["~/.local/bin"], linux: ["~/.local/bin"] } },
+    // its version flag loads the whole agent: 2.3 to 6.7 s on a busy PC
+    detect: { binaries: ["hermes"], version_args: ["--version"], version_timeout_ms: 15_000, install_dirs: { macos: ["~/.local/bin"], linux: ["~/.local/bin"] } },
     sign_in: { provider: null, command: ["hermes", "setup"], in_agent: null, api_keys: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GOOGLE_API_KEY"], required: true },
     after_install: [
       "A messenger needs its own bot token too (Telegram: TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS).",

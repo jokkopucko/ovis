@@ -1,7 +1,8 @@
 import type { DialogReader, ReaderContext } from "./registry.ts";
 import { pickerPlan } from "./interaction-plan.ts";
 import { type InteractivePrompt } from "../../shared/protocol.ts";
-import { ANSI_RE, onePerPass, type AnswerStep, type CardWords, KEY, type OmoAsk, PI_MODEL_TAIL_RE, type ParsedPrompt, SOLID_RULE_RE, cleanLine, englishOf, findLastIndex, finishPrompt, isDivider, own, joinWrapped, keySteps, navigationKeys, normalizeText, piModelRows, screenWidth, wrapped } from "./shared.ts";
+import type { NativeSteps } from "./step-navigate.ts";
+import { ANSI_RE, onePerPass, type AnswerStep, type CardWords, KEY, type OmoAsk, PI_MODEL_TAIL_RE, type ParsedPrompt, type PromptDraft, SOLID_RULE_RE, cleanLine, englishOf, findLastIndex, finishPrompt, isDivider, own, joinWrapped, keySteps, navigationKeys, normalizeText, piModelRows, screenWidth, wrapped } from "./shared.ts";
 
 // OmO's ask_user_question form (omo 5.1): `Ask user · 30m`, a tab per question then Submit, and
 // under them the active question or, on the Submit tab, the review of the answers
@@ -81,6 +82,25 @@ function askOnScreen(form: OmoForm, ask: OmoAsk): boolean {
 /** The steps for the card, from the tabs on screen, named as asked when the call is known. */
 function omoSteps(tabs: OmoForm["tabs"], ask: OmoAsk | null): InteractivePrompt["steps"] {
   return tabs.length > 1 ? tabs.map((tab, index) => ({ ...tab, label: ask?.questions[index]?.header ?? tab.label })) : undefined;
+}
+
+/**
+ * The card's steps as OmO's own keys move between its tabs, a question left unanswered: Tab on,
+ * Shift+Tab back, through Submit (senpi ask-user-question-keys.js, 5.1.51). Only the tab bar on
+ * screen says which tab shows, so a form cut off above it gets its steps and nothing to tap; and
+ * only the session's call names the form, so a form no call names gets nothing to tap either.
+ */
+function omoNavigation(form: OmoForm | null, tabs: OmoForm["tabs"], index: number, ask: OmoAsk | null): Pick<PromptDraft, "steps" | "can_step_back" | "can_step_next"> & { nativeSteps?: NativeSteps } {
+  const steps = omoSteps(tabs, ask);
+  // the form is the call's: a move needs it named, and named by every question and option it asks
+  if (!form || !steps || !ask?.id) return { steps };
+  const at = form.reviewing ? tabs.length : index;
+  return {
+    steps: steps.map((step) => step.current ? step : { ...step, can_navigate: true }),
+    can_step_back: at > 0,
+    can_step_next: !form.reviewing,
+    nativeSteps: { identity: JSON.stringify([ask.id, ask.questions.map((question) => [question.header, question.question, question.multiSelect, question.options.map((option) => option.label)])]), index: at, count: tabs.length + 1, next: KEY.tab, previous: KEY.backtab },
+  };
 }
 
 /** The card's title: where the question stands among several, else its header. */
@@ -246,13 +266,15 @@ function parseOmoQuestion(screen: string, ask: OmoAsk | null, trusted: boolean):
   const selectedIndex = view.own.selected ? options.length : highlighted ? highlighted.number - 1 : -1;
   const rows = options.length + 1;
   const pick = (option: number): AnswerStep[] => keySteps([...omoWalk(option, selectedIndex, rows), KEY.enter]);
+  const { nativeSteps, ...navigation } = omoNavigation(form, tabs, index, known);
   return finishPrompt("omo", {
     // several questions: the card's steps name them, the title says where this one stands
     kind: "question", title: omoTitle(tabs, index, known),
     question, body: null, options, multi_select: multiSelect, custom_option_index: multiSelect ? null : options.length,
-    steps: omoSteps(tabs, known),
+    ...navigation,
   }, {
     omoQuestion: known?.id ? { call: known.id, index } : undefined,
+    ...(nativeSteps ? { nativeSteps } : {}),
     responder: "omo-question", menuLabels: [...options.map((option) => option.label), OMO_OWN_ANSWER], selectedIndex,
     checkedOptionIndices: view.rows.flatMap((row, at) => /\s✓$/.test(shownLabels[at]!) ? [row.number - 1] : []),
     customMenuIndex: options.length, rejectWithEscapeIndex: null,
@@ -408,14 +430,16 @@ function parseOmoReview(screen: string, ask: OmoAsk | null, trusted: boolean): P
     { label: own("Submit"), steps: keySteps([...omoWalk(count, selectedIndex, count + 1), KEY.enter]) },
     ...labels.map((label, row) => ({ label, steps: keySteps([...omoWalk(row, selectedIndex, count + 1), KEY.enter]) })),
   ];
+  const { nativeSteps, ...navigation } = omoNavigation(form, tabs, count, known);
   return finishPrompt("omo", {
     // a menu: a number typed in the chat submits the whole form, so it waits for Confirm
     kind: "menu", title: own("Review your answers"), question: submitAt < 0 ? own("Submit your answers?") : after.slice(submitAt),
     // the notice and the comment are omo's and the user's own words, the label before the comment the bridge's
     body: comment ? (notice ? own("{notice}\nComment: {comment}", { notice, comment }) : own("Comment: {comment}", { comment })) : notice || null,
     options: [...choices.map(({ label }) => ({ label, description: null })), { label: commentLabel, description: null }],
-    multi_select: false, custom_option_index: choices.length, steps: omoSteps(tabs, known),
+    multi_select: false, custom_option_index: choices.length, ...navigation,
   }, {
+    ...(nativeSteps ? { nativeSteps } : {}),
     responder: "omo-review", menuLabels: [...labels, englishOf(commentLabel)], selectedIndex,
     checkedOptionIndices: [], customMenuIndex: count, rejectWithEscapeIndex: null,
     optionSteps: [...choices.map(({ steps }) => steps), []],

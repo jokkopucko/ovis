@@ -33,12 +33,14 @@ it("keeps chat history readable while valid sequential herdr calls outlast HTTP 
   const codexHome = join(root, "codex");
   const path = join(codexHome, "sessions", "rollout.jsonl");
   mkdirSync(join(codexHome, "sessions"), { recursive: true });
+  // long enough for the pane's screen to tell its conversation: herdr's report alone does not
+  const answer = (index: number) => `Fictional answer ${index}: the history stays readable while each herdr call takes its time.`;
   writeFileSync(path, [
     { type: "session_meta", payload: { id: "00000000-0000-4000-8000-000000000001", cwd: "/synthetic/work" } },
     ...Array.from({ length: 120 }, (_, index) => [
       { type: "event_msg", payload: { type: "task_started", turn_id: `turn-${index}` } },
       { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `Fictional question ${index}` }] } },
-      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `Fictional answer ${index}` }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: answer(index) }] } },
       { type: "event_msg", payload: { type: "task_complete", turn_id: `turn-${index}` } },
     ]).flat(),
   ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
@@ -54,18 +56,24 @@ it("keeps chat history readable while valid sequential herdr calls outlast HTTP 
     socket.on("data", (chunk) => {
       buffer += chunk.toString();
       if (!buffer.includes("\n")) return;
-      const { id, method } = JSON.parse(buffer.split("\n")[0]!);
+      const line = buffer.split("\n")[0]!;
+      const { id, method } = JSON.parse(line);
       buffer = "";
-      // A lost daemon reply must still reach the caller as the RPC's bounded error.
-      if (method === "pane.read") return;
+      const { params } = JSON.parse(line) as { params?: { lines?: number } };
+      // A lost daemon reply must still reach the caller as the RPC's bounded error. The chat's own
+      // read of the pane's last 400 lines is answered: its newest answer shows there.
+      if (method === "pane.read" && params?.lines !== 400) return;
       const result = method === "session.snapshot" ? { snapshot: { panes: [pane], agents: [], workspaces: [], tabs: [], layouts: [] } }
-        : method === "agent.get" ? { agent: pane } : {};
-      const answer = () => { if (!socket.destroyed) socket.write(JSON.stringify({ id, result }) + "\n"); };
+        : method === "agent.get" ? { agent: pane }
+        // a Codex runs in the pane: a screen with none proves no conversation
+        : method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] } }
+        : method === "pane.read" ? { read: { text: `• ${answer(119)}\n\n› ` } } : {};
+      const reply = () => { if (!socket.destroyed) socket.write(JSON.stringify({ id, result }) + "\n"); };
       if (slow && (method === "session.snapshot" || method === "agent.get")) {
         // Simulate daemon work, each reply inside its own 10 s RPC deadline; together over Bun's default 10 s.
-        const timer = setTimeout(() => { timers.delete(timer); answer(); }, 6_000);
+        const timer = setTimeout(() => { timers.delete(timer); reply(); }, 6_000);
         timers.add(timer);
-      } else answer();
+      } else reply();
     });
   });
   let app: ReturnType<typeof createServer> | undefined;
@@ -85,9 +93,9 @@ it("keeps chat history readable while valid sequential herdr calls outlast HTTP 
       read(`${base}read?pane_id=fixture&source=recent`),
     ]);
     expect(newest.status).toBe(200);
-    expect(newest.body.turns.at(-1).parts).toContainEqual({ kind: "text", text: "Fictional answer 119" });
+    expect(newest.body.turns.at(-1).parts).toContainEqual({ kind: "text", text: answer(119) });
     expect(history.status).toBe(200);
-    expect(history.body.turns.at(-1).parts).toContainEqual({ kind: "text", text: "Fictional answer 69" });
+    expect(history.body.turns.at(-1).parts).toContainEqual({ kind: "text", text: answer(69) });
     expect(stalled.status).toBe(502);
     expect(stalled.body.error.code).toBe("timeout");
   } finally {

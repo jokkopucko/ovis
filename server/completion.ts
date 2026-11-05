@@ -68,9 +68,13 @@ export class CompletionTracker {
 
   /**
    * `file` keeps the state across restarts (none: memory only); `herdr` names the herdr
-   * the panes live in, the identity of its socket file by default.
+   * the panes live in, the identity of its socket file by default. `reportedOnly` (herdr-core):
+   * a status is the program's own report (OSC 7501) or one its own session files give (OmO, GJC,
+   * a resting Claude), never a guess from the screen. Only the same program's working then idle is
+   * a finish; a pause it reports as blocked, a cleared report, or another program's idle is none,
+   * and no badge is kept without a report.
    */
-  constructor(private readonly file: string | null = null, private readonly herdr: () => string | null = herdrSocketId) {
+  constructor(private readonly file: string | null = null, private readonly herdr: () => string | null = herdrSocketId, private readonly reportedOnly: () => boolean = () => false) {
     if (file === null) return;
     try {
       const state = JSON.parse(readFileSync(file, "utf8")) as { herdr?: unknown; finished?: unknown; finishedAgents?: unknown };
@@ -158,6 +162,8 @@ export class CompletionTracker {
       this.observe(paneId, before.before, before.agent);
       return true;
     }
+    // reported only: every change is the program's own word, and a cleared report must clear its finish
+    if (this.reportedOnly() && status !== shown) return true;
     // a finish a browser's snapshot settled first is still one nobody was alerted of: it goes on, and stays DONE
     return busy(shown) || busy(status) || busy(before.before);
   }
@@ -176,8 +182,11 @@ export class CompletionTracker {
       const agent = pane.agent ?? null;
       // at rest now: the work known from before the loss is over, whoever is in the pane. `unknown`
       // under another agent's name would otherwise read as that work still going on
-      if (pane.agent_status !== "working" && pane.agent_status !== "blocked" && this.worked.delete(pane.pane_id) && agent !== null) {
-        this.finished.set(pane.pane_id, agent);
+      if (pane.agent_status !== "working" && pane.agent_status !== "blocked" && this.worked.has(pane.pane_id)) {
+        const worker = this.worked.get(pane.pane_id);
+        this.worked.delete(pane.pane_id);
+        // reported only: a finish is the same program's own working then idle
+        if (agent !== null && (!this.reportedOnly() || (pane.agent_status === "idle" && worker === agent))) this.finished.set(pane.pane_id, agent);
       }
       this.record(pane.pane_id, this.settle(pane.pane_id, pane.agent_status, agent), ++this.order);
     }
@@ -289,7 +298,8 @@ export class CompletionTracker {
     switch (status) {
       case "working":
       case "blocked":
-        this.worked.set(paneId, agent);
+        if (status === "blocked" && this.reportedOnly()) this.worked.delete(paneId);
+        else this.worked.set(paneId, agent);
         this.finished.delete(paneId);
         this.failedRest.delete(paneId);
         return status;
@@ -299,9 +309,17 @@ export class CompletionTracker {
         this.finished.delete(paneId);
         return status;
       case "idle":
+        // reported only: another program's idle, or one naming no program, is not the finish of the work
+        if (this.reportedOnly() && this.worked.has(paneId) && (agent === null || this.worked.get(paneId) !== agent)) this.worked.delete(paneId);
         if (this.worked.delete(paneId)) this.finished.set(paneId, agent);
         return this.finished.has(paneId) ? "done" : status;
       default:
+        if (this.reportedOnly()) {
+          // no report: no finish, and no badge kept from an earlier one
+          this.worked.delete(paneId);
+          this.finished.delete(paneId);
+          return status;
+        }
         if (this.worked.has(paneId)) {
           // with no agent left, the pane is a shell again
           if (agent === null) {

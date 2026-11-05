@@ -13,10 +13,10 @@ import { PendingInputs } from "../pending-input.ts";
 import { connectionData, type Client } from "./connections.ts";
 
 // herdr's status events come from the test, as the collector would hand them over
-type Handlers = { onStatus: (paneId: string, status: string, agent: string, replay?: { before: string; agent: string }) => void; onBaseline: (panes: unknown[]) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
+type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[]) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; onPaneClosed: (paneId: string) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
 export let handlers: Handlers;
 export let collectorSnapshot: () => Promise<{ panes: HerdrPane[] }>;
-const originalCollector = collector.startStatusCollector;
+export const originalCollector = collector.startStatusCollector;
 mock.module("../collector.ts", () => ({
   ...collector,
   startStatusCollector: (seen: Handlers, deps: { snapshot: typeof collectorSnapshot }) => {
@@ -41,11 +41,11 @@ const store = join(root, "opencode.db");
 {
   const db = new Database(store, { create: true });
   db.exec(`CREATE TABLE session_v2 (id text PRIMARY KEY, parent_id text, time_created integer);
-    CREATE TABLE session_message (id text PRIMARY KEY, session_id text, type text, seq integer, time_created integer, data text)`);
+    CREATE TABLE session_message (id text PRIMARY KEY, session_id text, type text, seq integer, time_created integer, time_updated integer, data text)`);
   db.query("INSERT INTO session_v2 VALUES ('ses_child', 'ses_parent', ?)").run(at + 1000);
-  const row = db.query("INSERT INTO session_message VALUES (?, ?, 'user', 1, ?, ?)");
-  row.run("msg_parent", "ses_parent", at, JSON.stringify({ time: { created: at } }));
-  row.run("msg_child", "ses_child", at + 1000, JSON.stringify({ time: { created: at + 1000 } }));
+  const row = db.query("INSERT INTO session_message VALUES (?, ?, 'user', 1, ?, ?, ?)");
+  row.run("msg_parent", "ses_parent", at, at, JSON.stringify({ time: { created: at } }));
+  row.run("msg_child", "ses_child", at + 1000, at + 1000, JSON.stringify({ time: { created: at + 1000 } }));
   db.close();
 }
 const CLAUDE = "11111111-1111-4111-8111-111111111111";
@@ -83,12 +83,14 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
     spyOn(conversation, "claudePanePid").mockResolvedValue(null as never),
   );
   const frames: { type: string; agent_status?: string; background_tasks?: number; background_wait?: boolean }[] = [];
-  const client = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; } } as unknown as Client;
+  const client: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; }, close: () => {} };
   const pending = queued ?? new PendingInputs<Owner, Lease>(() => {});
+  /** panes whose held messages were turned away, and why */
+  const held: { paneId: string; code: string }[] = [];
   const status = createStatusHub({
     options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}) },
     devices: { gated: false, has: () => true, onPaired: () => {} } as never, preferences: { get: () => ({ muted_panes: [] }), subscribe: () => () => {} } as never,
-    clients: new Set([client]), present: new Set(), pending, drainPending: drain ?? (() => {}), holdPendingPane() {},
+    clients: new Set([client]), present: new Set(), pending, drainPending: drain ?? (() => {}), holdPendingPane: (paneId, fault) => { held.push({ paneId, code: fault.code }); },
     usage: { invalidate() {} } as never, usageLogin: { ended: () => false } as never,
   });
   const alerts: string[] = [];
@@ -96,8 +98,12 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   stubs.push(spyOn(status.opencodeAgents, "poll").mockImplementation((only) => { const read = poll(only); polls.push(read); return read; }));
   stubs.push(spyOn(status.push, "onStatus").mockImplementation(async (_paneId: string, alert: string) => { alerts.push(alert); }));
   stubs.push({ mockRestore: () => { status.collector.stop(); status.omo.stop(); status.gjc.stop(); status.claudeAgents.stop(); status.opencodeAgents.stop(); status.plans.stop(); clearInterval(status.waitTimer); } });
+  const ended: string[] = [];
+  stubs.push(spyOn(status.push, "onEnded").mockImplementation(async (paneId: string) => { ended.push(paneId); }));
   return {
-    alerts, pending, status,
+    alerts, pending, status, held,
+    /** "terminal ended" alerts sent: push's and the pane-exited frames clients alert from */
+    ended: () => ({ push: [...ended], frames: frames.filter((seen) => seen.type === "pane-exited").length }),
     /** herdr's panes from now on, as a snapshot or a pane lookup reads them */
     herdrSays: (pane: unknown) => { panes = [pane]; },
     /** a snapshot, both trackers reading it (Claude's lookup awaited) */

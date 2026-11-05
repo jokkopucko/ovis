@@ -3,6 +3,7 @@
  * own status, background waits, plans, the machine roster and the one collector that feeds them.
  */
 import { join } from "node:path";
+import type { RelaySocket } from "../../shared/relay-channel.ts";
 import type { AgentStatus, HerdrPane, PlanSummary, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import { alertStatus, paneAlertsMuted, paneTitle } from "../../shared/notify-policy.ts";
 import { BackgroundWait } from "../background-wait.ts";
@@ -10,9 +11,10 @@ import { ClaudeSubagentStatus } from "../claude-subagents.ts";
 import { codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
+import { servingCore } from "../herdr-core/runtime.ts";
 import { Finishes, herdrLifetime } from "../finishes.ts";
 import { claudePanePid, claudePaneSession, forgetPaneTranscriptState } from "../conversation.ts";
-import { releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
+import { openCodeNativeState, openCodeVerificationCheckpoint, releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import { opencodeDatabasePath } from "../opencode.ts";
 import { OpencodeSubagentStatus } from "../opencode-subagents.ts";
 import { openCodeServiceOptions, readOpenCodeService } from "../opencode-service.ts";
@@ -20,7 +22,7 @@ import { processStartUpperBoundAsync } from "../process-start.ts";
 import type { DeviceStore } from "../devices.ts";
 import { createGjcStatus, gjcPanes, readOmoSnapshot, reconcileProviderStatus } from "../gjc-status.ts";
 import type { HerdrMachineProfile } from "../herdr-profiles.ts";
-import { paneGet, sessionSnapshot } from "../herdr/client.ts";
+import { paneGet, paneProcessInfo, sessionSnapshot } from "../herdr/client.ts";
 import { resolveAgent } from "../pane-context.ts";
 import { launchedAgents } from "../launched-agents.ts";
 import { bridgeAgentNews, MachineManager } from "../machines.ts";
@@ -36,16 +38,19 @@ import type { Telemetry } from "../telemetry.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
 import { type Client, send } from "./connections.ts";
+import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 /** a focus or reconnect re-reads the panes for the daily active message at most this often */
 const VISIT_READ_MS = 10 * 60_000;
 
-export function createStatusHub<Owner, Lease>({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, usage, usageLogin }: {
+export function createStatusHub<Owner, Lease>({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, paneMoved, usage, usageLogin }: {
   options: {
     stateDir?: string;
     codexHome?: string;
     telemetry?: Telemetry;
     machines?: boolean;
+    /** how PCs added through the relay reach it; tests point it at a local relay */
+    relayPcSocket?: (url: string) => RelaySocket;
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
     alertTiming?: Partial<AlertTiming>;
     pushLoopbackHttp?: boolean;
@@ -60,6 +65,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     openCodeStateDir?: string;
     /** this server's workspace-order counter (server/order-sequence.ts); createServer makes the one there is */
     orderSequence?: OrderSequence;
+    /** herdr moved a pane of this PC under a new ID: the finishes read there go with it, numbered as counted there (server/seen.ts moved) */
+    seenMoved?: (from: string, to: string, renumber: (id: number) => number) => void;
   };
   devices: DeviceStore;
   /** the preferences every browser shares (server/preferences.ts): web push reads the muted panes from it */
@@ -70,6 +77,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   pending: PendingInputs<Owner, Lease>;
   drainPending: (paneId: string) => void;
   holdPendingPane: (paneId: string, fault: { code: string; message: string }) => void;
+  /** herdr moved a pane under a new ID: what the server keeps under the old one follows it (pending messages, the terminal) */
+  paneMoved?: (from: string, to: string) => void;
   usage: UsageService;
   usageLogin: UsageLoginService;
 }) {
@@ -85,12 +94,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     lookupTitle: async (paneId) => {
       return paneTitle(await paneGet(paneId));
     },
+    // each pane alert that reached a device, for the daily active message's usage
+    onAlertDelivered: () => options.telemetry?.tally("alerts_delivered"),
   });
   // a mute made while an alert waits calls it off, so an unmute cannot resurrect an old finish
   const stopMutes = preferences.subscribe(() => push.mutesChanged());
 
   /** `done` for agents herdr loses track of (server/completion.ts), kept across restarts */
-  const completions = new CompletionTracker(join(options.stateDir ?? defaultStateDir(), "completions.json"));
+  // on herdr-core every status is the program's own report (completion.ts reportedOnly)
+  const completions = new CompletionTracker(join(options.stateDir ?? defaultStateDir(), "completions.json"), undefined, servingCore);
   const finishes = new Finishes(options.herdrIdentity);
   /** the herdr identity that answered the lifecycle subscription, bound to that connection; null while it is closed (currentHerdrLifetime) */
   let liveHerdr: string | null = null;
@@ -307,7 +319,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * VISIT_READ_MS (in between they still count the day, with the kinds already known).
    */
   let visitReadAt = -Infinity;
-  function countVisit(snapshot?: ReturnType<typeof clientSnapshot>): void {
+  function countVisit(snapshot?: ReturnType<typeof clientSnapshot>, visit: { surface?: TelemetrySurface; ingress?: TelemetryIngress } = {}): void {
     const telemetry = options.telemetry;
     if (!telemetry?.counting()) return;
     let agents: Promise<(string | null)[]> | (string | null)[] = [];
@@ -315,13 +327,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       visitReadAt = Date.now();
       agents = (snapshot ?? clientSnapshot()).then((read) => read.panes.map((pane) => resolveAgent(pane).agent));
     }
-    void telemetry.active(agents)
+    void telemetry.active(agents, visit)
       .catch((error) => console.error(`telemetry: the visit was not counted (${error instanceof Error ? error.message : String(error)})`));
   }
   /** A pane's status frame: every one says whether the pane waits on its turn's background work. */
   const paneStatus = (paneId: string, status: AgentStatus, about: { background_tasks?: number; plan?: PlanSummary | null } = {}): ServerMessage =>
     ({ type: "pane-status", pane_id: paneId, agent_status: status, ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
-  const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch });
+  const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket });
   if (machines && options.herdrProfiles) machines.watchHerdrProfiles(options.herdrProfiles);
 
   function broadcastAll(message: ServerMessage): void {
@@ -411,10 +423,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   /** A status herdr reported for a pane, or one read back from a snapshot around a gap (`replay`). */
   function onStatus(paneId: string, read: AgentStatus, agent: string | null, replay?: { before: AgentStatus; agent: string | null }): void {
-    if (agent !== "opencode") {
+    if (agent !== "opencode" && (!replay || agent || read !== "unknown")) {
       options.openCodeState?.forget(paneId);
-      // no longer an OpenCode pane: it holds OpenCode's event stream open no more
-      releaseOpenCodePane(paneId);
+      // Snapshot replays release in onReconciled, with the snapshot's verification checkpoint.
+      if (!replay) releaseOpenCodePane(paneId);
     }
     // The agent identity precedes the poll: a delayed Claude callback cannot finish its successor.
     agentNow.set(paneId, agent);
@@ -482,6 +494,31 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
   }
 
+  // Process proof belongs to this exact snapshot, so the collector's newer-event guards
+  // cover the process read too. Never turn an unknown handover snapshot into an agent exit.
+  const shellSnapshots = new WeakSet<HerdrPane>();
+  const snapshotVerifications = new WeakMap<HerdrPane, number>();
+  // what a pane that is gone held, whether it ended by itself or was closed; safe to run twice
+  // (a program that ended and whose pane then closed)
+  function paneGone(paneId: string): void {
+    omo.ended(paneId);
+    gjc.ended(paneId);
+    options.openCodeState?.forget(paneId);
+    releaseOpenCodePane(paneId);
+    finishes.ended(paneId);
+    if (usageLogin.ended(paneId)) usage.invalidate();
+    holdPendingPane(paneId, { code: "pane_not_found", message: "The pane ended; its pending messages were not sent" });
+    pending.forget(paneId);
+    waits.forget(paneId);
+    completions.forget(paneId);
+    heard.delete(paneId);
+    agentNow.delete(paneId);
+    agentRead.set(paneId, opencodeAgents.beginRead());
+    eventAgent.delete(paneId);
+    // the terminal is gone, so is whatever its chat parsed (server/conversation.ts)
+    forgetPaneTranscriptState(paneId);
+    bridgeAgents?.ended(paneId);
+  }
   const collector = startStatusCollector({
     onStatus,
     // the herdr this server's lifecycle subscription was answered by, while that subscription is open
@@ -512,7 +549,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     },
     // a pane created a moment ago got its agent after the roster's own read of it. After the
     // snapshot's replays: a roster read before them could show a finish ahead of its status frame
-    onReconciled: (panes) => { if (machines) machines.localAgents(panes); else bridgeAgents!.reconciled(panes); },
+    onReconciled: (panes) => {
+      // only a verified pane holds the stream: a verification still in flight settles for itself, and
+      // a snapshot read before it started must not cancel it
+      const verified = new Set(openCodeNativeState().panes);
+      for (const pane of panes) {
+        if (!verified.has(pane.pane_id) || pane.agent === "opencode") continue;
+        if (pane.agent || pane.agent_status !== "unknown" || shellSnapshots.has(pane)) releaseOpenCodePane(pane.pane_id, snapshotVerifications.get(pane));
+      }
+      if (machines) machines.localAgents(panes); else bridgeAgents!.reconciled(panes);
+    },
     // the tracker first: what it makes of each pane (a finish after work is done, not idle) is
     // what the alerts are measured against from here, or the next event would alert of it
     onResync: (panes, newer) => {
@@ -524,26 +570,43 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       push.resync(panes.map((pane) => ({ ...pane, agent_status: alertStatus(settled(pane), waits.waiting(pane.pane_id)) })), newer);
     },
     onPaneEnded: (paneId) => {
-      options.openCodeState?.forget(paneId);
-      releaseOpenCodePane(paneId);
-      finishes.ended(paneId);
-      if (usageLogin.ended(paneId)) usage.invalidate();
-      holdPendingPane(paneId, { code: "pane_not_found", message: "The pane ended; its pending messages were not sent" });
-      pending.forget(paneId);
-      waits.forget(paneId);
-      completions.forget(paneId);
-      heard.delete(paneId);
-      agentNow.delete(paneId);
-      agentRead.set(paneId, opencodeAgents.beginRead());
-      eventAgent.delete(paneId);
-      // the terminal is gone, so is whatever its chat parsed (server/conversation.ts)
-      forgetPaneTranscriptState(paneId);
-      bridgeAgents?.ended(paneId);
+      paneGone(paneId);
       broadcastAll({ type: "pane-exited", pane_id: paneId });
       push.onEnded(paneId).catch(logPushError);
     },
+    // closed, not ended by itself: the same cleanup with no "terminal ended" alert
+    onPaneClosed: (paneId) => paneGone(paneId),
+    // told first, so a client remaps the pane before the pty-exit and pending lists of the old ID reach it,
+    // and before the structure change's roster no longer has that ID (#1503)
+    onPaneMoved: (from, to) => {
+      // its finishes go on counting under the new ID, and what was read of them is read there (server/seen.ts)
+      const renumber = finishes.moved(from, to);
+      // a read record that cannot be written costs that record, never the rest of the move
+      try { options.seenMoved?.(from, to, renumber); }
+      catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }
+      broadcastAll({ type: "pane-moved", from, to });
+      paneMoved?.(from, to);
+    },
     onStructureChange: () => broadcastAll({ type: "session-changed" }),
-  }, { snapshot: rawSnapshot });
+  }, { snapshot: async () => {
+    const checkpoint = openCodeVerificationCheckpoint();
+    const snapshot = await rawSnapshot();
+    for (const pane of snapshot.panes) snapshotVerifications.set(pane, checkpoint);
+    // Windows reports only the shell even while its agent runs; it supplies no foreground proof.
+    if (process.platform !== "win32") {
+      const verified = new Set(openCodeNativeState().panes);
+      await Promise.all(snapshot.panes.map(async (pane) => {
+        if (pane.agent || pane.agent_status !== "unknown" || !verified.has(pane.pane_id)) return;
+        const info = await paneProcessInfo(pane.pane_id).catch(() => undefined);
+        const front = info?.foreground_processes?.[0];
+        // `exec opencode` keeps the shell's pid, but not its process identity.
+        const shell = /(?:^|\/)-?(?:sh|bash|dash|zsh|fish|ksh|mksh|csh|tcsh|ash|nu)$/u;
+        if (info?.shell_pid != null && info.foreground_processes?.length === 1 && front?.pid === info.shell_pid
+          && shell.test(front.name) && shell.test(front.argv?.[0] ?? front.argv0 ?? front.name)) shellSnapshots.add(pane);
+      }));
+    }
+    return snapshot;
+  } });
   omo.start();
   gjc.start();
   claudeAgents.start();
@@ -552,7 +615,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   waitTimer.unref?.();
   plans.start();
 
-  // a verified OpenCode pane is tracked like a usage-login pane: closing it reaches onPaneEnded above
+  // a verified OpenCode pane is tracked like a usage-login pane: its end or close reaches paneGone above
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId));
   const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); collector.stop(); } };
 

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useLayoutEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { HerdrSocket, SubmitDelivery, SubmitResult } from "./ws.ts";
 import type { MachineSession } from "./machineSession.ts";
 import { EMPTY_DRAFT } from "./draft.ts";
+import { keyboardControl } from "./keyboardControl.ts";
 import { composerMessage, composerPayload, insertNote, submitNote, submitNotTyped } from "./compose.ts";
 import { afterSend, afterSettled, greetingMemory, rememberGreeting } from "./greeting.ts";
 import { hasModifiers, terminalChord, type StickyModifiers } from "./keys.ts";
@@ -28,7 +29,11 @@ export interface TerminalSendsDeps {
   hostRef: RefObject<HTMLDivElement | null>;
   inputLine: boolean;
   inputRowNow: () => InputRowState | null;
+  /** this pane's keyboard-control owner (lib/keyboardControl.ts): the mode switch reads its keyboard */
+  keyboardOwnerRef: RefObject<string>;
   keyboardToggleFocusRef: RefObject<boolean>;
+  /** the input line's handle, where a direct-to-line mode switch hands the grid's keyboard (no component type needed) */
+  lineFocus: RefObject<{ focus(): boolean } | null>;
   knownOutcomes: (pane: string | null) => readonly string[] | null;
   lineComposingRef: RefObject<boolean>;
   machineId: string;
@@ -45,6 +50,7 @@ export interface TerminalSendsDeps {
   sessionRef: RefObject<MachineSession | null>;
   setChatRefresh: Dispatch<SetStateAction<number>>;
   setChatSent: Dispatch<SetStateAction<number>>;
+  setChatUnsent: Dispatch<SetStateAction<number>>;
   setDraft: (value: InputDraft | ((previous: InputDraft) => InputDraft)) => void;
   showSentCommand: (pane: string, text: string, known: readonly string[] | null, seen: boolean) => void;
   socketRef: RefObject<HerdrSocket | null>;
@@ -57,7 +63,7 @@ export interface TerminalSendsDeps {
 }
 
 export function useTerminalSends(deps: TerminalSendsDeps) {
-  const { activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardToggleFocusRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings } = deps;
+  const { activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardOwnerRef, keyboardToggleFocusRef, knownOutcomes, lineComposingRef, lineFocus, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setChatUnsent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings } = deps;
   const sendDraft = useCallback(() => {
     const socket = socketRef.current;
     const pane = paneRef.current;
@@ -76,7 +82,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
   // must not turn a one-letter message into a control key. Offline it sends nothing and
   // keeps its text (never-queue); a message the server could not deliver keeps it too,
   // with the reason. Bracketed-paste wrapping follows the pane program's mode.
-  const submitComposerMessage = useCallback((text: string, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number): Promise<SubmitResult> | null => {
+  const submitComposerMessage = useCallback((text: string, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false): Promise<SubmitResult> | null => {
     const term = termRef.current;
     const socket = socketRef.current;
     const session = sessionRef.current;
@@ -86,7 +92,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     if (draftHeldForRef.current === pane) return Promise.resolve({ ok: false, code: "held_input", message: "send or discard the held input first" });
     // not the scope itself: a message sent right after a reconnect leaves before the snapshot that names it
     const epoch = session.epoch;
-    const sent = socket.submit(pane, composerMessage(text), composerPayload(text, term.modes.bracketedPasteMode), false, delivery, clearDraft, sendAnyway, resendId, generation);
+    const sent = socket.submit(pane, composerMessage(text), composerPayload(text, term.modes.bracketedPasteMode), false, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly);
     if (sent === null) return null;
     const releaseSubmit = submitRetention?.retain(pane);
     const submission = delivery !== "immediate" ? { pane, socket, epoch } : null;
@@ -104,6 +110,8 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
       const typed = result.ok ? result.pending === undefined : !submitNotTyped(result.code);
       if (delivery === "immediate") {
         rememberGreeting(owner, afterSettled(greetingMemory(owner), typed, history)); redrawGreeting();
+        // its setChatSent above had the chat hide a stopped turn as sent over: nothing was
+        if (!typed && paneRef.current === pane) setChatUnsent((current) => current + 1);
       } else if (typed) {
         rememberGreeting(owner, afterSettled(afterSend(greetingMemory(owner)), true, history)); redrawGreeting();
       }
@@ -215,20 +223,36 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
   }, [directTyping, updateSettings]);
 
   // the input line keeps a tapped grid from raising the keyboard; typing straight into it gives it
-  // back. Only turning direct typing on raises it: a pane or lens picked with it on does not.
+  // back. A mode switch is no keyboard gesture: it leaves the keyboard as the key bar's control says
+  // it is (up, or on its way up from this pane's tap; lib/keyboardControl.ts). Up, the switch hands
+  // it to the new mode's field, focus and all, in the same commit that changes data-direct-typing
+  // (a layout effect, before paint); down, it focuses nothing, though a field kept the focus (the
+  // back gesture's state), where a focus would raise it. A pane's own remount keeps its blur
   const directTypingRef = useRef(directTyping);
-  useEffect(() => {
-    const turnedOn = directTyping && !directTypingRef.current;
+  useLayoutEffect(() => {
+    const wasDirect = directTypingRef.current;
+    const turnedOn = directTyping && !wasDirect;
     directTypingRef.current = directTyping;
     const textarea = hostRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
     if (!textarea) return;
+    const keyboardUp = keyboardControl.view(keyboardOwnerRef.current).direction === "hide";
     if (inputLine) {
       textarea.setAttribute("inputmode", "none");
-      if (document.activeElement === textarea) textarea.blur();
+      if (document.activeElement !== textarea) return;
+      // the handoff is a key-bar move on a touch screen only: a desktop keeps the old blur. The two
+      // moves take the focus the bar asked for: nothing they cause is a user's (keyboardToggleFocusRef)
+      keyboardToggleFocusRef.current = true;
+      try {
+        if (wasDirect && coarse && keyboardUp) {
+          if (!lineFocus.current?.focus()) textarea.blur();
+        } else textarea.blur();
+      } finally {
+        keyboardToggleFocusRef.current = false;
+      }
     } else {
       textarea.removeAttribute("inputmode");
       // only the selected pane: a focused sibling would take the selection (PaneCanvas onFocusCapture)
-      if (activeRef.current && coarse && !chatView && turnedOn) termRef.current?.focus();
+      if (activeRef.current && coarse && !chatView && turnedOn && keyboardUp) termRef.current?.focus();
     }
   }, [inputLine, coarse, chatView, directTyping, paneId]);
 

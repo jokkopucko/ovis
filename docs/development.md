@@ -12,6 +12,11 @@ bun run dev      # Vite on :5173, proxies /api and /ws
 
 `bun run server` and `bun run dev` never update themselves; only `bun run start` and the plugin run the update supervisor.
 
+For a loopback-only server, `HOST=127.0.0.1 OVIS_IPV6_LOOPBACK=1 bun run server` also listens on
+`::1` at the same port. Both listeners share the API and WebSocket services; `localhost`,
+`127.0.0.1` and `[::1]` keep their own URLs and browser storage. This option does not change a
+non-loopback bind and requires IPv6 loopback to be available.
+
 The plugin's `start` and `stop` (`scripts/plugin.ts`) take turns through `lifecycle.lock` in the
 plugin's state directory (the owner lock of `server/owner-guard.ts`, taken over once its owner is
 proved gone): a start holds it until its server answers or the start fails, a stop until the server
@@ -71,6 +76,35 @@ still returns `undefined`. Ordinary responses carry the server ID too. The defau
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` fill absent headers only,
 preserving each route's CSP, framing, MIME, caching and compression headers.
 
+## Machine event transport and rollback
+
+New browser clients subscribe to `machine-events` on the existing local `/ws` connection when
+its `features` frame advertises that capability. The `machine-event` frames carry the same
+machine roster, redacted sidebar values, shared preferences, seen finishes and filtered device
+pairings as `/api/machines/events`. The local connection is kept even while a remote PC is
+selected; remote terminal sockets do not subscribe to this document.
+
+Older servers still use SSE. Set `OVIS_MACHINE_EVENTS_WS=0` in the server environment and restart
+only Ovis to disable the capability and return new clients to SSE without changing stored data.
+Removing that override and restarting restores the WebSocket transport. The SSE endpoint remains
+available to older clients and bridge/relay consumers. A reconnect negotiates the transport again;
+no terminal input is replayed by this subscription.
+
+A page takes machine events over SSE whenever its socket does not carry them: a connection that
+has not said whether it does within five seconds, a socket stopped for output (4008, which only
+reconnects on an attach), or a connection whose server sent `machine-events-ended`. Machine events
+never close the terminal or stall its output: one that would put more than `OUTPUT_LOW_BYTES`
+(64 KiB) on the socket, counting what is queued already, ends the subscription with that frame
+instead. A roster carries every PC's snapshot, so a page whose roster is larger than that takes
+machine events over SSE, one stream per tab as before this transport. The next connection that offers the capability takes over
+from SSE again.
+
+This avoids consuming one long-lived HTTP/1.1 request per browser tab. It does not make every tab
+share its rendered conversation, terminal or JavaScript heap, and is not a claim of a measured RAM
+reduction. Compare the same pages, conversation sizes and activity before claiming one. In
+particular, the conversation cache's byte budget is an upper bound on retained serialized answers,
+not a measurement of a tab's resident memory or its parsed objects and rendered nodes.
+
 ## Checks
 
 Production builds create Brotli (`.br`) and gzip (`.gz`) sidecars for JavaScript and CSS under
@@ -103,14 +137,16 @@ timing, so more runs side by side make them fail each other: on a 32-core PC thr
 already lost Chromium screenshots in the browser lane, so raise it only to look for such failures. A run that finds every slot taken
 names the holders and exits, or, with `CHECK_WAIT_SECONDS` (0 to 7200), waits that long for one
 first, as CI's herdr-backed lanes do. A second run in the same checkout exits at once, even with
-slots free: runs in one checkout share `dist/` and the generated types. A checkout is its real
+slots free: runs in one checkout share `dist/` and the generated types. `fast` takes no slot
+and never waits, but it claims its checkout the same way, so it and any other mode refuse each
+other there. A checkout is its real
 path, plus `RUNNER_NAME` when that is set: the self-hosted runners of one PC share a loopback and
 all check out to the same path. The
 generated-types and generated-themes checks (`bun run generate:types --check`,
 `bun run generate:themes --check`) are read-only, but `test:unit` includes
 `scripts/generate-protocol-types.test.ts`, which rewrites the generated file while it runs. Fast
-checks and the browser lane also build into `dist/`; avoid overlapping runs that write to the same
-checkout. (`check run` runs only its named command unless `--build` is supplied.)
+checks and the browser lane also build into `dist/`. Nothing stops a `bun run build` or a single
+test command started by hand beside a run, so avoid those while a check runs in that checkout. (`check run` runs only its named command unless `--build` is supplied.)
 Theme colors are edited only in the theme blocks of `src/styles.css`. Never edit the generated
 copies (`src/lib/themes.generated.ts`, the DESIGN.md region between the `GENERATED THEMES`
 markers, the `theme-color` tag in `index.html`, the colors in `public/manifest.webmanifest`); run
@@ -134,7 +170,11 @@ processes. The queue is ordered largest file first, so long files start early. W
 (native Windows) the files run serially in one process.
 Explicit `CHECK_DIR` and `CHECK_REPORT` paths are claimed exclusively by canonical path, even for
 `fast`, before writing reports, logs or isolated state. Pid markers are released at exit after the
-final report and session cleanup; a dead owner's marker is reclaimed under serialized admission.
+final report and session cleanup. A marker names its run's pid and, on Linux and macOS, when that
+process started, so a pid given to another process after a crash or a reboot does not keep the claim.
+A dead owner's marker is taken over under a lock: on Linux an abstract socket, which the kernel lets
+go of however its holder ends; elsewhere a `.reclaim` file, which the next run clears when a run
+killed during a takeover leaves it. No marker needs deleting by hand.
 Lock refusal exits with the holder's identity before writing a report, so it cannot overwrite
 an active run's output or stop its sessions.
 
@@ -180,17 +220,21 @@ bun run test:unit               # no herdr needed; CI's Fast checks run it
 bun test                        # needs herdr installed; creates and removes its own workspaces
 bun run test:ui                 # browser regression against isolated test servers
 bun scripts/sticky-modifiers-regression.ts # mobile held keys through real legacy/Kitty PTYs
-bun scripts/key-bar-customization-demo-regression.ts # mobile key layout, saved combinations and migration on demo fixtures
+bun scripts/key-bar-customization-demo-regression.ts # mobile key layout, handle drag/edge scrolling, cancellation, saved combinations and migration on demo fixtures
 bun scripts/key-bar-hold-repeat-regression.ts # phone touch key-bar taps, holds (arrows and editing keys), swipes and sticky Ctrl on demo fixtures
 bun scripts/settings-pages-demo-regression.ts # every Settings page on a 390px and a 320px phone, and Back stepping out of the dialog
+bun scripts/agent-entry-points-demo-regression.ts # Add another agent… in New workspace and New worktree, Settings' agent list (installed, the tiles to install) and Open setup guide, and none of it on a watching device, at 1280 and 390
 bun scripts/interface-font-demo-regression.ts # Interface font at 390 and 1440: System and a typed list lead --font-ui, a reload keeps it, Default restores it; the message box takes the Chat font
 bun scripts/theme-first-paint-demo-regression.ts # the saved theme in every painted frame before and after the app starts, root and demo builds under the app's CSP
+bun scripts/boot-loading-demo-regression.ts # index.html's loading spinner while the app's script is held, as on a slow link: centred, stepped, still under reduced motion, gone with the app's first frame (#2329)
+bun scripts/old-safari-demo-regression.ts # a chat pane and a terminal pane draw with the built-ins iOS 16 lacks (Promise.withResolvers, AbortSignal.any, and crypto.randomUUID on plain http) taken away before the app's script runs, under the app's CSP (#2513), and again with each lookbehind handed to RegExp as text refused, as Safari before 16.4 refuses it; the build turns every regular expression with one into such a call (#2534)
 bun scripts/push-health-demo-regression.ts # the alerts health notice with a stand-in PushManager: a retired subscription told once over the pane and in Settings, repaired once; a refusal, a key mismatch, denied, unsupported, offline, loading and a watching device's refused test, at 390 and 1440, light and dark, Korean at 390
 bun scripts/device-security-demo-regression.ts # Phone & devices on demo fixtures: revoking every device (the caller's warning, the confirmation, a refused write, a watching device) and the line every window gets when a device pairs
 bun scripts/chat-browser-qa.ts  # chat lens end to end
 bun scripts/omo-plan-browser-regression.ts # OmO todo progress and plan panel on isolated native fixtures
 bun scripts/pane-input-focus-demo-regression.ts # the input focus shortcut against fictional panes
 bun scripts/mirror-scroll-demo-regression.ts # fixed mirror wheel/touch, native history, no guessed program input, observe guards
+bun scripts/core-history-scroll-demo-regression.ts # a herdr-core server's history kept in xterm: wheel and swipe scroll it, a replay erases the last one, nothing typed; herdr's own keeps none (#2663)
 bun scripts/mirror-fold-demo-regression.ts # a mirror, or an attached pane a phone watches at a wider grid, folded whole (portrait, landscape), Original width from the pane menu, driving phones and desktops unfolded
 bun scripts/shortcut-exact-modifiers-demo-regression.ts # recording exact-modifier chords: confirm, refusals, dispatch
 bun scripts/output-browser-qa.ts # terminal output flow control end to end
@@ -209,7 +253,7 @@ after a herdr restart. It prints the time each step took. `KEEP=1` leaves the co
 
 Tests run against a herdr session of their own, `ovis-test`. The first run starts a headless `herdr --session ovis-test server` and later runs reuse it, so test workspaces never show in the herdr you work in (`scripts/test-herdr.ts`). Stop it with `herdr --session ovis-test server stop`. `HERDR_TEST_SESSION` picks another name, and `HERDR_TEST_LIVE=1` runs against `HERDR_SOCKET` or your default session instead.
 
-Browser checks launch `CHROME_PATH` when it is set, else Google Chrome at `/opt/google/chrome/chrome` where that exists, else the lockfile's Playwright Chromium (`scripts/chrome-path.ts`; install it with `bun node_modules/playwright-core/cli.js install chromium`). After a herdr upgrade, refresh the generated wire types with `bun run generate:types --refresh` (and `--check` to verify).
+Browser checks launch `CHROME_PATH` when it is set, else Google Chrome at `/opt/google/chrome/chrome` where that exists, else the lockfile's Playwright Chromium (`scripts/chrome-path.ts`; install it with `bun node_modules/playwright-core/cli.js install chromium`). After a herdr upgrade, refresh the generated wire types with `bun run generate:types --refresh` (and `--check` to verify). When ci.yml's `herdr-core-live` job pins a new `HC_VERSION`, refresh herdr-core's with `OVIS_HC_BIN=<that hc> bun run generate:types --refresh-hc`: the live job fails while the snapshot differs from what that hc's `hc schema` prints.
 
 `HEADED=1 bun scripts/chat-browser-qa.ts` opens its owned native-transcript fixture in a
 visible Chrome window. Its detected Codex fixture process keeps the rollout open; no
@@ -221,17 +265,25 @@ For isolated phone viewer and keyboard layout regressions (no herdr session; the
 bun scripts/file-viewer-mobile-regression.ts  # 8 viewport cases × tall/wide images
 bun scripts/keyboard-viewport-regression.ts   # keyboard, rotation and measured standalone status inset
 bun scripts/keyboard-viewport-demo-regression.ts # original real-app viewport suite on disposable demo fixtures
+bun scripts/unconfirmed-input-demo-regression.ts # typing the socket took but the server never read, then a dropped connection: held for review, not lost and not sent after the reconnect (#2587)
 bun scripts/terminal-keyboard-demo-regression.ts # the key bar's Show/Hide keyboard control: current-mode focus, measured state, composition refusal, observe/held/offline/ended; `--serve-ios` only serves the build on loopback for a Simulator
 bun scripts/droplet-demo-regression.ts        # real-app alerts below the header, keyboard and landscape
 bun scripts/chat-greeting-demo-regression.ts  # an empty chat's greeting: centred on a desktop, docked on a phone
+bun scripts/reply-comments-demo-regression.ts # comments on a reply (#511): the floating Comment moves nothing, one chip, the next message carries them for an agent alone, a slash command leaves them; 1280 and 390, Codex palette in UI_EVIDENCE_DIR
+bun scripts/chat-select-quote-demo-regression.ts # Quote on a chat selection: Quote first and Comment second, the words go in the message box as a `> ` quote after the draft, it takes the keyboard, quotes stack, nothing is sent until Send, then for an agent alone; 1280 and 390, Codex palette in UI_EVIDENCE_DIR
+bun scripts/chat-selection-turn-end-demo-regression.ts # a selection in progress while the agent's turn ends under it (#2650): a bare press and a drag at 1280 and a standing touch selection at 390, in a later reply and in the ending turn below its folding work, keep the words still in every painted frame and take exactly them; the chat is back at its end once the selection goes
+bun scripts/chat-quote-selection-end-regression.ts # Quote and Comment on a triple-click and a drag past a reply's last word (Claude and Codex), quoting the words alone; a selection from a user message or another reply still offers nothing; 1280 and 390
+bun scripts/diff-line-notes-demo-regression.ts # a note on a diff line (#1603): hover +, arrow keys and Enter, a tap and a 44px Add a note; it waits with the reply comments and goes first in the next message for an agent alone; too long is refused; no agent says why; 1280 and 390, Korean, Codex palette in UI_EVIDENCE_DIR
 bun scripts/composer-fit-demo-regression.ts   # one Send/Stop control, pending Send now actions, context/label fit and Chat font sizing
 bun scripts/plan-chip-demo-regression.ts      # the plan chip's step in progress: one row at 390 and 1440, cut when long, with tasks, the list's read states, offline and in a split, Korean too
 bun scripts/held-rows-demo-regression.ts      # held messages: the fold under an approval card, its button, a row's error
+bun scripts/chat-working-line-demo-regression.ts # the Working head: none before a working pane's first read, none under an answer drawn 300 ms or 1.5 s before the pane rests or read in with the last answer's start time or drawn while blocked, a finished turn not reopened when the agent begins another by itself, a turn kept at work until its answer is read after herdr rests, and an empty chat's greeting kept through a /clear's short working status
 bun scripts/sidebar-activity-demo-regression.ts # Agents order Activity and pins: blocked pinned, recency, Pin agent / Unpin agent and Pin workspace / Unpin workspace from a right-click and the context-menu key, the ⋯ on a phone, and a finish opened here drawn as ready until the next one
 bun scripts/hide-pc-demo-regression.ts       # Remote PCs → Show in sidebar at 390 and 1440 on two demo PCs: a hidden PC leaves the sidebar, Agents and palette, the selection moves, the last PC stays, a reload keeps it, its link still opens, the sidebar's note shows it again
 bun scripts/sidebar-filter-demo-regression.ts # the roster's label filter on two demo PCs: fuzzy matches with their ancestors, the selection kept as context, pins and folds untouched, a live and an offline roster, the drawer and a reload clearing it; screenshots at 390 and 1440 in UI_EVIDENCE_DIR
 bun scripts/sidebar-branch-line-demo-regression.ts # herdr's branch line: a repository and an unmarked git folder say their branch under the name, worktrees and folders outside git stay one line, desktop and phone, dark and light
 bun scripts/sidebar-tokens-demo-regression.ts # herdr plugin tokens on agent rows: a dim line of their own on One line and Two lines, cut with the whole text in the tooltip and a phone's sheet, as text, following herdr's `$name` rows, and changing live
+bun scripts/sidebar-selection-contrast-demo-regression.ts # the selected workspace and agent rows in every theme entry, selected, hovered and focused: the fill alone with no leading stroke (its contrast recorded), every text at 4.5:1, a Highlight bar at 3:1 in forced colors; the table and the Codex shots at 1280 and 390 in UI_EVIDENCE_DIR
 bun scripts/pane-mute-demo-regression.ts    # Mute alerts from an agent's row menu: one shared list for push, droplet, chime and tab notification, two tabs of one server, a second PC's same-named pane, an older server and a watching device
 bun scripts/prompt-dock-demo-regression.ts    # the prompt card docked over the input card: its place, its height on a short phone, the grip, a typed pick
 bun scripts/plugin-actions-demo-regression.ts # a plugin action that ends after the server stopped waiting: the late failure said, a traceback's height on a phone with its keyboard up
@@ -239,12 +291,113 @@ bun scripts/background-agent-detail-demo-regression.ts # a running Claude subage
 bun scripts/font-swap-demo-regression.ts      # the app's faces arriving late on a slow link: a reader at the end of a chat stays there, a tab strip the user scrolled stays put
 bun scripts/narrow-pane-demo-regression.ts    # a split pane under 80 columns: the smaller font, a zoom, and a pane no font can bring to 80
 bun scripts/agent-skill-menu-demo-regression.ts [agent …] # each agent's `/` (and `$`) skill menu, its origin groups and its skill chips at 1280 and 390px, one case file per agent in scripts/skill-menu-cases/, screenshots in evidence/agent-skill-menu/<agent>/
-bun scripts/install-state-demo-regression.ts  # Install app against a real CDP install on a throwaway profile and HOME: the help or the prompt before, gone in the app window and a tab of its origin, back after uninstall
+bun scripts/install-state-demo-regression.ts  # Install app against a real CDP install on a throwaway profile and HOME: never in the sidebar; Settings > Install shows the help or the prompt before, Installed in the app window and a tab of its origin, the help again after uninstall
 bun scripts/terminal-paste-insert-demo-regression.ts # a phone's Paste key into the terminal's input line and Insert without Enter on the demo shell: the caret, a held or refused clipboard read, the acknowledged clear, an older bridge; with UI_EVIDENCE_DIR, every state at 390 and 1440, light and dark, and Korean
 bun scripts/link-menu-demo-regression.ts       # a long press on a chat link in the Android app: Copy link, Open link and, where the WebView shares, Share link; a tap, other words, a mouse's menu, a swipe and a browser keep their own; with UI_EVIDENCE_DIR, the sheet at 390 in English and Korean
 ```
 
 `FILE_VIEWER_CASE=landscape-notch` selects a viewer case; `FILE_VIEWER_CSS=/path/to/before.css` compares another stylesheet. These checks use Chromium mobile emulation and synthetic safe-area/keyboard geometry; they cannot verify actual iOS Safari keyboard dismissal or notch insets. The existing `bun scripts/file-viewer-regression.ts` separately checks history with an owned herdr pane. The original `scripts/mobile-viewport-regression.ts` exports `checkMobileViewport` for the real-app `bun run test:ui` suite; it also checks the command palette and xterm focus transitions. The demo runners build the real client into a temporary directory, inject the committed fictional-session transport and serve it only on loopback; they do not use a live herdr session or download website media. Run on its own, each builds the client itself (`scripts/demo-build.ts`); the browser lane builds it once and names the directory in `HERDR_DEMO_BUILD`, and each runner copies that instead. They exercise real-app viewport and alert geometry, but not live herdr connectivity.
+
+## Pi session labels
+
+Earlier sessions keeps Pi's native label priority: the latest trimmed `session_info.name` (an
+empty name clears it), else the first usable user string or `text` blocks joined with spaces.
+Pi alone streams metadata on its checked descriptor; other agents retain the 64 KiB head bound.
+Directory discovery retains the existing walk/stat limits. Transcript opens, identity checks,
+reads and stats are asynchronous. A bounded JSON projection validates records without retaining
+large system prompts, extension state or image data. Ordinary string spans are validated in bulk
+within each read chunk; quotes, escapes and control characters are still checked even in discarded
+fields or beyond the retained label. Malformed records and nesting deeper than
+64 levels are skipped through their newline. Incomplete final records are ignored; a valid final
+record needs no newline, matching Pi. BOM-prefixed records are rejected rather than silently
+stripping the BOM before JSON validation. Native falsy JSON preambles are ignored; the first truthy
+record must be a session header. Header cwd/ID strings exceeding 16 KiB are refused rather than
+matched or returned as truncated identities; display-label clipping remains separate.
+
+Pi checks each transcript's path and descriptor identity on every listing. Its server-owned,
+in-memory LRU cache retains at most 256 entries: completed clipped labels and header metadata,
+or an unfinished scan's bounded parser and byte offset, never transcript buffers, open descriptors
+or shared in-flight parsers. Each parser bounds nesting to 64 frames, projected text to 2001
+characters (201 for names), and header fields to 16 KiB each. Its retained strings are bounded
+independently of transcript length: conservatively a few hundred KiB per adversarial checkpoint,
+or tens of MiB across the 256-entry cache, plus runtime object/string overhead. Ordinary checkpoints
+keep only a few KiB. The key is
+the absolute path plus device, inode, size, mtime and ctime where available (nanosecond timestamps
+strengthen the millisecond fields where the filesystem exposes them). An unchanged key performs
+no transcript reads for completed labels; an unfinished scan resumes at its offset. A changed key
+discards the checkpoint and scans afresh, so appended names, cleared names and new first prompts
+are found without combining different file versions. Each listing drops entries for transcripts no longer
+discovered in its folders; ineligible headers are rejected before cache insertion so foreign files
+cannot churn out eligible checkpoints. The count bound also evicts older stores. Stopping the server clears
+the cache. Coarse timestamps can still hide a same-tick, same-size in-place rewrite whose
+identity and timestamps all stay unchanged.
+The server admits at most two readers and 32 waiting tasks. Chunks are 64 KiB. Each listing first
+establishes up to 50 eligible rows, newest first, reading at most one chunk per candidate for its
+header (the existing 400-check discovery bound also limits invalid candidates). Header requests
+use the same reader/queue limits and share a ten-second deadline including queue time. Long headers
+and malformed preambles retain their bounded parser and offset for the next open rather than
+restarting at a fixed cutoff. A traversal also stops after 50 unfinished headers, independently
+of its 50-row limit, and touches at most three quarters of the exported `PI_CACHE_ENTRIES`
+capacity (currently 192 of 256 slots). Every retained entry touch counts, including hits;
+counting only insertions would let later hits promote older entries past this traversal's
+new checkpoints. Label scans revisit only that same set, so one traversal cannot evict its
+own checkpoints. Completed single-chunk headerless files are not cached, just as explicitly
+rejected headers are not cached, so neither consumes this limit. Headerless files larger than
+one chunk retain their completed empty result under the same checked stat key and count toward
+the touch limit, including on a cache hit. This prevents unchanged multi-chunk files from starting
+over and consuming unfinished-header slots on every open. Single-chunk files are checked again
+on later opens, with their I/O still bounded by discovery and the header deadline. A cutoff before discovery is
+exhausted with no established row returns retryable busy, never an empty success. Files beyond these
+bounds may be omitted. In particular, actively growing oversized headers can keep resetting
+their progress and hide older sessions; ordinary Pi headers are only a few hundred bytes.
+A file whose header is not yet complete has no row yet, never a
+guessed identity. Files completed in that first chunk publish their EOF-checked labels immediately.
+The subsequent full label scans share a two-second deadline measured from before the header pass,
+including all queue time. When the header pass leaves less than a quarter of that deadline, the
+label scans still get a quarter of it, so a slow disk fills labels over later opens instead of
+never. Tests may lengthen both phase deadlines with `piSessionDeadlineMs`.
+No full scan begins or continues past its deadline. Concurrent listings keep
+independent deadlines, even when reading the same transcript.
+Only clipped metadata and a bounded record projection are retained during a scan. A size and
+nanosecond mtime/ctime check validates the first completed header before it can identify a row;
+another at EOF refuses labels from a file changed while it was read. A checkpoint saved at expiry
+is private until a later listing revalidates its original stat key. Coarse timestamps can still
+hide a same-tick in-place rewrite.
+
+An elapsed label deadline now returns 200 with every established row, including the older ones.
+Unchanged completed cached labels remain visible. Unfinished files have `title` and `firstMessage`
+both null; the browser's existing session-ID fallback and Resume still work. Later opens resume
+a stable file's scan and fill its labels at EOF. This replaces #2377's all-or-error deadline
+policy. The rejected alternative, stopping at the first expired file, hides older sessions and
+can falsely report an empty store. The separate header byte bound trades a bounded amount of
+additional I/O latency for a complete list of ordinary headers. The header deadline also bounds
+stalled opens, stats, reads and queued requests. On header expiry the already checked rows remain
+visible. If none could be checked, the response is retryable busy, never an empty success; retained
+progress lets later attempts finish a long header. A genuinely empty or wholly ineligible store
+still returns an empty list.
+
+A full header queue, stopped reader, or a listing with no checked rows and incomplete/failed header
+reads returns 503 `session_history_busy`, with `Retry-After: 1`. Once rows are established, label
+read errors, file changes, replacement or deletion keep their null/cached labels; only reader
+shutdown rejects them. Header eligibility and Windows folder identity are checked once, and a
+changed header identity in the label pass cannot replace the established row. Successful and busy
+responses both carry `Cache-Control: no-store`. The browser's five bounded automatic retries and
+Retry button remain for busy failures; the wire shape and client need no change. There is no automatic
+background scan or persisted format. Server stop refuses queued/in-flight requests; a filesystem
+call already in progress keeps its slot and descriptor until it returns and closes. A label scan's
+returned chunk may advance the private checkpoint, but no next label I/O starts after expiry. The synthetic
+`server/pi-session-metadata.test.ts` instruments zero-read cache hits, appended label refresh,
+deleted-entry eviction, resource bounds and a
+server answering a ping while a 20 MiB listing is held at a controlled read gate. Deterministic
+clock/timer cases cover every row at queued, first-chunk, aggregate and mid-file expiry, older
+cached labels during a slow newest scan, eventual labels without
+rereading a prefix, checkpoint invalidation, torn resumed reads, independent deadlines, queued
+expiry without opening and FIFO admission. The 202-session fixture reads the newest 50 long
+transcripts (about 200 MiB together) with an injected 120-second label deadline beyond the test's
+own timeout, then repeats with no transcript reads;
+the isolated history API contract covers partial-label success and non-deadline refusal after
+an earlier row. That contract lengthens only the reader's metadata budgets through
+`piSessionDeadlineMs`, not server or herdr timers.
 
 ## Codex Send now
 
@@ -376,7 +529,8 @@ terminal output.
 Conversation responses are gzipped like every other text answer (`server/compress.ts`), with
 weak ETags so conditional reads hold across encodings.
 Prompt polling remains separate at 2 s: approval cards and suggestions can change on the
-terminal screen without a transcript write or agent-status transition.
+terminal screen without a transcript write or agent-status transition. A pane that turns blocked,
+or stops being blocked, has its prompt read at once.
 
 ### Initial push + gzip measurement
 
@@ -579,10 +733,85 @@ signing secrets are unset ([app/mac/README.md](../app/mac/README.md#releases)), 
 `Ovis.exe` ([app/windows/README.md](../app/windows/README.md#releases)); the release becomes GitHub's
 latest only once it has both. A red `mac-dmg` or `windows-app` job leaves the release published: run
 **Actions → Mac app** or **Actions → Windows app** for its tag instead of releasing again.
+
+The **Desktop app** job (`.github/workflows/desktop.yml`) builds the desktop app
+([app/electron](../app/electron/README.md)) from the tag, each on its own OS and CPU, under names
+without the version, so `releases/latest/download/<name>` always gives the newest:
+`Ovis-linux-x64.deb`, `Ovis-linux-arm64.deb` (the download for Ubuntu and Debian),
+`Ovis-linux-x64.AppImage`, `Ovis-linux-arm64.AppImage`, `Ovis-mac-arm64.dmg`, `Ovis-mac-x64.dmg`, and
+`Ovis-mac-arm64.zip`, `Ovis-mac-x64.zip` (what a Mac app updates from), with their `.blockmap` files.
+The AppImage carries the static AppImage runtime (electron-builder's `toolsets.appimage`), so it
+needs no libfuse2, only the fuse3 a desktop has; without FUSE at all it runs with
+`APPIMAGE_EXTRACT_AND_RUN=1`. Its version is the tag's: the build
+stops unless `package.json` says the same. It attaches them with the update feed: `latest-linux.yml`,
+`latest-linux-arm64.yml` and one `latest-mac.yml` for both Macs (the two Mac builds' feeds merged by
+`bun app/electron/scripts/build.ts merge-feed`). The app is built to update from
+`https://github.com/devswha/ovis/releases/latest/download` (electron-updater's generic provider), so
+an installed app sees a version once it is GitHub's latest, the same moment `ovis.sh/Ovis.dmg` and
+`ovis.sh/Ovis.exe` move. Only the AppImage and the Mac app update themselves; a deb is updated by
+installing the new one.
+The Macs' files are unsigned, and a Mac app updates itself only when signed, until the repository
+variable `DESKTOP_MAC_SIGN` is `true`: then the build signs and notarizes with the same
+`MAC_*` secrets as Ovis for Mac ([app/electron](../app/electron/README.md)'s signing, with
+`OVIS_REQUIRE_NOTARIZATION=1`) and fails if one is missing or the dmg is not notarized. The `mac-dmg` and `windows-app` jobs
+wait for `desktop`, so the release becomes latest only with the desktop files in it; a red `desktop`
+job leaves the release published but holds them back: **Re-run failed jobs** on the Release run
+builds and attaches it again (`--clobber`), then runs them. **Actions → Desktop app** from `main`
+with a tag does the same for one release alone, and refuses the latest release, whose feed installed
+apps read (fix that one with a new patch release); without a tag it only builds, as on a pull
+request touching the app. A release build skips the app's unit tests, which its pull requests ran.
 Do not push release tags by hand: installed updaters read Git tags directly, so a tag is
 visible to them even without a GitHub release. Existing tags cannot be reused; fix a
 published version with a new patch release. If publishing fails after a tag was created,
 verify that tag's commit and repair its GitHub release rather than moving the tag.
+
+The hosted shell is then built and deployed in three jobs, so the Cloudflare token never shares a
+job with the build's dependencies. `shell-build` (no environment, no secrets, the dependency cache
+restored read-only) checks out the release tag, fails unless the tag points at the commit this
+release published, builds the shell (`bun run build:shell`), fails if `dist-shell/` lacks
+`index.html` or `build.json`, and uploads `dist-shell.tar.gz` and `dist-shell.tar.gz.sha256`,
+passing the tarball's SHA-256 on as a job output. `shell-deploy`, on a GitHub-hosted runner with
+read-only repository access, checks nothing out and runs no repository code: it sets up Bun, checks
+the downloaded tarball against that SHA-256, refuses it if it holds a link, a special file, a path
+outside it, a `_worker.js`, a `functions/` or a `_routes.json` (Pages would run or route those as
+server code next to the token), unpacks it, installs wrangler from this commit's
+`.github/deploy-tools/package.json` and `bun.lock` with `bun install --frozen-lockfile
+--ignore-scripts`, runs that binary as `wrangler pages deploy dist-shell --project-name ovis-app
+--branch main --no-bundle` (the token reaches that step alone), and waits until `https://app.ovis.sh/build.json`
+answers 2xx with the tag's commit as its `revision`. The `shell-attach` job, the only one that may
+write, then attaches the tarball and its SHA-256 to the release, so anyone can compare what app.ovis.sh
+serves with what the tag builds; it runs only after a deploy that did not fail. Nothing else deploys
+app.ovis.sh: never from a branch or a developer machine. Until the owner setup below is done the
+deploy passes with a notice naming the missing secrets, the tarball is still attached, and app.ovis.sh
+stays as it was.
+
+To move the deploy to another wrangler, change the version in `.github/deploy-tools/package.json`,
+run `bun install` in that directory and commit both files; the deploy jobs refuse a lockfile that
+does not match the manifest.
+
+One-time owner setup for the shell deploy:
+
+1. In Cloudflare, create the Pages project `ovis-app` (direct upload, production branch `main`) and
+   give it the custom domain `app.ovis.sh`. Keep its production branch `main`: the shell preview
+   deploys to the branch `preview` and stays off app.ovis.sh only while `preview` is not the
+   production branch.
+2. Create an API token that may edit Cloudflare Pages for that account, and add it with the account
+   ID as the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` of the GitHub environment
+   `production` (not repository secrets).
+3. Give the `production` environment the maintainer as a required reviewer: every deploy waits for
+   an approval on the Release run.
+4. Keep the account on the Workers Paid plan (the relay needs it) and set a billing alert at
+   $20 a month.
+
+To try the relay from a phone before a release, without Tailscale, deploy main to the Pages preview:
+**Actions → Shell preview → Run workflow** on `main`, approve the `production` environment, then open
+<https://preview.ovis-app.pages.dev>. The workflow (`.github/workflows/shell-preview.yml`, run by hand
+only) has the same two-job split as the release: `shell-build` builds the shell from main without
+secrets and fails if `dist-shell/` lacks `index.html` or `build.json`; `shell-deploy` checks the
+tarball's SHA-256, deploys it with the locked wrangler and `--branch preview` (never `main`, so
+app.ovis.sh keeps the release's build) and waits until the preview's `build.json` names main's commit.
+Run the PC's Ovis from the same main with `OVIS_RELAY_APP_URL=https://preview.ovis-app.pages.dev`, so its QR codes open the preview
+instead of app.ovis.sh. It uses the same secrets and approval as the release deploy.
 
 Remote-PC runtime bundles are published by a `remote-vN` tag, and an app release requires the bundle
 that matches its server (step 3). See [remote PCs](remote-pcs.md).
@@ -751,8 +980,9 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
     process, server and fixture panes. Those helpers stay sequential within their own fixture.
     The context suite prints each helper's elapsed time and stops its owned daemon on exit.
     `bun run test:ui` also runs both suites.
-  - **Browser regression (other scripts)** runs every other browser script, four at a time
-    on hosted CI and six at a time on self-hosted CI.
+  - **Browser regression (other scripts)** runs every other browser script: six at a time in
+    one job on self-hosted CI, and on hosted CI split over four jobs (`BROWSER_SHARD=k/4`,
+    balanced by `scripts/ci-browser-timings.json`) that run three at a time each.
 
   Both browser jobs run `scripts/ci-browser-parallel.ts`, which takes its script list from
   `scripts/ci-browser.sh` (`BROWSER_SCRIPTS` picks from it, `BROWSER_EXCLUDE` leaves scripts out,
@@ -778,9 +1008,19 @@ The serial lane prints each script's wall seconds and exit code, including the s
 build, then a summary on success or failure. The first failing script stops it.
 The parallel runner builds the demo once, prints a line when each script starts and ends (and
 every minute a script is still running), and keeps running the other scripts after one fails.
+It starts the longest scripts first, by `scripts/ci-browser-timings.json` (each script's median
+seconds on CI; one it does not list counts as the median), so the lane does not end with one slow
+script running alone while the other workers wait; `BROWSER_ORDER=listed` keeps
+`scripts/ci-browser.sh`'s order. The table only orders the scripts: a stale one costs time, not
+coverage, and a new script needs no entry. A script removed from or renamed in `ci-browser.sh`
+leaves the table too (`scripts/ci-browser-parallel.test.ts` fails on a name the lane does not
+run). When scripts get much slower, refresh it with each script's median over several recent
+runs' `[worker-N] PASS <script> (<seconds>s)` lines.
 Each script's full output goes to `${CHECK_DIR:-.ci}/browser-logs/<script>.log`, with
 `summary.json` beside it; a failure prints the last 400 lines of its log and the log's path, and
-the job then fails. CI uploads `browser-logs` with the evidence on success or failure.
+the job then fails. CI uploads `browser-logs` on success or failure; browser-main adds the evidence
+every time, browser-other only when it failed or was cancelled (a timeout included) (its ~2,000 screenshots of a green run cost
+about 50 s to upload on the job that ends a run last).
 A script that fails is run a second time (`BROWSER_RETRY=0` turns that off). One that then passes
 does not fail the job, and is not counted as a plain pass either: its first log is kept as
 `<script>.attempt-1.log` and printed, the summary marks it `~` and `summary.json` lists it under
@@ -822,9 +1062,16 @@ pages or credentials.
 
 ### Self-hosted runner
 
-`ci.yml`'s Linux jobs of a push or a same-repository pull request run on the maintainer PC's runners
-(labels `["self-hosted","self-hosted-ovis"]`) by default; other events stay on `ubuntu-24.04`. The repository variable `CI_SELF_HOSTED_LABELS`
-overrides that with another JSON array of runner labels that contains `"self-hosted"`, or with the
+`ci.yml`'s Linux jobs of a push run on the maintainer PC's runners (labels
+`["self-hosted","self-hosted-ovis"]`) by default. A same-repository pull request goes there too
+while those runners have room for its four Linux jobs, and to `ubuntu-24.04` (with the browser
+checks sharded) when they do not, so neither pool queues while the other sits idle. The workflow
+token cannot list runners, so Detect changes counts room from the Actions API: the repository
+variable `CI_SELF_HOSTED_CAPACITY` (default 10, the PC's `self-hosted-ovis` runners) minus the
+queued and running jobs of every workflow that target those labels. When that count fails, the
+pull request stays hosted. Other events stay on `ubuntu-24.04`. The repository variable
+`CI_SELF_HOSTED_LABELS` overrides that (labels send every same-repository pull request to the
+self-hosted runners) with another JSON array of runner labels that contains `"self-hosted"`, or with the
 JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline. `pages.yml`
 and `release.yml` stay on `ubuntu-24.04` unless the variable holds labels. The variable routes:
 
@@ -885,7 +1132,7 @@ do; measure setup, test execution and retries separately when comparing speed. S
 [scripts/self-hosted-runner/README.md](../scripts/self-hosted-runner/README.md).
 
 `scripts/ci-tests.ts` discovers all `.test.ts` and `.test.tsx` files under
-src/shared/server/scripts/telemetry/push-relay/integrations.
+src/shared/server/scripts/telemetry/push-relay/relay/integrations.
 Files named `*.contract.test.ts`, tests under `server/herdr/` and `server/pty/`, and
 `server/updater.test.ts` (which includes real bridge restart/rollback cases) belong
 to integration; everything else belongs to unit. Name new live-server tests

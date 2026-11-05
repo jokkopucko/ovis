@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AccessRefusal, HealthAuth, SecuritySummary } from "../../shared/protocol.ts";
 import { fetchBridgeHealth, pairDevice } from "./api.ts";
 import { deviceLabel, takePairCode } from "./phone.ts";
+import { canSignOut as authEndsHere } from "./signOut.ts";
 import { sameData } from "./useMachineRoster.ts";
 
 /** What Settings → Phone & devices shows of the server's access facts: `absent` is an older server that sends none. */
@@ -30,7 +31,7 @@ export function useAccessState() {
   const [auth, setAuth] = useState<HealthAuth | null>(null);
   const [security, setSecurity] = useState<SecurityFacts>({ state: "loading" });
   // a token a proxy sends with every request comes back right after signing out: signing out is the proxy's
-  const canSignOut = auth?.authenticated === true && (auth.via === "device" || (auth.via === "token" && auth.bearer !== true));
+  const canSignOut = authEndsHere(auth);
   // the newest read to settle, answer or failure, decides the facts: an older one that lands after
   // it changes nothing, and a failure clears them even while a newer read is still out
   const started = useRef(0);

@@ -86,10 +86,24 @@ function gjcScreen(lines: string[]): Screen {
   return { model, reasoning_effort: found[2]! };
 }
 
+/**
+ * `0.0%/262k (auto)          (provider) model-id • high`, the stats row of Pi's footer: the context
+ * figure on the left, the model id its transcript records on the right, then its thinking level
+ * when the model reasons (` • thinking off` when that level is off). Pi cuts a right side too wide
+ * to fit down to two columns after the stats, with no marker: a row padded by only two may hold a
+ * cut-off id, so it names none.
+ */
+function piScreen(lines: string[]): Screen {
+  const found = lastMatch(lines, new RegExp(`(?:\\d+(?:\\.\\d)?%|\\?)/\\d+(?:\\.\\d)?[kM]?(?: \\(auto\\))?(?: • xp)? {3,}(?:\\([^()\\s]+\\) )?(\\S+)(?: • (?:thinking (off)|(${EFFORT})))?(?: → \\S+(?: • \\S+)?)?\\s*$`, "u"));
+  if (!found || found[1] === "no-model") return NOTHING;
+  return { model: found[1]!, reasoning_effort: found[2] ?? found[3] ?? null };
+}
+
 const SCREENS: Partial<Record<ConversationResponse["source"], (lines: string[]) => Screen>> = {
   "claude-transcript": claudeScreen,
   "codex-transcript": codexScreen,
   "gjc-transcript": gjcScreen,
+  "pi-transcript": piScreen,
 };
 
 export function readsStartScreen(source: ConversationResponse["source"]): boolean {

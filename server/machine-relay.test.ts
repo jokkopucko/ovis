@@ -137,6 +137,34 @@ describe("MachineRelay stall timer", () => {
   });
 });
 
+describe("MachineRelay stall timer behind a large frame (#2573)", () => {
+  test("output queued at the phone behind a large snapshot still draining is no stall, and is one once that has crossed", async () => {
+    const upstream = Bun.serve({
+      port: 0, hostname: "127.0.0.1",
+      fetch(request, server) { return server.upgrade(request) ? undefined : new Response("no", { status: 400 }); },
+      websocket: { message() {} },
+    });
+    const manager = { endpoint: () => ({ url: `http://127.0.0.1:${upstream.port}`, token: "test" }), trackTerminal: () => () => {} } as unknown as MachineManager;
+    const relay = new MachineRelay(manager, "pc", false, (snapshot) => snapshot);
+    try {
+      await relay.ready;
+      let large = 1_200_000;
+      const closes: number[] = [];
+      relay.bind({ getBufferedAmount: () => OUTPUT_HIGH_BYTES, large: () => large, send: () => 1, close: (code?: number) => { closes.push(code ?? 0); } });
+      for (let at = 0; at <= 40_000; at += 100) relay.tick(at);
+      expect(closes).toEqual([]);
+      large = 0;
+      for (let at = 40_100; at < 40_100 + OUTPUT_STALL_MS; at += 100) relay.tick(at);
+      expect(closes).toEqual([]);
+      relay.tick(40_100 + OUTPUT_STALL_MS);
+      expect(closes).toEqual([OUTPUT_STALLED_CLOSE_CODE]);
+    } finally {
+      relay.close();
+      upstream.stop(true);
+    }
+  });
+});
+
 describe("MachineRelay snapshot frames", () => {
   test("tells the browser a PC's snapshot without the token values this server's rows hide, and every other frame as it came (#2160)", async () => {
     const snapshot = { workspaces: [], tabs: [], panes: [{ pane_id: "w1:p1", workspace_id: "w1", tab_id: "t1", agent: "claude", tokens: { quota: "off · private", eta: "soon" } }], agents: [] };

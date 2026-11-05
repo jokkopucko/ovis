@@ -32,7 +32,8 @@ export function zoomAt(view: View, factor: number, px: number, py: number): View
   return { scale, x: px - (px - view.x) * k, y: py - (py - view.y) * k };
 }
 
-export function MermaidLightbox({ svg, onClose }: { svg: string; onClose: () => void }) {
+/** `svg` is markup drawn into the page (Mermaid's own sanitized output); `src` is a figure drawn as an image. */
+export function MermaidLightbox({ svg, src, onClose }: ({ svg: string; src?: undefined } | { svg?: undefined; src: string }) & { onClose: () => void }) {
   const t = useT();
   const close = useRef<HTMLButtonElement>(null);
   const surface = useFocusTrap<HTMLDivElement>(true, { initialFocus: close });
@@ -137,11 +138,17 @@ export function MermaidLightbox({ svg, onClose }: { svg: string; onClose: () => 
           onPointerCancel={up}
           onDoubleClick={toggle}
         >
-          <div
-            className="mermaid-lightbox-canvas"
-            style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
-            dangerouslySetInnerHTML={{ __html: svg }}
-          />
+          {src === undefined ? (
+            <div
+              className="mermaid-lightbox-canvas"
+              style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
+              dangerouslySetInnerHTML={{ __html: svg ?? "" }}
+            />
+          ) : (
+            <div className="mermaid-lightbox-canvas" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
+              <img src={src} alt="" draggable={false} />
+            </div>
+          )}
         </div>
       </div>
     </div>,

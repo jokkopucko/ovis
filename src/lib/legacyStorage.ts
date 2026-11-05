@@ -1,7 +1,7 @@
 /**
- * Browser storage keys were `herdr-web-ui:*` before the rename to `ovis:*`. Imported first by
- * main.tsx, so settings, drafts and queued messages are under their new keys before anything
- * reads them. The old key goes in the same step: kept, it would bring back a draft or a queue
+ * Browser storage keys were `herdr-web-ui:*` before the rename to `ovis:*`. Imported by main.tsx
+ * ahead of every module that reads storage, so settings, drafts and queued messages are under
+ * their new keys before anything reads them. The old key goes in the same step: kept, it would bring back a draft or a queue
  * the app has since cleared under the new key.
  */
 

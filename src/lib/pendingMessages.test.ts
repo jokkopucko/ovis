@@ -9,6 +9,35 @@ const storage = () => {
 const message = (id: string, state: PendingMessage["state"] = "queued", text = "check the tests"): PendingMessage => ({ id, request_id: 1, text, state, created_at: "2026-10-06T00:00:00Z" });
 
 describe("pending message ownership", () => {
+  it("settles a follow-up's exact resumed receipt after reload, never a same-text or live-owned row (#2421)", () => {
+    const port = storage(), before = new PendingMessageStore(() => port);
+    before.accept("p", message("delivered", "sending", "same"), "old");
+    before.accept("p", message("unproved", "sending", "same"), "old");
+    before.suspendScope("old");
+    const store = new PendingMessageStore(() => port);
+    store.accept("p", message("live", "sending", "same"), "other");
+    // a plain receipt for a saved copy proves nothing about it
+    store.publish("p", [], [{ id: "unproved", outcome: "sent" }], "new");
+    expect(store.read("p").map((row) => row.id)).toEqual(["delivered", "unproved", "live"]);
+    store.publish("p", [], [{ id: "delivered", outcome: "sent", resumed: true }, { id: "live", outcome: "sent", resumed: true }], "new");
+    expect(store.read("p").map((row) => row.id)).toEqual(["unproved", "live"]);
+    // an old tab's saved copy and a late acceptance cannot bring the settled id back
+    port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("delivered", "sending", "same")] }));
+    store.refresh("p");
+    store.accept("p", message("delivered", "sending", "same"), "late");
+    // (that tab's save replaced the other saved row; the live connection's row stays)
+    expect(store.read("p").map((row) => row.id)).toEqual(["live"]);
+    // another pane's receipt settles nothing here
+    store.publish("other", [], [{ id: "live", outcome: "sent", resumed: true }], "new");
+    expect(store.read("p").map((row) => row.id)).toEqual(["live"]);
+  });
+  it("keeps a resumed receipt that came before another tab saved its copy (#2421)", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.publish("p", [], [{ id: "early", outcome: "sent", resumed: true }], "new");
+    port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("early", "sending"), message("other", "sending")] }));
+    store.refresh("p");
+    expect(store.read("p").map((row) => row.id)).toEqual(["other"]);
+  });
   it("settles only the exact resumed Pi ID after reload, never same-text or unrelated rows", () => {
     const port = storage(), first = new PendingMessageStore(() => port);
     const receipt = { ...message("pi:one", "uncertain", "same"), error: { code: "pi_transcript_pending", message: "waiting" } };
@@ -281,5 +310,104 @@ describe("pending message ownership", () => {
     expect(store.isUnsaved("p")).toBe(true);
     store.refresh("p");
     expect(store.read("p")[0]!.text).toBe("check the tests");
+  });
+});
+
+// #511: a saved copy of a message for an agent alone stays one across a reload
+it("keeps a saved row's agent_only across a reload", () => {
+  const port = storage(), first = new PendingMessageStore(() => port);
+  first.accept("p", { ...message("only", "held", "> q\nc"), agent_only: true }, null);
+  first.accept("p", message("plain", "held"), null);
+  expect(new PendingMessageStore(() => port).read("p").map((row) => [row.id, row.agent_only])).toEqual([["only", true], ["plain", undefined]]);
+});
+
+describe("a pane moved under a new ID (#1503)", () => {
+  it("moves its rows to the new ID once, held as they were, with the live connection's proof", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("remote:pc:w1%3Ap1", message("live", "held"), "scope");
+    port.setItem("ovis:pending:remote:pc:w1%3Ap1", JSON.stringify({ messages: [message("live", "held"), message("saved", "held", "saved copy")] }));
+    store.refresh("remote:pc:w1%3Ap1");
+    // the server's list under the new ID came first
+    store.publish("remote:pc:w2%3Ap1", [message("live", "held")], [], "scope");
+    store.move("remote:pc:w1%3Ap1", "remote:pc:w2%3Ap1");
+    expect(store.read("remote:pc:w1%3Ap1")).toEqual([]);
+    expect(port.getItem("ovis:pending:remote:pc:w1%3Ap1")).toBeNull();
+    expect(store.read("remote:pc:w2%3Ap1").map((row) => [row.id, row.state])).toEqual([["live", "held"], ["saved", "held"]]);
+    // its receipt under the new ID settles the live row
+    store.publish("remote:pc:w2%3Ap1", [], [{ id: "live", outcome: "sent" }], "scope");
+    expect(store.read("remote:pc:w2%3Ap1").map((row) => row.id)).toEqual(["saved"]);
+    // moving again (another tab's word, the moving tab's own) changes nothing
+    store.move("remote:pc:w1%3Ap1", "remote:pc:w2%3Ap1");
+    expect(store.read("remote:pc:w2%3Ap1").map((row) => row.id)).toEqual(["saved"]);
+  });
+
+  it("leaves a row whose send this page has on its way where its answer looks for it, then moves it", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("w1:p1", message("going", "held"), "scope");
+    expect(store.begin("w1:p1", "going")).toBe(true);
+    store.move("w1:p1", "w2:p1");
+    expect(store.read("w1:p1").map((row) => row.id)).toEqual(["going"]);
+    expect(store.read("w2:p1")).toEqual([]);
+    store.fail("w1:p1", "going", { code: "submit_changed", message: "Check the terminal" }, true);
+    store.end("w1:p1", "going");
+    expect(store.read("w1:p1")).toEqual([]);
+    expect(store.read("w2:p1").map((row) => [row.id, row.state])).toEqual([["going", "uncertain"]]);
+  });
+
+  it("keeps a moved row off the old ID when the server's lists for it come after the move", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("w1:p1", message("queued", "queued"), "scope");
+    // pane-moved first, then the server holds the row under the old ID, empties that list and lists the new one
+    store.move("w1:p1", "w2:p1");
+    store.publish("w1:p1", [message("queued", "held")], [], "scope");
+    store.publish("w1:p1", [], [], "scope");
+    store.publish("w2:p1", [message("queued", "held")], [], "scope");
+    expect(store.read("w1:p1")).toEqual([]);
+    expect(store.read("w2:p1").map((row) => [row.id, row.state])).toEqual([["queued", "held"]]);
+    store.publish("w2:p1", [], [{ id: "queued", outcome: "discarded" }], "scope");
+    expect(store.read("w1:p1")).toEqual([]);
+    expect(store.read("w2:p1")).toEqual([]);
+  });
+
+  it("brings no row settled under the new ID back with the move", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    port.setItem("ovis:pending:w1:p1", JSON.stringify({ messages: [message("sent-copy", "held")] }));
+    // the new ID's resumed receipt came first: the copy went out
+    store.publish("w2:p1", [], [{ id: "sent-copy", outcome: "sent", resumed: true }], "scope");
+    store.move("w1:p1", "w2:p1");
+    expect(store.read("w1:p1")).toEqual([]);
+    expect(store.read("w2:p1")).toEqual([]);
+  });
+});
+
+describe("a pane moved again (#1503)", () => {
+  it("takes a row whose send was on its way across two moves to the last ID", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("a", message("going", "held"), "scope");
+    expect(store.begin("a", "going")).toBe(true);
+    store.move("a", "b");
+    store.move("b", "c");
+    store.end("a", "going");
+    expect(store.read("a")).toEqual([]);
+    expect(store.read("b")).toEqual([]);
+    expect(store.read("c").map((row) => row.id)).toEqual(["going"]);
+  });
+
+  it("hears the server's lists again under an ID the pane moved back to", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("a", message("row", "held"), "one");
+    store.move("a", "b");
+    store.move("b", "a");
+    store.accept("a", message("row", "queued"), "two");
+    expect(store.read("a").map((row) => [row.id, row.state])).toEqual([["row", "queued"]]);
+    expect(store.isOwned("a", "row", "two")).toBe(true);
+  });
+
+  it("carries a row another connection's receipt under the new ID does not prove settled", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("a", message("row", "held"), "one");
+    store.publish("b", [], [{ id: "row", outcome: "sent" }], "two");
+    store.move("a", "b");
+    expect(store.read("b").map((row) => row.id)).toEqual(["row"]);
   });
 });

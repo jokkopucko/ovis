@@ -7,9 +7,9 @@
  */
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { meetsMinVersion, parseVersion, type AgentCatalogEntry, type AgentInstallState, type CatalogPlatform } from "../shared/agent-catalog.ts";
-import { loginPathProbe, loginShell, type LoginPathProbe } from "./shell-agent.ts";
+import { loginPathProbe, loginShell, shellCommandLine, type LoginPathProbe } from "./shell-agent.ts";
 
 /** How long one `--version` may run before it is killed and reported as timed out. */
 export const VERSION_TIMEOUT_MS = 5_000;
@@ -22,8 +22,12 @@ const EXIT_GRACE_MS = 200;
 /** How long a timed-out read stands before it is tried again: it may have been a slow first start (an npm shim's cold cache). */
 export const TIMEOUT_KEPT_MS = 60_000;
 
-/** Where a catalog binary is on this PC, as an absolute path, or null. */
-export type Locate = (binary: string) => Promise<string | null>;
+/**
+ * Where a catalog binary is on this PC, as an absolute path, or null. `searchPath`, when the locator
+ * has one: the PATH it looks on, the login shell's included once read, which its version flag is
+ * run with too (a script's interpreter, nvm's node, may be on that PATH only).
+ */
+export type Locate = ((binary: string) => Promise<string | null>) & { searchPath?: () => string; refresh?: () => Promise<void> };
 
 /** How long the login shell's PATH is kept before a lookup that misses reads it again. */
 export const LOGIN_PATH_KEPT_MS = 60_000;
@@ -49,12 +53,15 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
   let kept: { path: string | null; at: number } | null = null;
   let reading: Promise<string | null> | null = null;
   const loginPath = (probe: LoginPathProbe): Promise<string | null> => {
+    // a read already out (a refresh after an install) is newer than what is kept
+    if (reading !== null) return reading;
     if (kept !== null && now() - kept.at < LOGIN_PATH_KEPT_MS) return Promise.resolve(kept.path);
-    reading ??= probe(signal)
+    const run: Promise<string | null> = probe(signal)
       .then((result) => result.path, () => null)
       .then((path) => { kept = { path, at: now() }; return path; })
-      .finally(() => { reading = null; });
-    return reading;
+      .finally(() => { if (reading === run) reading = null; });
+    reading = run;
+    return run;
   };
   // a plain GET runs what it finds: only absolute PATH entries count, never `.`, an empty or a relative
   // one, which would make whatever is in the server's working folder an agent
@@ -64,12 +71,28 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
     const found = Bun.which(binary, { PATH: absolute });
     return found !== null && isAbsolute(found) && isExecutableFile(found) ? found : null;
   };
-  return async (binary) => {
+  const locate = async (binary: string): Promise<string | null> => {
     const own = find(binary, servicePath());
     if (own !== null || options.probe === null) return own;
     const path = await loginPath(options.probe);
     return path === null ? null : find(binary, path);
   };
+  // reads the login PATH again after any read already out (it may predate an install); refreshes asked
+  // for while that one waits to start join it: one login shell for them all
+  let queued: Promise<string | null> | null = null;
+  const refresh = (): Promise<void> => {
+    if (options.probe === null) return Promise.resolve();
+    if (queued !== null) return queued.then(() => undefined);
+    const probe = options.probe;
+    const run: Promise<string | null> = (reading ?? Promise.resolve(null))
+      .then(() => { if (queued === run) queued = null; return probe(signal).then((result) => result.path, () => null); })
+      .then((path) => { kept = { path, at: now() }; return path; })
+      .finally(() => { if (reading === run) reading = null; });
+    queued = run;
+    reading = run;
+    return run.then(() => undefined);
+  };
+  return Object.assign(locate, { searchPath: () => [servicePath(), kept?.path ?? ""].filter((part) => part !== "").join(delimiter), refresh });
 }
 
 /** The login-shell PATH probe of the real entrypoints: none on Windows, nor where the user has no login shell. */
@@ -80,12 +103,14 @@ export function defaultLoginProbe(platform: string = process.platform): LoginPat
 }
 
 export interface VersionRun {
-  /** what the process printed, stdout then stderr, at most VERSION_OUTPUT_BYTES of each */
-  output: string;
+  /** what the process printed on each stream, at most VERSION_OUTPUT_BYTES of each */
+  stdout: string;
+  stderr: string;
   exitCode: number | null;
   timedOut: boolean;
 }
-export type RunVersion = (executable: string, args: readonly string[], timeoutMs: number) => Promise<VersionRun>;
+/** `path`: the PATH the flag runs with, instead of this server's own (not on Windows) */
+export type RunVersion = (executable: string, args: readonly string[], timeoutMs: number, path?: string, signal?: AbortSignal) => Promise<VersionRun>;
 
 /** Reads at most VERSION_OUTPUT_BYTES, and nothing more once `stop` settles: a process the timeout ended may have left a child holding the pipe. */
 async function readBounded(stream: ReadableStream<Uint8Array>, stop: Promise<void>): Promise<string> {
@@ -110,10 +135,20 @@ async function readBounded(stream: ReadableStream<Uint8Array>, stop: Promise<voi
 /** Ends `pid` and every process it started: its process group off Windows, its process tree on Windows. */
 function killTree(pid: number): void {
   if (process.platform === "win32") {
-    Bun.spawn(["taskkill", "/pid", String(pid), "/T", "/F"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    Bun.spawn(["taskkill", "/pid", String(pid), "/T", "/F"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", windowsHide: true });
     return;
   }
   try { process.kill(-pid, "SIGKILL"); } catch { /* the group is gone already */ }
+}
+
+/**
+ * The process that runs `executable args`. On Windows a .cmd or .bat (the shim npm installs an agent
+ * as) is a batch file, which only cmd.exe runs: it goes through `cmd.exe /d /s /c "<line>"`, the line
+ * quoted as cmd reads it, with Bun's own argument quoting off so cmd gets it as written.
+ */
+export function versionSpawn(executable: string, args: readonly string[], platform: NodeJS.Platform = process.platform, comspec: string | undefined = process.env["ComSpec"]): { cmd: string[]; windowsVerbatimArguments: boolean } {
+  if (platform !== "win32" || !/\.(?:cmd|bat)$/i.test(executable)) return { cmd: [executable, ...args], windowsVerbatimArguments: false };
+  return { cmd: [comspec || "cmd.exe", "/d", "/s", "/c", `"${shellCommandLine("cmd", executable, args)}"`], windowsVerbatimArguments: true };
 }
 
 /**
@@ -121,20 +156,26 @@ function killTree(pid: number): void {
  * At `timeoutMs` the whole group is killed and its output no longer read: a version flag that starts
  * a child holding stdout open (an npm shim, a launcher) would otherwise outlast the timeout.
  */
-export const runVersion: RunVersion = async (executable, args, timeoutMs) => {
-  const child = Bun.spawn([executable, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: process.platform !== "win32" });
+export const runVersion: RunVersion = async (executable, args, timeoutMs, path, signal) => {
+  if (signal?.aborted) return { stdout: "", stderr: "", exitCode: null, timedOut: false };
+  const { cmd, windowsVerbatimArguments } = versionSpawn(executable, args);
+  const env = path === undefined || process.platform === "win32" ? undefined : { ...process.env, PATH: path };
+  const child = Bun.spawn(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: process.platform !== "win32", windowsVerbatimArguments, windowsHide: true, env });
   let timedOut = false;
   let stopReading!: () => void;
   const stop = new Promise<void>((resolve) => { stopReading = resolve; });
+  const abort = () => { killTree(child.pid); stopReading(); };
+  signal?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(() => { timedOut = true; killTree(child.pid); stopReading(); }, timeoutMs);
   // a flag that answered and exited may have left a child holding its output: what it printed is
   // read for a moment more, then the reading stops, and the child is ended below
   let grace: ReturnType<typeof setTimeout> | undefined;
-  const exited = child.exited.then((code) => { grace = setTimeout(stopReading, EXIT_GRACE_MS); return code; });
+  const exited = child.exited.then((code) => { if (!signal?.aborted) grace = setTimeout(stopReading, EXIT_GRACE_MS); return code; });
   try {
     const [stdout, stderr, exitCode] = await Promise.all([readBounded(child.stdout, stop), readBounded(child.stderr, stop), Promise.race([exited, stop.then(() => null)])]);
-    return { output: `${stdout}\n${stderr}`, exitCode, timedOut };
+    return { stdout, stderr, exitCode, timedOut };
   } finally {
+    signal?.removeEventListener("abort", abort);
     clearTimeout(timer);
     clearTimeout(grace);
     // a version flag that answered may still have left a child behind: nothing it started outlives the read
@@ -174,6 +215,7 @@ export class AgentDetector {
   readonly #running = new Map<string, Promise<Kept>>();
   #active = 0;
   readonly #waiting: (() => void)[] = [];
+  readonly #lifetime = new AbortController();
 
   readonly #now: () => number;
   readonly #home: string;
@@ -186,6 +228,12 @@ export class AgentDetector {
     this.#now = options.now ?? Date.now;
     this.#home = options.home ?? homedir();
     this.#env = options.env ?? process.env;
+  }
+
+  /** End active process groups and release queued reads without starting more version flags. */
+  close(): void {
+    this.#lifetime.abort();
+    for (const resolve of this.#waiting.splice(0)) resolve();
   }
 
   /** `binary` in one of the installer's folders (detect.install_dirs), as an executable file, or null. */
@@ -201,7 +249,7 @@ export class AgentDetector {
   }
 
   async #slot<T>(work: () => Promise<T>): Promise<T> {
-    if (this.#active >= PARALLEL_RUNS) await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    if (!this.#lifetime.signal.aborted && this.#active >= PARALLEL_RUNS) await new Promise<void>((resolve) => this.#waiting.push(resolve));
     this.#active++;
     try {
       return await work();
@@ -211,19 +259,25 @@ export class AgentDetector {
     }
   }
 
-  async #version(executable: string, fingerprint: string, args: readonly string[]): Promise<Kept> {
+  async #version(executable: string, fingerprint: string, args: readonly string[], timeoutMs: number, path: string): Promise<Kept> {
     const kept = this.#kept.get(executable);
     if (kept?.fingerprint === fingerprint && (kept.retryAt === null || this.#now() < kept.retryAt)) return kept;
     const running = this.#running.get(fingerprint);
     if (running) return running;
     const read = this.#slot(async (): Promise<Kept> => {
       try {
-        const run = await this.#run(executable, args, this.#timeoutMs);
+        if (this.#lifetime.signal.aborted) return { fingerprint, version: null, error: "failed", retryAt: null };
+        const run = await this.#run(executable, args, timeoutMs, path, this.#lifetime.signal);
         if (run.timedOut) return { fingerprint, version: null, error: "timeout", retryAt: this.#now() + TIMEOUT_KEPT_MS };
-        const version = parseVersion(run.output);
+        // a flag that failed proves the agent does not run: its error (a wrapper's missing target,
+        // with Node's version in the path) is never read for a version. A failure is asked again
+        // after a while: a wrapper's target can be repaired while the wrapper stays the same file.
+        if (run.exitCode !== 0) return { fingerprint, version: null, error: "failed", retryAt: this.#now() + TIMEOUT_KEPT_MS };
+        // the version is read from what the flag printed as its answer only, never from stderr
+        const version = parseVersion(run.stdout);
         return { fingerprint, version, error: version === null ? "unreadable" : null, retryAt: null };
       } catch {
-        return { fingerprint, version: null, error: "failed", retryAt: null };
+        return { fingerprint, version: null, error: "failed", retryAt: this.#now() + TIMEOUT_KEPT_MS };
       }
     }).then((result) => {
       this.#kept.set(executable, result);
@@ -233,21 +287,47 @@ export class AgentDetector {
     return read;
   }
 
+  /** The executable `binary` would be started as on this PC: PATH first, then the installer's own folders; null where none is. */
+  /** `binary` on this server's PATH or the login shell's, as kept; no installer folder. */
+  onPath(binary: string): Promise<string | null> {
+    return this.#locate(binary);
+  }
+
+  /** `binary` in one of its installer's folders, or null (`inInstallDirs`, for GET /api/agents). */
+  inInstallFolder(binary: string, dirs: readonly string[], platform: CatalogPlatform): string | null {
+    return this.#inInstallDirs(binary, dirs, platform);
+  }
+
+  /** Reads the login shell's PATH again (an install may have changed it). */
+  refreshPath(): Promise<void> {
+    return this.#locate.refresh?.() ?? Promise.resolve();
+  }
+
+  async executable(binary: string, dirs: readonly string[], platform: CatalogPlatform | null): Promise<string | null> {
+    return (await this.#locate(binary)) ?? (platform === null ? null : this.#inInstallDirs(binary, dirs, platform));
+  }
+
   /**
    * Whether `entry` is on this PC: the first of its binaries found, and that one's version. Where
-   * another program has the binary's name (detect.unreliable_on), nothing is looked up or run.
+   * another program has the binary's name (detect.unreliable_on), nothing is looked up or run; while
+   * a program it needs (detect.needs) is missing, it is not installed and nothing is run either.
    */
   async state(entry: AgentCatalogEntry, platform: CatalogPlatform | null): Promise<AgentInstallState> {
+    const missing: AgentInstallState = { installed: false, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null };
     if (platform !== null && entry.detect.unreliable_on?.[platform] !== undefined) {
       return { installed: null, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null };
     }
+    const dirs = platform === null ? [] : entry.detect.install_dirs?.[platform] ?? [];
+    for (const needed of entry.detect.needs ?? []) if ((await this.executable(needed, dirs, platform)) === null) return missing;
     for (const binary of entry.detect.binaries) {
       const onPath = await this.#locate(binary);
       const executable = onPath ?? (platform === null ? null : this.#inInstallDirs(binary, entry.detect.install_dirs?.[platform] ?? [], platform));
       if (executable === null) continue;
       const fingerprint = fingerprintOf(executable);
       if (fingerprint === null) continue;
-      const { version, error } = await this.#version(executable, fingerprint, entry.detect.version_args);
+      // the agent's own folder first (npm's global folder holds its node), then the PATH it was found on
+      const path = [dirname(executable), this.#locate.searchPath?.() ?? process.env["PATH"] ?? ""].filter((part) => part !== "").join(delimiter);
+      const { version, error } = await this.#version(executable, fingerprint, entry.detect.version_args, entry.detect.version_timeout_ms ?? this.#timeoutMs, path);
       return {
         installed: true,
         binary,
@@ -257,6 +337,6 @@ export class AgentDetector {
         meets_min_version: entry.min_version === null || version === null ? null : meetsMinVersion(version, entry.min_version.version),
       };
     }
-    return { installed: false, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null };
+    return missing;
   }
 }

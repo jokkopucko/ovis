@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UsageReport } from "../shared/protocol.ts";
-import { FRESH_MS, handleUsageRequest, MAX_READ_BYTES, MIN_REFRESH_MS, RETRY_MS, runCommand, USAGE_PROVIDERS, UsageHttpError, UsageService, type KeychainRead, type UsageContext, type UsageProvider } from "./usage.ts";
+import { FRESH_MS, handleStatuslineRequest, handleUsageRequest, MAX_READ_BYTES, MIN_REFRESH_MS, RETRY_MS, runCommand, USAGE_PROVIDERS, UsageHttpError, UsageService, type KeychainRead, type UsageContext, type UsageProvider } from "./usage.ts";
+import { installStatusline } from "./statusline-install.ts";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
 const HOUR = 3600_000;
@@ -23,6 +24,8 @@ let requests: Array<{ url: string; init: RequestInit }>;
 let keychain: Map<string, KeychainRead>;
 let commands: Map<string, string>;
 let commandCalls: string[][];
+/** commands this PC does not have installed */
+let absent: Set<string>;
 
 function context(platform: NodeJS.Platform = "linux"): UsageContext {
   return {
@@ -40,6 +43,7 @@ function context(platform: NodeJS.Platform = "linux"): UsageContext {
       commandCalls.push(argv);
       return commands.get(argv.join(" ")) ?? null;
     },
+    has: (command) => !absent.has(command),
   };
 }
 
@@ -83,6 +87,7 @@ beforeEach(() => {
   keychain = new Map();
   commands = new Map();
   commandCalls = [];
+  absent = new Set();
 });
 
 afterEach(() => rmSync(home, { recursive: true, force: true }));
@@ -127,6 +132,204 @@ describe("providers", () => {
       { kind: "week", scope: null, used_percent: 63.4, resets_at: "2026-10-03T00:00:00.000Z", starts_at: "2026-09-26T00:00:00.000Z" },
       { kind: "week", scope: "Sonnet", used_percent: 5, resets_at: null, starts_at: null },
     ]);
+  });
+
+  it("reads Claude's windows from the status line Claude's own payload keeps, without a request", async () => {
+    keychain.set("Claude Code-credentials|me", { status: "found", value: JSON.stringify({ claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR, subscriptionType: "max" } }) });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "uuid-1" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "uuid-1" } }, session_id: "s", model: { display_name: "Opus 5.5" }, rate_limits: {
+      five_hour: { used_percentage: 17, resets_at: (NOW + 2 * HOUR) / 1000 },
+      seven_day: { used_percentage: 64, resets_at: (NOW + 48 * HOUR) / 1000 },
+    } });
+    utimesSync(path, new Date(NOW), new Date(NOW));
+    const [usage] = (await new UsageService(context("darwin"), only("claude")).report()).providers;
+    // the endpoint answers 403 from some networks; nothing is asked of it when the line has the numbers
+    expect(requests).toEqual([]);
+    expect(usage!.problem).toBeNull();
+    expect(usage!.plan).toBe("max");
+    expect(usage!.windows).toEqual([
+      { kind: "session", scope: null, used_percent: 17, resets_at: new Date(NOW + 2 * HOUR).toISOString(), starts_at: new Date(NOW + 2 * HOUR - 5 * HOUR).toISOString() },
+      { kind: "week", scope: null, used_percent: 64, resets_at: new Date(NOW + 48 * HOUR).toISOString(), starts_at: new Date(NOW + 48 * HOUR - 7 * 24 * HOUR).toISOString() },
+    ]);
+  });
+
+  it("uses only the captured account's local limits, falling back for other or unknown accounts", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "personal", expiresAt: NOW + HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "personal" } });
+    write(join(home, ".claude-work", ".credentials.json"), { claudeAiOauth: { accessToken: "work", expiresAt: NOW + HOUR } });
+    write(join(home, ".claude-work", ".claude.json"), { oauthAccount: { accountUuid: "work" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "work" } }, rate_limits: { five_hour: { used_percentage: 17 } } });
+    utimesSync(path, new Date(NOW), new Date(NOW));
+    replies.set("https://api.anthropic.com/api/oauth/usage", { body: { five_hour: { utilization: 42 } } });
+    const report = await new UsageService(context(), only("claude")).report();
+    expect(report.providers.map((usage) => [usage.key, usage.windows[0]?.used_percent])).toEqual([["claude:personal", 42], ["claude:work", 17]]);
+    expect(requests.map((request) => (request.init.headers as Record<string, string>)["authorization"])).toEqual(["Bearer personal"]);
+    requests.length = 0;
+    write(path, { rate_limits: { five_hour: { used_percentage: 99 } } });
+    utimesSync(path, new Date(NOW), new Date(NOW));
+    expect((await new UsageService(context(), only("claude")).report()).providers.map((usage) => usage.windows[0]?.used_percent)).toEqual([42, 42]);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("falls back to the Claude endpoint when every captured usage window has reset", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 99, resets_at: NOW / 1000 } } });
+    utimesSync(path, new Date(NOW - 60_000), new Date(NOW - 60_000));
+    replies.set("https://api.anthropic.com/api/oauth/usage", { body: { five_hour: { utilization: 1 } } });
+    const [usage] = (await new UsageService(context(), only("claude")).report()).providers;
+    expect(usage?.windows[0]?.used_percent).toBe(1);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("invalidates a cached local reading at its reset instead of waiting for the report TTL", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 99, resets_at: (NOW + 60_000) / 1000 } } });
+    utimesSync(path, new Date(NOW), new Date(NOW));
+    replies.set("https://api.anthropic.com/api/oauth/usage", { body: { five_hour: { utilization: 1 } } });
+    const service = new UsageService(context(), only("claude"));
+    expect((await service.report()).providers[0]?.windows[0]?.used_percent).toBe(99);
+    expect(requests).toHaveLength(0);
+    now += 60_000;
+    expect((await service.report()).providers[0]?.windows[0]?.used_percent).toBe(1);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("accepts matched local Claude limits with an expired token but never sends that token", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "expired", expiresAt: NOW - HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17 } } });
+    utimesSync(path, new Date(NOW), new Date(NOW));
+    const [usage] = (await new UsageService(context(), only("claude")).report()).providers;
+    expect(usage?.problem).toBeNull();
+    expect(usage?.windows[0]?.used_percent).toBe(17);
+    rmSync(path);
+    const [missing] = (await new UsageService(context(), only("claude")).report()).providers;
+    expect(missing?.problem).toBe("expired");
+    expect(requests).toEqual([]);
+  });
+
+  it("asks the endpoint over a capture older than five minutes, and falls back to it with its own time", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17 } } });
+    const taken = NOW - 10 * 60_000;
+    utimesSync(path, new Date(taken), new Date(taken));
+    replies.set("https://api.anthropic.com/api/oauth/usage", { body: { five_hour: { utilization: 42 } } });
+    const [answered] = (await new UsageService(context(), only("claude")).report()).providers;
+    expect(answered).toMatchObject({ problem: null, checked_at: new Date(NOW).toISOString(), windows: [{ used_percent: 42 }] });
+    expect(requests).toHaveLength(1);
+    replies.set("https://api.anthropic.com/api/oauth/usage", { status: 403, body: { error: { message: "Request not allowed" } } });
+    const [refused] = (await new UsageService(context(), only("claude")).report()).providers;
+    expect(refused).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 17 }] });
+    expect(requests).toHaveLength(2);
+  });
+
+  it("offers the status line for a 403 to a token that has not expired, never for a real expiry or once it is on", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    replies.set("https://api.anthropic.com/api/oauth/usage", { status: 403, body: { error: { message: "Request not allowed" } } });
+    const read = async () => (await new UsageService(context(), only("claude")).report()).providers[0];
+    expect(await read()).toMatchObject({ problem: "expired", statusline_offer: true });
+    replies.set("https://api.anthropic.com/api/oauth/usage", { status: 401, body: {} });
+    expect(await read()).not.toHaveProperty("statusline_offer");
+    replies.set("https://api.anthropic.com/api/oauth/usage", { status: 403, body: { error: { message: "Request not allowed" } } });
+    installStatusline({ home });
+    expect(await read()).not.toHaveProperty("statusline_offer");
+    expect((await read())?.problem).toBe("expired");
+  });
+
+  it("offers the status line only for the sign-in whose config directory the switch changes", async () => {
+    write(join(home, ".claude-work", ".credentials.json"), { claudeAiOauth: { accessToken: "work", expiresAt: NOW + HOUR } });
+    replies.set("https://api.anthropic.com/api/oauth/usage", { status: 403, body: { error: { message: "Request not allowed" } } });
+    const [elsewhere] = (await new UsageService(context(), only("claude")).report()).providers;
+    expect(elsewhere).toMatchObject({ problem: "expired" });
+    expect(elsewhere).not.toHaveProperty("statusline_offer");
+    const configured = { ...context(), env: { ...context().env, CLAUDE_CONFIG_DIR: join(home, ".claude-work") } };
+    const [switched] = (await new UsageService(configured, only("claude")).report()).providers;
+    expect(switched).toMatchObject({ problem: "expired", statusline_offer: true });
+  });
+
+  it("takes a CLAUDE_CONFIG_DIR named default as a path, not as the default ~/.claude", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    replies.set("https://api.anthropic.com/api/oauth/usage", { status: 403, body: { error: { message: "Request not allowed" } } });
+    const [usage] = (await new UsageService({ ...context(), env: { ...context().env, CLAUDE_CONFIG_DIR: "default" } }, only("claude")).report()).providers;
+    expect(usage).toMatchObject({ problem: "expired" });
+    expect(usage).not.toHaveProperty("statusline_offer");
+  });
+
+  it("offers the status line when CLAUDE_CONFIG_DIR names the default ~/.claude, however it is spelled", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    replies.set("https://api.anthropic.com/api/oauth/usage", { status: 403, body: { error: { message: "Request not allowed" } } });
+    for (const spelled of [join(home, ".claude"), `${join(home, ".claude")}/`]) {
+      const [usage] = (await new UsageService({ ...context(), env: { ...context().env, CLAUDE_CONFIG_DIR: spelled } }, only("claude")).report()).providers;
+      expect(usage).toMatchObject({ problem: "expired", statusline_offer: true });
+    }
+  });
+
+  it("answers a failed switch without quoting Claude's settings or a command saved in them", async () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const service = new UsageService(context(), only("claude"));
+    const post = () => handleStatuslineRequest(new Request("http://x/api/usage/statusline", { method: "POST", body: JSON.stringify({ enabled: true }) }), service);
+    expect((await post()).status).toBe(200);
+    // a command that runs the installed wrapper behind a secret of its own is refused, not wrapped
+    const wrapper = join(home, ".claude", "herdr-statusline", "statusline-tee.sh");
+    write(join(home, ".claude", "settings.json"), { statusLine: { type: "command", command: `API_KEY=FAKE_SECRET_FOR_TEST sh ${wrapper}` } });
+    const refused = await post();
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).not.toContain("FAKE_SECRET_FOR_TEST");
+    writeFileSync(join(home, ".claude", "settings.json"), "{ \"statusLine\": API_KEY=FAKE_SECRET_FOR_TEST");
+    const broken = await post();
+    expect(broken.status).toBe(500);
+    expect(await broken.text()).not.toContain("FAKE_SECRET_FOR_TEST");
+  });
+
+  it("answers a turn-off it could only do in part as refused, not as off", async () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const service = new UsageService(context(), only("claude"));
+    const post = (enabled: boolean) => handleStatuslineRequest(new Request("http://x/api/usage/statusline", { method: "POST", body: JSON.stringify({ enabled }) }), service);
+    expect((await post(true)).status).toBe(200);
+    const wrapper = join(home, ".claude", "herdr-statusline", "statusline-tee.sh");
+    write(join(home, ".claude", "settings.json"), { statusLine: { type: "command", command: `sh ${wrapper}` } });
+    const kept = await post(false);
+    expect(kept.status).toBe(409);
+    expect(existsSync(wrapper)).toBe(true);
+  });
+
+  it("never offers the status line where it cannot run", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    replies.set("https://api.anthropic.com/api/oauth/usage", { status: 403, body: { error: { message: "Request not allowed" } } });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      const [usage] = (await new UsageService(context(), only("claude")).report()).providers;
+      expect(usage).toMatchObject({ problem: "expired" });
+      expect(usage).not.toHaveProperty("statusline_offer");
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it("keeps a newer endpoint answer over an older capture when a later refresh is refused", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 2 * HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17 } } });
+    utimesSync(path, new Date(NOW - 10 * 60_000), new Date(NOW - 10 * 60_000));
+    replies.set("https://api.anthropic.com/api/oauth/usage", { body: { five_hour: { utilization: 42 } } });
+    const service = new UsageService(context(), only("claude"));
+    expect((await service.report()).providers[0]).toMatchObject({ problem: null, windows: [{ used_percent: 42 }] });
+    now += 6 * 60_000;
+    replies.set("https://api.anthropic.com/api/oauth/usage", { status: 403, body: { error: { message: "Request not allowed" } } });
+    expect((await service.report()).providers[0]).toMatchObject({ problem: "expired", checked_at: new Date(NOW).toISOString(), windows: [{ used_percent: 42 }] });
+    expect(requests).toHaveLength(2);
   });
 
   it("reads Claude's other per-model weekly limits from `limits`, after the flat fields", async () => {
@@ -521,8 +724,52 @@ describe("providers", () => {
   it.each(["missing", "failing"] as const)("does not show Antigravity when Linux secret-tool is %s", async (result) => {
     if (result === "failing") commands.set("secret-tool lookup service gemini username antigravity", "");
     const report = await new UsageService(context("linux"), only("antigravity")).report();
-    expect(report.providers).toEqual([]);
+    expect(report).toEqual({ providers: [] });
     expect(commandCalls).toEqual([["secret-tool", "lookup", "service", "gemini", "username", "antigravity"]]);
+  });
+
+  it("names secret-tool when Linux lacks it and no Antigravity sign-in was found, and looks again on the next report", async () => {
+    absent.add("secret-tool");
+    const service = new UsageService(context("linux"), only("antigravity"));
+    expect(await service.report()).toEqual({ providers: [], missing_commands: [{ provider: "antigravity", command: "secret-tool" }] });
+    // installed since: the next plain report finds the keyring item, without waiting for FRESH_MS
+    absent.delete("secret-tool");
+    commands.set("secret-tool lookup service gemini username antigravity", JSON.stringify({
+      token: { access_token: "ya29-keyring", expiry: new Date(NOW + HOUR).toISOString() },
+      id_token: jwt({ email: "keyring@example.com", sub: "keyring-sub" }),
+    }));
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { body: { response: { groups: [] } } });
+    now += 1000;
+    const report = await service.report();
+    expect(report.missing_commands).toBeUndefined();
+    expect(report.providers).toMatchObject([{ id: "antigravity", key: "antigravity:keyring-sub" }]);
+  });
+
+  it("looks in the keyring again once secret-tool, removed after a search was kept, is back", async () => {
+    const service = new UsageService(context("linux"), only("antigravity"));
+    expect(await service.report()).toEqual({ providers: [] });
+    absent.add("secret-tool");
+    now += 1000;
+    expect((await service.report()).missing_commands).toEqual([{ provider: "antigravity", command: "secret-tool" }]);
+    absent.delete("secret-tool");
+    commands.set("secret-tool lookup service gemini username antigravity", JSON.stringify({ token: { access_token: "ya29-keyring", expiry: new Date(NOW + HOUR).toISOString() } }));
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { body: { response: { groups: [] } } });
+    now += 1000;
+    expect((await service.report()).providers).toHaveLength(1);
+  });
+
+  it("names no missing secret-tool once Antigravity's token file gives its account", async () => {
+    absent.add("secret-tool");
+    write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), { token: { access_token: "ya29-file", expiry: new Date(NOW + HOUR).toISOString() } });
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { body: { response: { groups: [] } } });
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report.missing_commands).toBeUndefined();
+    expect(report.providers).toHaveLength(1);
+  });
+
+  it("never names secret-tool off Linux", async () => {
+    absent.add("secret-tool");
+    expect(await new UsageService(context("darwin"), only("antigravity")).report()).toEqual({ providers: [] });
   });
 
   it.each([

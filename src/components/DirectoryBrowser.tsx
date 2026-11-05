@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUp, FolderPlus, House } from "lucide-react";
+import { ArrowUp, Eye, EyeOff, FolderPlus, House } from "lucide-react";
 
 import "./DirectoryBrowser.css";
 import { FileGlyph } from "./FileGlyph.tsx";
@@ -135,6 +135,19 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
   const directories = listing === null || onPick === undefined || normalizedQuery === ""
     ? listing?.directories
     : listing.directories.filter((name) => name.toLowerCase().includes(normalizedQuery));
+  // A listing in flight owns the next answer: a toggle that opened the old path would discard it.
+  const toggleHidden = (): void => {
+    if (loading || listing === null) return;
+    const next = !hidden;
+    setHidden(next);
+    void open(listing.path, next, false);
+  };
+  const footer = <div className="dir-browser-footer">
+    <label className="dir-browser-hidden">
+      <input type="checkbox" checked={hidden} disabled={loading || listing === null} onChange={toggleHidden} />
+      {t("Show hidden")}
+    </label>
+  </div>;
 
   return (
     <div className="dir-browser" role="group" aria-label={t("Choose a folder")} aria-busy={loading}>
@@ -147,11 +160,41 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
         </button>
         <span className="dir-browser-path" title={path}><span dir="ltr">{shown}</span></span>
         {onPick !== undefined && (
+          <button type="button" className="icon-button" aria-label={t("Show hidden")} title={t("Show hidden")} aria-pressed={hidden} disabled={loading || listing === null} onClick={toggleHidden}>
+            {hidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+          </button>
+        )}
+        {onPick !== undefined && (
           <button type="button" className="icon-button" aria-label={t("New folder")} title={t("New folder")} aria-expanded={naming !== null} disabled={listing === null || loading || error !== null} onClick={() => setNaming((current) => current ?? "")}>
             <FolderPlus aria-hidden="true" />
           </button>
         )}
       </div>
+      {onPick !== undefined && <div className="dir-browser-tools">
+        <div className="dir-browser-filter">
+          {/* a touch screen would raise its keyboard over the list just opened; Escape clears the
+              filter before it reaches the dialog's own Escape, which closes the dialog */}
+          <input type="search" className="input" aria-label={t("Filter folders")} placeholder={t("Filter folders")} value={query} autoFocus={window.matchMedia?.("(pointer: coarse)").matches !== true}
+            autoComplete="off" spellCheck={false}
+            onChange={(event) => { setQuery(event.target.value); listRef.current?.scrollTo({ top: 0 }); }}
+            onKeyDown={(event) => {
+              // Enter confirms an IME candidate; Escape dismisses it, not this dialog.
+              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
+                event.stopPropagation();
+                return;
+              }
+              if (event.key === "Enter") event.preventDefault();
+              if (event.key === "Escape" && query !== "") {
+                event.preventDefault();
+                event.stopPropagation();
+                setQuery("");
+              }
+            }} />
+        </div>
+        <button type="button" className="btn btn-primary" disabled={listing === null || loading} onClick={() => listing && onPick(homeRelative(listing.path, listing.home))}>
+          {t("Use this folder")}
+        </button>
+      </div>}
       {naming !== null && (
         <div className="dir-browser-new">
           {/* inside New workspace's form: Enter makes the folder rather than starting the workspace,
@@ -179,29 +222,6 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
           {namingError !== null && <p className="dir-browser-note dir-browser-error" role="alert">{namingError}</p>}
         </div>
       )}
-      {onPick !== undefined && (
-        <label className="field dir-browser-search">
-          <span className="field-label">{t("Filter folders")}</span>
-          {/* a touch screen would raise its keyboard over the list just opened; Escape clears the
-              filter before it reaches the dialog's own Escape, which closes the dialog */}
-          <input type="search" className="input" value={query} autoFocus={window.matchMedia?.("(pointer: coarse)").matches !== true}
-            autoComplete="off" spellCheck={false}
-            onChange={(event) => { setQuery(event.target.value); listRef.current?.scrollTo({ top: 0 }); }}
-            onKeyDown={(event) => {
-              // Enter confirms an IME candidate; Escape dismisses it, not this dialog.
-              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
-                event.stopPropagation();
-                return;
-              }
-              if (event.key === "Enter") event.preventDefault();
-              if (event.key === "Escape" && query !== "") {
-                event.preventDefault();
-                event.stopPropagation();
-                setQuery("");
-              }
-            }} />
-        </label>
-      )}
       {error !== null ? <p className="dir-browser-note dir-browser-error" role="alert">{error}</p> : (
         <ul className="dir-browser-list" ref={listRef}>
           {listing === null && <li className="dir-browser-note" role="status">{t("Loading…")}</li>}
@@ -228,15 +248,7 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
           {listing?.truncated && onPick !== undefined && <li className="dir-browser-note">{t("Search is limited to the {n} loaded folders.", { n: listing.directories.length })}</li>}
         </ul>
       )}
-      <div className="dir-browser-footer">
-        <label className="dir-browser-hidden">
-          <input type="checkbox" checked={hidden} disabled={loading && listing === null} onChange={(event) => { setHidden(event.target.checked); if (listing) void open(listing.path, event.target.checked, false); }} />
-          {t("Show hidden")}
-        </label>
-        {onPick && <button type="button" className="btn btn-primary" disabled={listing === null || loading} onClick={() => listing && onPick(homeRelative(listing.path, listing.home))}>
-          {t("Use this folder")}
-        </button>}
-      </div>
+      {onPick === undefined && footer}
     </div>
   );
 }

@@ -202,6 +202,8 @@ export interface PushServiceOptions {
   muted?: (machineId: string, paneId: string) => boolean;
   /** accept plain-http loopback endpoints: only for the tests' fake push service (push.fake.ts) */
   loopbackHttp?: boolean;
+  /** a pane's alert reached one device (the push service took it); not the test push or a pairing notice */
+  onAlertDelivered?: () => void;
 }
 
 export { defaultStateDir } from "./update-state.ts";
@@ -618,10 +620,12 @@ export function createPushService(options: PushServiceOptions): PushService {
     return { ok: false, status, gone };
   }
 
-  async function broadcast(message: PushPayload, urgency: "normal" | "high", to: readonly PushSubscriptionRecord[] = [...store().values()]): Promise<void> {
+  async function broadcast(message: PushPayload, urgency: "normal" | "high", to: readonly PushSubscriptionRecord[] = [...store().values()], alert = false): Promise<void> {
     await Promise.all(
       to.map((subscription) =>
-        deliver(subscription, message, urgency).catch((error: unknown) => {
+        deliver(subscription, message, urgency).then((delivery) => {
+          if (alert && delivery.ok) options.onAlertDelivered?.();
+        }, (error: unknown) => {
           console.error(`web push failed: ${error instanceof Error ? error.message : String(error)}`);
         }),
       ),
@@ -860,7 +864,7 @@ export function createPushService(options: PushServiceOptions): PushService {
           const current = store().get(subscription.endpoint);
           return current && current.device_id === subscription.device_id ? [current] : [];
         });
-        await broadcast({ ...statusMessage(paneId, title, status), ...where(key, machineId), tag: paneNotificationTag(paneId, machineId) }, status === "blocked" ? "high" : "normal", live);
+        await broadcast({ ...statusMessage(paneId, title, status), ...where(key, machineId), tag: paneNotificationTag(paneId, machineId) }, status === "blocked" ? "high" : "normal", live, true);
       });
     },
 

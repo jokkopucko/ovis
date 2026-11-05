@@ -7,11 +7,12 @@
  * the focus move: its first key click puts the keyboard in the grid. On the isolated test herdr.
  */
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser } from "playwright-core";
-import { workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { paneSendText, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
 
 type InputWindow = Window & { typed_: { pane: string; text: string }[] };
@@ -47,13 +48,22 @@ export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: str
         await page.locator(".xterm-rows").waitFor();
         await page.waitForFunction(() => document.querySelector(".xterm-rows")?.textContent?.includes("$") ?? false);
         if (mode === "line") await page.locator(".terminal-input").waitFor();
+        // a command typed but not run: only the key bar's Enter runs it. Its echo does not hold the
+        // joined marker, so the marker drawn proves the shell took the Enter (a count of prompts
+        // does not: with no scrollback, a new prompt can push an old one off the screen)
+        const nonce = randomUUID().replaceAll("-", "").slice(0, 12);
+        const marker = `KB_${nonce}`;
+        // C-g, then C-u: the last context's Escape tap can leave readline holding a Meta prefix, which
+        // would turn the command's first letter into M-p (a history search). C-g ends any such sequence
+        // (Esc C-g aborts too) and C-u clears the line, so the command is typed on an empty prompt
+        await paneSendText(pane, `\x07\x15printf 'KB_%s\\n' ${nonce}`);
+        await page.locator(".xterm-rows", { hasText: nonce }).waitFor({ timeout: 10_000 });
         // the keyboard put away: nothing focused
         await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
         const focus = () => page.evaluate(() => ({ active: document.activeElement?.tagName, grid: document.activeElement?.classList.contains("xterm-helper-textarea") === true, height: visualViewport!.height }));
         const before = await focus();
         assert.equal(before.active, "BODY", `${tag}: nothing focused to start with`);
         await page.locator(".key-bar").waitFor();
-        const prompts = await page.evaluate(() => (document.querySelector(".xterm-rows")!.textContent!.match(/\$/g) ?? []).length);
         for (const key of ["Control", "Control", "Enter", "Escape"]) {
           const sentBefore = await page.evaluate(() => (window as unknown as InputWindow).typed_.length);
           const button = page.locator(`.key-bar [data-key="${key}"]`);
@@ -68,8 +78,10 @@ export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: str
           const sent = await page.evaluate((from) => (window as unknown as InputWindow).typed_.slice(from), sentBefore);
           assert.deepEqual(sent, [{ pane, text }], `${tag}: a ${key} tap sends its key to the pane once, and nothing else`);
         }
-        // and the shell took the Enter: a new prompt
-        await page.waitForFunction((n) => (document.querySelector(".xterm-rows")!.textContent!.match(/\$/g) ?? []).length > n, prompts, { timeout: 10_000 });
+        // and the shell took the Enter: the command ran
+        await page.locator(".xterm-rows", { hasText: marker }).waitFor({ timeout: 10_000 }).catch(async (error) => {
+          throw new Error(`${tag}: the key bar's Enter did not run the typed command (${marker}); screen: ${JSON.stringify((await page.locator(".xterm-rows").textContent())?.slice(-300))}`, { cause: error });
+        });
       } finally { await context.close(); }
     }
     console.log("PASS key-bar taps on a touch screen send their keys without taking the focus (the keyboard stays down), in Direct typing and Input line modes; a fine pointer's click still focuses the grid");

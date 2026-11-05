@@ -6,4 +6,4 @@ Describe the problem and resulting behavior. For a feature, link the issue where
 
 ## Validation
 
-List relevant checks and results. For HTTP/WS changes, include contract-test coverage.
+List the checks you ran (`bun run check fast`, `full`, or which single commands and files) with their results, and the ones you skipped. For HTTP/WS changes, include contract-test coverage.

@@ -166,14 +166,27 @@ describe("Pages deployment gate", () => {
     expect(integration).toContain("if: always()");
     expect(integration).toContain(".ci/**/*.log");
     expect(integration).toContain(".ci/config/herdr/sessions/*/test-server.log");
-    for (const name of ["browser-main", "browser-other"]) {
-      const job = ciJob(name);
-      expect(job).toContain("if: always()");
-      expect(job).toContain(".ci/browser-logs/**");
-      expect(job).toContain(".ci/browser-evidence/**/*.png");
-      expect(job).toContain(".ci/browser-evidence/**/*.json");
-      expect(job).toContain(".ci/browser-evidence/**/*.zip");
+    const main = ciJob("browser-main");
+    expect(main).toContain("if: always()");
+    expect(main).toContain(".ci/browser-logs/**");
+    expect(main).toContain(".ci/browser-evidence/**/*.png");
+    expect(main).toContain(".ci/browser-evidence/**/*.json");
+    expect(main).toContain(".ci/browser-evidence/**/*.zip");
+  });
+
+  it("keeps browser-other's logs on every outcome and its screenshots only when it failed or was cancelled", () => {
+    const uploads = ciJob("browser-other").split(/^      - name: /m).filter((step) => step.includes("actions/upload-artifact@"));
+    const onSuccess = uploads.find((step) => /^        if: success\(\)$/m.test(step));
+    const otherwise = uploads.find((step) => /^        if: failure\(\) \|\| cancelled\(\)$/m.test(step));
+    expect(uploads).toHaveLength(2);
+    for (const step of [onSuccess, otherwise]) {
+      expect(step).toContain(".ci/report.json");
+      expect(step).toContain(".ci/browser-logs/**");
     }
+    expect(onSuccess).not.toContain(".ci/browser-evidence/");
+    expect(otherwise).toContain(".ci/browser-evidence/**/*.png");
+    expect(otherwise).toContain(".ci/browser-evidence/**/*.json");
+    expect(otherwise).toContain(".ci/browser-evidence/**/*.zip");
   });
 });
 
@@ -244,7 +257,8 @@ describe("Browser lane script lists", () => {
     expect(env(ciJob("integration"), "HERDR_TEST_SHARDS"))
       .toBe("${{ runner.environment == 'self-hosted' && '4' || '1' }}");
     expect(env(ciJob("browser-other"), "BROWSER_WORKERS"))
-      .toBe("${{ runner.environment == 'self-hosted' && '6' || '4' }}");
+      .toBe("${{ runner.environment == 'self-hosted' && '6' || '3' }}");
+    expect(env(ciJob("browser-other"), "BROWSER_SHARD")).toBe("${{ matrix.shard }}/${{ strategy.job-total }}");
   });
 });
 

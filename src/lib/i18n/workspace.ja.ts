@@ -92,4 +92,7 @@ export const WORKSPACE_JA: Record<string, string> = {
   "The folder could not be made.": "フォルダーを作成できませんでした。",
   "Tab name (optional)": "タブ名 (任意)",
   "Uses the workspace's folder": "ワークスペースのフォルダーをそのまま使います",
+  "Add another agent…": "別のエージェントを追加…",
+  "It is installed, but this PC does not offer it here yet. Restart Ovis on the PC, or start it in a terminal tab.": "インストールは済みましたが、このPCではまだここで選べません。PCでOvisを再起動するか、ターミナルタブで起動してください。",
+  "It is installed. Waiting for this PC to offer it here…": "インストールしました。このPCでここから選べるようになるのを待っています…",
 };

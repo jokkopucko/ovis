@@ -74,7 +74,9 @@ async function fixture(steps: Step[], attachHoldMs?: number) {
 
 describe("explicit take-over intent", () => {
   it("consumes a click when the running ordinary retry succeeds, before later displacement", async () => {
-    const f = await fixture([{ kind: "held" }, { kind: "real", gate: "attach" }, { kind: "held" }]);
+    // displaced, the attach prints herdr's "taken over" and then exits: a hold far longer than that
+    // exit keeps a busy runner from passing the line on before the exit comes
+    const f = await fixture([{ kind: "held" }, { kind: "real", gate: "attach" }, { kind: "held" }], 2_000);
     await until(() => f.starts().length === 2, "ordinary retry held at its gate");
     f.send({ type: "take-over", pane_id: f.paneId });
     await f.barrier();
@@ -208,7 +210,9 @@ describe("explicit take-over intent", () => {
   }, 20_000);
 
   it("recovers an ordinary failure without turning a click during its terminal lookup into takeover", async () => {
-    const f = await fixture([{ kind: "held" }, { kind: "failed", gate: "fail" }, { kind: "real" }]);
+    // a hold far longer than the fixture's exit: a busy runner must not take the failing attempt's
+    // last line for an attach before its exit comes (the recovered attach waits it out as well)
+    const f = await fixture([{ kind: "held" }, { kind: "failed", gate: "fail" }, { kind: "real" }], 2_000);
     await until(() => f.starts().length === 2, "retry running");
     f.send({ type: "take-over", pane_id: f.paneId });
     await f.barrier();

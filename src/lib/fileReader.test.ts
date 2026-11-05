@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { readerFromSearch, readerHref, resolveFromDocument } from "./fileReader.ts";
+import { readerFromSearch, readerHref, reloadWhenReaderChanges, resolveFromDocument } from "./fileReader.ts";
 
 describe("file reader links", () => {
   it("names the file and its PC, and reads them back", () => {
@@ -8,6 +8,33 @@ describe("file reader links", () => {
     expect(readerFromSearch("?read=%2Fx.md")).toEqual({ machine: "local", path: "/x.md" });
     expect(readerFromSearch("?file=%2Fx.md")).toBeNull();
     expect(readerFromSearch("?read=")).toBeNull();
+  });
+
+  it("loads the page when a fragment-only step turns the app into the reader, the reader into the app, or moves it to another PC", () => {
+    const step = (loaded: Parameters<typeof reloadWhenReaderChanges>[0], hash: string, mode: "relay" | null = "relay") => {
+      let reloads = 0;
+      let changed = (): void => {};
+      const page = { addEventListener: (_: "hashchange", listener: () => void) => { changed = listener; }, location: { search: "", hash: "", reload: () => { reloads++; } } };
+      reloadWhenReaderChanges(loaded, page, mode);
+      page.location.hash = hash;
+      changed();
+      return reloads;
+    };
+    const reader = { machine: "local", path: "/a.md" };
+    expect(step(null, "#read=%2Fa.md&machine=local")).toBe(1);
+    expect(step(reader, "#ws=w1&pane=w1%3Ap1")).toBe(1);
+    expect(step(reader, "#read=%2Fa.md&machine=pc2")).toBe(1);
+    expect(step(reader, "#read=%2Fb.md&machine=local")).toBe(0);
+    expect(step(null, "#ws=w1&pane=w1%3Ap2")).toBe(0);
+    expect(step(null, "#read=%2Fa.md", null)).toBe(0);
+  });
+
+  it("keeps the file and its PC in the fragment in the hosted shell", () => {
+    const scope = `/s/${"ab".repeat(16)}/`;
+    const href = readerHref("remote-1", "/home/me/plan.md#L3", scope, "relay");
+    const url = new URL(href, "https://app.example");
+    expect(url.pathname + url.search).toBe(scope);
+    expect(readerFromSearch(`?${url.hash.slice(1)}`)).toEqual({ machine: "remote-1", path: "/home/me/plan.md#L3" });
   });
 
   it("resolves a document's links from its folder", () => {

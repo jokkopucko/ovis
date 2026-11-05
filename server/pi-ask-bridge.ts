@@ -259,10 +259,11 @@ export function piAskUserPrompt(paneId: string, transcript: string, bound: Bound
       custom_option_index: custom,
       steps: flow.questions.length > 1
         ? flow.questions.map((step, index) => ({ label: step.label || own("Question {n}", { n: index + 1 }), answered: Object.hasOwn(draft.answers, step.id), current: index === stepIndex,
-          // every question answerPiAskUser lets the card reach: any earlier one, and an answered later one
-          ...(index !== stepIndex && (index < stepIndex || Object.hasOwn(draft.answers, step.id)) ? { can_navigate: true } : {}) }))
+          // Native moveTab cycles every question, including unanswered later ones.
+          ...(index !== stepIndex ? { can_navigate: true } : {}) }))
         : undefined,
       can_step_back: stepIndex > 0,
+      can_step_next: stepIndex < flow.questions.length - 1,
       default_option_index: !multi && indices.length === 1 ? indices[0]! : null,
       default_option_indices: multi && indices.length ? indices : undefined,
       default_custom_text: saved?.customText,
@@ -312,14 +313,13 @@ export async function answerPiAskUser(paneId: string, parsed: ParsedPrompt, body
   if (!draft || draft.flowId !== form.flow.flowId || draft.revision !== form.revision) return done(changed());
   const question = form.flow.questions[form.stepIndex]!;
 
-  if (body.step_back === true || body.step_index !== undefined) {
-    if (body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined || (body.step_back === true && body.step_index !== undefined)) {
+  if (body.step_back === true || body.step_next === true || body.step_index !== undefined) {
+    if (body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined
+      || [body.step_back === true, body.step_next === true, body.step_index !== undefined].filter(Boolean).length !== 1) {
       return done(invalid("Exactly one supported navigation action is required."));
     }
-    const target = body.step_index ?? form.stepIndex - 1;
-    // back to any earlier question, or forward to one already answered (the card's step buttons)
-    const reachable = Number.isInteger(target) && target >= 0 && target < form.flow.questions.length && target !== form.stepIndex
-      && (target < form.stepIndex || Object.hasOwn(draft.answers, form.flow.questions[target]!.id));
+    const target = body.step_index ?? form.stepIndex + (body.step_next === true ? 1 : -1);
+    const reachable = Number.isInteger(target) && target >= 0 && target < form.flow.questions.length && target !== form.stepIndex;
     if (!reachable) return done(invalid("Invalid question to navigate to."));
     if (body.draft !== undefined) {
       if (typeof body.draft !== "object" || body.draft === null || !Array.isArray(body.draft.option_indices) || typeof body.draft.custom_text !== "string") return done(invalid("Invalid draft."));

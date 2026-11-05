@@ -111,7 +111,7 @@ async function withBridgedPane(run: (pane: {
         return reply({ read: { text: pane.screen ?? fixture.screen } });
       }
       if (request.method === "pane.get") return reply({ pane: { pane_id: id, scroll: { offset_from_bottom: 0 } } });
-      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: (pane.foregroundList ?? [pane.foreground, ...others.keys()]).map((pid) => ({ pid, argv: pane.argv ?? ["fictional-shell"] })) } });
+      if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: (pane.foregroundList ?? [pane.foreground, ...others.keys()]).map((pid) => ({ pid, argv: pane.argv ?? ["pi"] })) } });
       if (request.method === "pane.send_keys" || request.method === "pane.send_text") {
         pane.keys.push(...(request.params?.keys ?? [`text:${request.params?.text}`]));
         return reply({});
@@ -184,6 +184,42 @@ test("pi-ask's form is a card, one question per step, and its answers go to pi-a
   });
 });
 
+test("pi-ask forward steps reach unanswered questions without submitting or sending keys", async () => {
+  if (!posix) return;
+  await withBridgedPane(async pane => {
+    const first = (await pane.read())!;
+    expect(first.steps?.map(step => step.can_navigate ?? false)).toEqual([false, true, true]);
+    expect(first.can_step_next).toBe(true);
+    expect((await pane.answer(first.id, { step_index: 2 })).status).toBe(200);
+    const last = (await pane.read())!;
+    expect(last.steps?.map(step => step.answered)).toEqual([false, false, false]);
+    expect(last.steps?.findIndex(step => step.current)).toBe(2);
+    expect(last.can_step_next ?? false).toBe(false);
+    expect(pane.bridge.submits).toEqual([]);
+    expect(pane.keys).toEqual([]);
+  });
+});
+
+test("pi-ask Next saves only explicit drafts and refuses conflicting or out-of-range moves", async () => {
+  if (!posix) return;
+  await withBridgedPane(async pane => {
+    const first = (await pane.read())!;
+    for (const choice of [{ step_next: true, option_index: 0 }, { step_next: true, step_back: true }, { step_next: true, step_index: 1 }]) {
+      expect((await pane.answer(first.id, choice)).status).toBe(400);
+    }
+    expect((await pane.answer(first.id, { step_next: true, draft: { option_indices: [], custom_text: "kept" } })).status).toBe(200);
+    const second = (await pane.read())!;
+    expect(second.steps?.findIndex(step => step.current)).toBe(1);
+    expect(second.steps?.map(step => step.answered)).toEqual([true, false, false]);
+    expect((await pane.answer(second.id, { step_back: true })).status).toBe(200);
+    expect((await pane.read())?.default_custom_text).toBe("kept");
+    expect((await pane.answer((await pane.read())!.id, { step_index: 2 })).status).toBe(200);
+    expect((await pane.answer((await pane.read())!.id, { step_next: true })).status).toBe(400);
+    expect(pane.bridge.submits).toEqual([]);
+    expect(pane.keys).toEqual([]);
+  });
+});
+
 test("an answer is refused when the card is stale, out of range, or pi-ask turns it down", async () => {
   if (!posix) return;
   await withBridgedPane(async (pane) => {
@@ -241,13 +277,14 @@ test("questions can be skipped, a typed answer survives Back, and an answered qu
     const scope = (await pane.read())!;
     expect(scope.steps!.map((step) => step.answered)).toEqual([false, true, false]);
     // with no Back on the first question, the saved second one is still a button, and the card keeps edits as it moves
-    expect(scope.steps!.map((step) => step.can_navigate ?? false)).toEqual([false, true, false]);
+    expect(scope.steps!.map((step) => step.can_navigate ?? false)).toEqual([false, true, true]);
     expect(scope.drafts_saved).toBe(true);
     // and the answered second question is one click away again
     expect((await pane.answer(scope.id, { step_index: 1 })).status).toBe(200);
     expect(await pane.read()).toMatchObject({ question: "Which checks should run before the push?", default_custom_text: "typecheck" });
-    // a question not yet answered is not
-    expect((await pane.answer((await pane.read())!.id, { step_index: 2 })).status).toBe(400);
+    // an unanswered question is reachable too, without submitting the form
+    expect((await pane.answer((await pane.read())!.id, { step_index: 2 })).status).toBe(200);
+    expect((await pane.answer((await pane.read())!.id, { step_back: true })).status).toBe(200);
     // Skip the rest: pi-ask gets only what was answered
     const second = (await pane.read())!;
     expect((await pane.answer(second.id, { option_indices: [], custom_text: "typecheck" })).status).toBe(200);

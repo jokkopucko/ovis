@@ -32,3 +32,193 @@
     flex: 0 0 auto;
   }
 }
+
+/* who may open the address: one fieldset (it disables what is inside), a radio a line with its sentence, then the details of the chosen one */
+.portal-auth {
+  min-width: 0;
+  border: 0;
+}
+
+.portal-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.portal-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  cursor: pointer;
+}
+
+.portal-option input {
+  flex: 0 0 auto;
+  margin: var(--space-1) 0 0;
+  accent-color: var(--accent);
+}
+
+.portal-option:has(input:disabled) {
+  cursor: default;
+}
+
+.portal-option:has(input:disabled) .settings-label {
+  color: var(--text-dim);
+}
+
+/* a choice a finger lands on has the finger's height */
+@media (pointer: coarse) {
+  .portal-option {
+    min-height: var(--touch-target);
+    align-items: center;
+  }
+}
+
+.portal-oidc,
+.portal-invite-form,
+.portal-secret {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.portal-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* an entry's field and the button that adds it: a line, like the relay's */
+.portal-entry {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.portal-entry .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* what is on the list: link names, wallets, accounts */
+.portal-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.portal-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  min-height: calc(var(--chip-h) + var(--space-1));
+  padding: 0 var(--space-3);
+  background: var(--bg-input);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-strong);
+}
+
+.portal-chip:has(.portal-chip-remove) {
+  padding-right: var(--space-1);
+}
+
+.portal-chip-text {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.portal-chip-remove {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--chip-h);
+  height: var(--chip-h);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+/* the glyph keeps its --chip-h look and reaches the smallest hit area a mouse gets through an
+   invisible expander (the border is 0, so it is measured from the button's own box) */
+.portal-chip-remove::before {
+  content: "";
+  position: absolute;
+  inset: calc((var(--chip-h) - var(--pointer-target)) / 2);
+}
+
+/* a finger gets the target's size from the chip itself: expanders of chips one line apart would overlap */
+@media (pointer: coarse) {
+  .portal-chip:has(.portal-chip-remove) {
+    min-height: var(--touch-target);
+  }
+
+  .portal-chip-remove {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  .portal-chip-remove::before {
+    content: none;
+  }
+}
+
+.portal-chip-remove svg {
+  width: calc(var(--chip-h) - var(--space-2));
+  height: calc(var(--chip-h) - var(--space-2));
+}
+
+@media (hover: hover) {
+  .portal-chip-remove:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-strong);
+  }
+}
+
+/* a thing the person must not miss: the secret not set, a link that is a bearer secret, an entry that is wrong */
+.portal-warning {
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--status-blocked);
+  border-radius: var(--radius-sm);
+  background: var(--danger-tint);
+  color: var(--danger-text);
+}
+
+/* the link is read once: it is the whole line, selectable, never cut */
+.portal-link {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-input);
+  text-overflow: ellipsis;
+}
+
+/* a field is read at --fs-input on a phone (a smaller one is zoomed into), as .input is */
+@media (min-width: 641px) {
+  .portal-link {
+    font-size: var(--fs-sm);
+  }
+}
+
+@media (max-width: 640px) {
+  .portal-entry {
+    flex-wrap: wrap;
+  }
+}

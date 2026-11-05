@@ -1,0 +1,314 @@
+name: Beta
+# Publishes a beta build of the newest commit on main whose CI passed, for the PCs that opted into the beta
+# update channel (OVIS_UPDATE_CHANNEL=beta, or `beta` in the `update-channel` file of the state dir;
+# docs/guide.md#beta-builds). Nobody else is offered one: a stable updater takes plain vX.Y.Z tags only.
+#
+# - pick, tag: tags the newest main commit with a successful CI push run beta/vX.Y.Z-beta.N, where X.Y.Z
+#   is the version main is heading for (package.json's, or its next patch once that version is released)
+#   and N counts up per version. The tags stay outside v*, which the installers, the app setups and the
+#   release jobs read as releases. The server's updater on the beta channel builds and installs it like a
+#   release. Whichever CI run triggered it, a run publishes the newest green commit, so a run that waited
+#   or was displaced loses nothing; a commit a newer tag already contains gets none, and one already
+#   tagged is built again only when run by hand (to retry a failed desktop build).
+# - host-build, host-publish: the Rust PTY host (pty-sidecar.yml) for a commit whose crates/pty-sidecar
+#   no release was built from, attached to the prerelease pty-sidecar-<crate tree> before the tag exists.
+#   scripts/pty-sidecar.ts install, which the updater's install and the desktop build run, takes it from
+#   there when the release of package.json's version has another crate's host. Built once per crate tree.
+# - desktop, desktop-publish: builds the desktop app (app/electron) at that version and uploads it with
+#   its beta-*.yml feed files to the rolling `desktop-beta` prerelease, which the app reads on the beta
+#   channel (app/electron/src/updates.ts, BETA_FEED); the previous beta's files stay until the next one,
+#   for an app that read the feed just before. A prerelease is never GitHub's latest, so the stable feed
+#   (releases/latest/download) never sees it. Linux x64 and arm64 AppImages, and an arm64
+#   Mac build, signed and notarized once the repository variable DESKTOP_MAC_SIGN is 'true' (a Mac app
+#   updates itself only when signed).
+#
+# The beta tags are made here only: never push a v* or beta/* tag by hand.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+# one beta at a time: a newer run waits instead of cancelling the one building (and then takes the newest green commit)
+concurrency:
+  group: beta
+  cancel-in-progress: false
+env:
+  STABLE_FEED: https://github.com/${{ github.repository }}/releases/latest/download
+jobs:
+  pick:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
+      new: ${{ steps.version.outputs.new }}
+      host: ${{ steps.host.outputs.host }}
+      tree: ${{ steps.host.outputs.tree }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pick the beta version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BY_HAND: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          git fetch --quiet --force --tags origin
+          SHA=$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // empty')
+          if [ -z "$SHA" ] || ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::No commit on main has a successful CI run ('$SHA')." >&2
+            exit 1
+          fi
+          # a newer commit's beta, or a release, already brings this one
+          if [ -n "$(comm -23 <(git tag --contains "$SHA" --list 'v*' 'beta/*' | sort) <(git tag --points-at "$SHA" --list 'beta/*' | sort))" ]; then
+            echo "A newer tag already contains $SHA; no beta."
+            exit 0
+          fi
+          existing=$(git tag --points-at "$SHA" --list 'beta/v*' | head -n 1)
+          if [ -n "$existing" ]; then
+            if [ "$BY_HAND" != true ]; then
+              echo "$SHA is already $existing; no beta."
+              exit 0
+            fi
+            beta="${existing#beta/v}"
+          else
+            version=$(git show "$SHA:package.json" | jq -r .version)
+            if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "::error::package.json's version '$version' is not X.Y.Z." >&2
+              exit 1
+            fi
+            # once X.Y.Z is released, main is heading for the next patch
+            if git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
+              version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+            fi
+            last=$(git tag --list "beta/v$version-beta.*" | sed -n "s|^beta/v$version-beta\.\([0-9][0-9]*\)$|\1|p" | sort -n | tail -1)
+            beta="$version-beta.$(( ${last:-0} + 1 ))"
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "tag=beta/v$beta"
+            echo "version=$beta"
+            echo "sha=$SHA"
+          } >> "$GITHUB_OUTPUT"
+      # the host install takes: the release of package.json's version when it was built from this crate
+      # tree, else the tree's own prerelease; neither there, it is built here first
+      - name: Find the Rust PTY host
+        id: host
+        if: steps.version.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          tree=$(git rev-parse "$SHA:crates/pty-sidecar")
+          version=$(git show "$SHA:package.json" | jq -r .version)
+          released=$(gh release download "v$version" --pattern ovis-pty-sidecar.json --output - 2>/dev/null | jq -r '.crate // empty' || true)
+          built=$(gh release download "pty-sidecar-$tree" --pattern ovis-pty-sidecar.json --output - 2>/dev/null | jq -r '.crate // empty' || true)
+          if [ "$released" = "$tree" ] || [ "$built" = "$tree" ]; then host=ready; else host=build; fi
+          echo "Rust PTY host for crate tree $tree: $host."
+          { echo "host=$host"; echo "tree=$tree"; } >> "$GITHUB_OUTPUT"
+  host-build:
+    needs: pick
+    if: needs.pick.outputs.host == 'build'
+    uses: ./.github/workflows/pty-sidecar.yml
+    with:
+      ref: ${{ needs.pick.outputs.sha }}
+    # its attest job signs the binaries' build provenance when the commit is the run's own
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+  # the write token runs no repository code: it only uploads what host-build made
+  host-publish:
+    needs: [pick, host-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ovis-pty-sidecar
+          path: ${{ runner.temp }}/pty-sidecar
+      - name: Attach the host to its crate tree's prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TREE: ${{ needs.pick.outputs.tree }}
+          SHA: ${{ needs.pick.outputs.sha }}
+        run: |
+          cd "$RUNNER_TEMP/pty-sidecar"
+          test "$(jq -r .crate ovis-pty-sidecar.json)" = "$TREE" || { echo "::error::The manifest is not for crate tree $TREE." >&2; exit 1; }
+          if ! gh release view "pty-sidecar-$TREE" >/dev/null 2>&1; then
+            gh release create "pty-sidecar-$TREE" --prerelease --latest=false --target "$SHA" --title "Rust PTY host $TREE" \
+              --notes "The Rust PTY host built from crates/pty-sidecar tree $TREE, for beta builds whose crate no release was built from."
+          fi
+          # the manifest last: install never reads one whose files are missing
+          find . -maxdepth 1 -type f ! -name ovis-pty-sidecar.json -print0 | xargs -0 gh release upload "pty-sidecar-$TREE" --clobber
+          gh release upload "pty-sidecar-$TREE" ovis-pty-sidecar.json --clobber
+  # the tag comes once its host is there: the updater's install of the beta fetches it
+  tag:
+    needs: [pick, host-publish]
+    if: >-
+      always() && needs.pick.result == 'success' && needs.pick.outputs.tag != '' &&
+      (needs.pick.outputs.host == 'ready' || needs.host-publish.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Tag the beta
+        if: needs.pick.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.pick.outputs.tag }}
+          SHA: ${{ needs.pick.outputs.sha }}
+        run: |
+          gh api "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" >/dev/null
+          echo "Tagged $SHA as $TAG." >> "$GITHUB_STEP_SUMMARY"
+  desktop:
+    name: desktop (${{ matrix.target }})
+    needs: [pick, tag]
+    if: always() && needs.tag.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-24.04 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm }
+          - { target: darwin-arm64, os: macos-15 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.pick.outputs.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Install the client's packages
+        run: bun install --frozen-lockfile
+      - name: Install the app's packages
+        working-directory: app/electron
+        run: bun install --frozen-lockfile
+      # staged at main's own version: the server the app carries and its Rust PTY host (from that version's
+      # release, or this crate tree's prerelease) keep it; only the app takes the beta's
+      - name: Stage hc, Bun and the server
+        working-directory: app/electron
+        run: bun scripts/build.ts stage
+      # electron-builder names the feed files after the version's channel (beta-mac.yml, beta-linux.yml,
+      # beta-linux-arm64.yml)
+      - name: Set the app's beta version
+        env:
+          VERSION: ${{ needs.pick.outputs.version }}
+        run: |
+          jq --arg version "$VERSION" '.version = $version' package.json > package.json.beta
+          mv package.json.beta package.json
+      - name: Mac signing
+        id: sign
+        if: startsWith(matrix.target, 'darwin-') && vars.DESKTOP_MAC_SIGN == 'true'
+        env:
+          MAC_NOTARY_KEY_P8: ${{ secrets.MAC_NOTARY_KEY_P8 }}
+          HAS_MAC_DEVELOPER_ID_P12: ${{ secrets.MAC_DEVELOPER_ID_P12 != '' }}
+          HAS_MAC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD != '' }}
+          HAS_MAC_NOTARY_KEY_P8: ${{ secrets.MAC_NOTARY_KEY_P8 != '' }}
+          HAS_MAC_NOTARY_KEY_ID: ${{ secrets.MAC_NOTARY_KEY_ID != '' }}
+          HAS_MAC_NOTARY_ISSUER: ${{ secrets.MAC_NOTARY_ISSUER != '' }}
+        run: |
+          missing=""
+          for name in MAC_DEVELOPER_ID_P12 MAC_DEVELOPER_ID_P12_PASSWORD MAC_NOTARY_KEY_P8 MAC_NOTARY_KEY_ID MAC_NOTARY_ISSUER; do
+            has="HAS_$name"; [ "${!has}" = true ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::DESKTOP_MAC_SIGN is on, but these repository secrets are not set:$missing." >&2
+            exit 1
+          fi
+          (umask 077 && printf '%s' "$MAC_NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary-key.p8")
+          echo "key=$RUNNER_TEMP/notary-key.p8" >> "$GITHUB_OUTPUT"
+          echo "on=true" >> "$GITHUB_OUTPUT"
+      - name: Build ${{ matrix.target }}
+        working-directory: app/electron
+        env:
+          # built with the stable feed: an app that leaves the beta channel waits there for the release
+          OVIS_UPDATE_FEED: ${{ env.STABLE_FEED }}
+          # the release tag a release build checks package.json against (build.ts): the beta's version
+          OVIS_RELEASE_TAG: v${{ needs.pick.outputs.version }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ steps.sign.outputs.on == 'true' && 'true' || 'false' }}
+          CSC_LINK: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_DEVELOPER_ID_P12 || '' }}
+          CSC_KEY_PASSWORD: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_DEVELOPER_ID_P12_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ steps.sign.outputs.key }}
+          APPLE_API_KEY_ID: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_NOTARY_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_NOTARY_ISSUER || '' }}
+        run: bun scripts/build.ts package
+      - name: Remove the notary key
+        if: always() && steps.sign.outputs.key != ''
+        env:
+          KEY: ${{ steps.sign.outputs.key }}
+        run: rm -f "$KEY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ovis-desktop-beta-${{ matrix.target }}
+          path: |
+            app/electron/dist/Ovis-*
+            app/electron/dist/beta*.yml
+          if-no-files-found: error
+  # the write token runs no repository code: it only uploads what the builds made
+  desktop-publish:
+    needs: [pick, desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ovis-desktop-beta-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/beta
+      - name: Upload to the desktop-beta prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.pick.outputs.version }}
+          SHA: ${{ needs.pick.outputs.sha }}
+        run: |
+          cd "$RUNNER_TEMP/beta"
+          for feed in beta-linux.yml beta-linux-arm64.yml beta-mac.yml; do
+            test -s "$feed" || { echo "::error::No $feed among the builds." >&2; exit 1; }
+          done
+          if ! gh release view desktop-beta >/dev/null 2>&1; then
+            gh release create desktop-beta --prerelease --target "$SHA" --title "Desktop app beta" \
+              --notes "The latest beta build of the desktop app, from main. It updates itself here only on the beta update channel."
+          fi
+          # the feed files last: an app never reads a feed whose files are missing
+          find . -maxdepth 1 -type f ! -name 'beta*.yml' -print0 | xargs -0 gh release upload desktop-beta --clobber
+          previous=$(gh release view desktop-beta --json name --jq '.name' | sed -n 's/^Desktop app beta //p')
+          gh release upload desktop-beta beta*.yml --clobber
+          gh release edit desktop-beta --prerelease --title "Desktop app beta $VERSION"
+          # the builds before the previous one go: the previous one stays for an app that read its feed just before
+          gh release view desktop-beta --json assets --jq '.assets[].name' | while read -r name; do
+            [ -e "$name" ] && continue
+            [ -n "$previous" ] && [[ "$name" == *"-$previous-"* || "$name" == *"-$previous."* ]] && continue
+            gh release delete-asset desktop-beta "$name" --yes
+          done
+          echo "Published the desktop app $VERSION to desktop-beta." >> "$GITHUB_STEP_SUMMARY"

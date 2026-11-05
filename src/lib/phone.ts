@@ -7,6 +7,8 @@ export interface PageLocation {
   origin: string;
   /** window.isSecureContext */
   secure: boolean;
+  /** the hosted relay shell (app.ovis.sh): its address is the shell's front page, never this PC's */
+  shell?: boolean;
 }
 
 /** What Settings → Phone shows: an address to open, a command to run, or what is in the way. */
@@ -27,7 +29,7 @@ export function isLoopbackHost(hostname: string): boolean {
 }
 
 export function phonePlan(page: PageLocation, access: RemoteAccess | null): PhonePlan {
-  if (page.protocol === "https:" && page.secure && !isLoopbackHost(page.hostname)) return { kind: "here", url: page.origin };
+  if (page.protocol === "https:" && page.secure && !page.shell && !isLoopbackHost(page.hostname)) return { kind: "here", url: page.origin };
   if (access === null) return { kind: "unknown" };
   const tailscale = access.tailscale;
   if (tailscale.state !== "running") return { kind: tailscale.state };

@@ -133,6 +133,22 @@ describe("the shared health state", () => {
     expect(readPushHealth().health).toEqual({ problem: null, repair: false, transient: null });
   });
 
+  it("says nothing in the desktop app, whose PushManager has no push service behind it", async () => {
+    // Electron grants the page the notification permission and offers a PushManager whose subscribe
+    // always fails: alerts on by default then read as a missing subscription on the first launch
+    live = null;
+    Object.defineProperty(globalThis.navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ovis/0.5.0 Chrome/156.0.8078.80 Electron/45.2.2 Safari/537.36" });
+    try {
+      await refreshPushHealth(true);
+      expect(readPushHealth().health).toEqual({ problem: null, repair: false, transient: null });
+    } finally {
+      delete (globalThis.navigator as { userAgent?: string }).userAgent;
+    }
+    // the same page in a browser holding no subscription is told
+    await refreshPushHealth(true);
+    expect(readPushHealth().health).toEqual({ problem: "missing", repair: true, transient: null });
+  });
+
   it("takes an unknown subscription, an older server and an unreachable PC apart", async () => {
     answer = async () => Response.json({ error: { code: "subscription_not_found", message: "no" } }, { status: 404 });
     await refreshPushHealth(true);

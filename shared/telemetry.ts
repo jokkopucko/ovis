@@ -5,7 +5,7 @@
  * also carries the browser's latest allowlisted settings snapshot; no raw user-entered values or
  * account identifiers are included. Once per UTC day a browser visits, a separate active message
  * (POST /v1/active on the receiver) names the install and the kinds of coding agents running, from
- * TELEMETRY_HARNESSES only.
+ * TELEMETRY_HARNESSES only, and the day's usage (TelemetryUsage): kinds of screen, ways in, and counts.
  *
  *  GET  /api/telemetry  -> TelemetryStatus, no-store
  *  POST /api/telemetry  { enabled?: boolean, notice_seen?: true, notice_version?: number, settings?: TelemetrySettings } -> TelemetryStatus
@@ -21,9 +21,9 @@ export type TelemetryEventName = "install" | "update";
 /**
  * The notice's wording as a number: an install that saw an older one sees the notice again, and
  * sends nothing until it has (3: events now carry an allowlisted settings snapshot; 4: a daily
- * active message with the harness kinds).
+ * active message with the harness kinds; 5: that message also counts the day's usage, TelemetryUsage).
  */
-export const NOTICE_VERSION = 4;
+export const NOTICE_VERSION = 5;
 
 /**
  * Every theme id a snapshot may name: the three original palettes, the app's Codex theme and
@@ -104,6 +104,8 @@ export interface TelemetryChange {
   notice_seen?: true;
   notice_version?: number;
   settings?: TelemetrySettings;
+  /** a pane alert was tapped (public/sw.js): counted in today's `alerts_opened`, and nothing else */
+  alert_opened?: true;
 }
 
 const oneOf = <const T extends readonly string[]>(choices: T) => (value: unknown): boolean =>
@@ -203,6 +205,8 @@ export function telemetrySettings(value: unknown): TelemetrySettings | null {
   }
 }
 export type InstallMethod = "plugin" | "managed" | "source";
+/** The terminal runtime the server serves (server/herdr-core/runtime.ts): herdr's TUI server, or herdr-core. */
+export type TelemetryRuntime = "herdr" | "herdr-core";
 
 /** Harness kinds an active message may name: the supported agents (shared/supported-agents.ts) and "other". A literal list, not an import, so the Worker's copy only changes with a deploy. */
 export const TELEMETRY_HARNESSES = ["agy", "claude", "codex", "devin", "gjc", "grok", "hermes", "omo", "omp", "opencode", "other", "pi"] as const;
@@ -226,6 +230,82 @@ export function telemetryHarnesses(value: unknown): TelemetryHarness[] | null {
   return clean;
 }
 
+/**
+ * The kind of screen a visit opened the app on (src/lib/telemetrySurface.ts): the iOS, Android and
+ * Mac apps, an installed web app on a phone or a computer, or a browser tab on either.
+ */
+export const TELEMETRY_SURFACES = ["android-app", "browser", "ios-app", "mac-app", "mobile-browser", "mobile-pwa", "pwa"] as const;
+export type TelemetrySurface = typeof TELEMETRY_SURFACES[number];
+
+/**
+ * How a visit reached this server: server/access.ts `observedIngress`, with an unforwarded request
+ * split into one from this PC itself (`local`) and one from another device (`lan`).
+ */
+export const TELEMETRY_INGRESS = ["funnel", "lan", "local", "proxy", "tailscale", "unknown"] as const;
+export type TelemetryIngress = typeof TELEMETRY_INGRESS[number];
+
+/** The most a usage count says: a busier day is reported as this many. */
+export const TELEMETRY_COUNT_MAX = 9999;
+
+/**
+ * One day's use of the app on this install: which kinds of screen opened it and how they reached
+ * the server (sorted, no repeats), how many prompt answers went from it to an agent, how many pane
+ * alerts reached a device, and how many of those were tapped. Counts only: never which pane, agent,
+ * device or time.
+ */
+export interface TelemetryUsage {
+  surfaces: TelemetrySurface[];
+  ingress: TelemetryIngress[];
+  prompt_answers: number;
+  alerts_delivered: number;
+  alerts_opened: number;
+}
+
+export type TelemetryUsageCount = "prompt_answers" | "alerts_delivered" | "alerts_opened";
+
+export function emptyUsage(): TelemetryUsage {
+  return { surfaces: [], ingress: [], prompt_answers: 0, alerts_delivered: 0, alerts_opened: 0 };
+}
+
+/** A sorted, duplicate-free array of `choices` values, or null. Empty is valid. */
+function sortedChoices<const T extends readonly string[]>(choices: T, value: unknown): T[number][] | null {
+  if (!Array.isArray(value)) return null;
+  const clean: T[number][] = [];
+  for (const [index, item] of value.entries()) {
+    if (typeof item !== "string" || !(choices as readonly string[]).includes(item)) return null;
+    if (index > 0 && !(value[index - 1] < item)) return null;
+    clean.push(item);
+  }
+  return clean;
+}
+
+export function telemetrySurface(value: unknown): TelemetrySurface | null {
+  return typeof value === "string" && (TELEMETRY_SURFACES as readonly string[]).includes(value) ? value as TelemetrySurface : null;
+}
+
+const USAGE_KEYS = ["surfaces", "ingress", "prompt_answers", "alerts_delivered", "alerts_opened"];
+
+/** The usage exactly as TelemetryUsage allows it, as a fresh object, or null. */
+export function telemetryUsage(value: unknown): TelemetryUsage | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== USAGE_KEYS.length || keys.some((key) => typeof key !== "string" || !USAGE_KEYS.includes(key))) return null;
+  const record = value as Record<string, unknown>;
+  const surfaces = sortedChoices(TELEMETRY_SURFACES, record["surfaces"]);
+  const ingress = sortedChoices(TELEMETRY_INGRESS, record["ingress"]);
+  const count = integerBetween(0, TELEMETRY_COUNT_MAX);
+  if (!surfaces || !ingress) return null;
+  if (!count(record["prompt_answers"]) || !count(record["alerts_delivered"]) || !count(record["alerts_opened"])) return null;
+  return { surfaces, ingress, prompt_answers: record["prompt_answers"] as number, alerts_delivered: record["alerts_delivered"] as number, alerts_opened: record["alerts_opened"] as number };
+}
+
+export function sameUsage(a: TelemetryUsage, b: TelemetryUsage): boolean {
+  return a.prompt_answers === b.prompt_answers && a.alerts_delivered === b.alerts_delivered && a.alerts_opened === b.alerts_opened
+    && a.surfaces.join() === b.surfaces.join() && a.ingress.join() === b.ingress.join();
+}
+
 /** One install's activity for one UTC day, exactly as sent to /v1/active. `day` is the UTC date (YYYY-MM-DD) of the browser visit, not of delivery. */
 export interface TelemetryActive {
   event: "active";
@@ -236,6 +316,10 @@ export interface TelemetryActive {
   arch: string;
   install_method: InstallMethod;
   harnesses: TelemetryHarness[];
+  /** the day's use so far; a receiver deployed before it existed refuses it, so the Worker goes out first (telemetry/README.md) */
+  usage: TelemetryUsage;
+  /** the terminal runtime the server serves; a receiver deployed before it existed refuses it, so the Worker goes out first */
+  runtime: TelemetryRuntime;
 }
 
 /** How many days back a late delivery may still name: the visit day and the two before the receiver's today. */
@@ -259,6 +343,8 @@ export interface TelemetryEvent {
   install_method: InstallMethod;
   /** the latest browser's allowlisted settings snapshot; null before one has told */
   settings: TelemetrySettings | null;
+  /** the terminal runtime the server serves; a receiver deployed before it existed refuses it, so the Worker goes out first */
+  runtime: TelemetryRuntime;
 }
 
 export interface TelemetryStatus {

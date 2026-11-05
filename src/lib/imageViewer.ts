@@ -4,10 +4,10 @@
  * name a saved picture gets. The zoom arithmetic itself is MermaidLightbox's `zoomAt`.
  */
 
-/** One picture of a chat message: a user's attachment, an `@path` mention or a tool's result. */
+/** One picture of a chat message: a user's attachment, an `@path` mention, a tool result or a local Markdown image. */
 export interface GalleryImage {
   src: string;
-  /** what the caption and the alt text say: the mentioned path, or "Attached image" */
+  /** what the caption and the alt text say: the mentioned path, Markdown alt text, or "Attached image" */
   name: string;
   /** the name a download gets */
   file: string;

@@ -15,7 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
@@ -24,6 +24,8 @@ import type {} from "./session-history-fixture.tsx";
 import { CLAUDE_OTHER, CLAUDE_ROWS, CLAUDE_SHARED, CLAUDE_STORE_KEY, OLDER_SESSION, SESSION_ROWS } from "./session-history-fixture-data.ts";
 import { chromePath } from "./chrome-path.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
+import { listSessions, piSessionFolder } from "../server/session-history.ts";
+import { PiSessionReader } from "../server/pi-session-metadata.ts";
 const repo = join(import.meta.dir, "..");
 const root = mkdtempSync(join(tmpdir(), "herdr-session-history-browser-"));
 const evidence = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "session-history");
@@ -47,6 +49,22 @@ const heldLists = new EventEmitter();
 /** how the bridge answers the next resumes: start it, name a pane already showing it, refuse a changed store or one a new tab would not keep, or have no route */
 let resumeAnswer: "created" | "opened" | "stale" | "unsupported" | "changed" | "missing" = "created";
 const closedSources = new Set<string>();
+const piReader = new PiSessionReader();
+const piStore = join(root, "pi-sessions");
+const piFolder = join(piStore, piSessionFolder("/fixture/w1"));
+mkdirSync(piFolder, { recursive: true });
+const piNamed = join(piFolder, "named.jsonl");
+const piLine = (value: unknown) => `${JSON.stringify(value)}\n`;
+const piHeader = (id: string) => piLine({ type: "session", version: 3, id, cwd: "/fixture/w1" });
+const piSystem = piLine({ type: "message", message: { role: "system", content: "s".repeat(100 * 1024) } });
+writeFileSync(piNamed, piHeader("pi-named") + piSystem + piLine({ type: "message", message: { role: "user", content: "Named Pi first prompt" } }) + piLine({ type: "session_info", name: "Deep Pi name" }) + piSystem);
+utimesSync(piNamed, 1_790_000_002, 1_790_000_002);
+const piUnnamed = join(piFolder, "unnamed.jsonl");
+writeFileSync(piUnnamed, piHeader("pi-unnamed") + piSystem + piLine({ type: "message", message: { role: "user", content: [{ type: "text", text: "Late Pi" }, { type: "text", text: "prompt" }] } }));
+utimesSync(piUnnamed, 1_790_000_001, 1_790_000_001);
+let piBusy = 0;
+let piLists = 0;
+const piRetry = "Pi sessions could not be read right now. Try again.";
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 const refusal = (code: string, message: string, status: number) => json({ error: { code, message } }, status);
 /** every bounded animation (the sheet's rise) over, then two frames; a looping one (a breathing status dot) never finishes and is not waited for */
@@ -77,7 +95,15 @@ try {
         const sessions = CLAUDE_ROWS.map((row) => workspaceId === "w3" && paneId !== null && row.resume ? { ...row, resume: { ...row.resume, source: { pane_id: paneId, store_key: CLAUDE_STORE_KEY } } } : row);
         return json({ workspace_id: workspaceId, agent: "claude", cwd: `/fixture/${workspaceId}`, sessions } satisfies SessionHistoryResponse);
       }
-      const answer: SessionHistoryResponse = { workspace_id: workspaceId, agent: agent as SessionHistoryResponse["agent"], cwd: `/fixture/${workspaceId}`, sessions: agent === "codex" ? SESSION_ROWS : [] };
+      if (agent === "pi") piLists++;
+      if (agent === "pi" && piBusy > 0) {
+        piBusy--;
+        const response = refusal("session_history_busy", piRetry, 503);
+        response.headers.set("retry-after", "1");
+        return response;
+      }
+      const sessions = agent === "pi" ? await listSessions("pi", `/fixture/${workspaceId}`, { home: root, env: { PI_CODING_AGENT_SESSION_DIR: piStore }, piReader }) : agent === "codex" ? SESSION_ROWS : [];
+      const answer: SessionHistoryResponse = { workspace_id: workspaceId, agent: agent as SessionHistoryResponse["agent"], cwd: `/fixture/${workspaceId}`, sessions };
       return json(answer);
     }
     if (path === "/api/sessions/resume") {
@@ -143,12 +169,86 @@ try {
   console.log("PASS workspace menu item, newest-first rows, no button without a verified resume");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
+  // Real Pi metadata from synthetic transcripts, not hand-picked titles: late names, a prompt
+  // after a huge system record, freshly read renames/clears and automatic busy recovery.
+  const capturePi = async (state: string) => {
+    const previous = await page.evaluate(() => document.documentElement.dataset.theme);
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 800 });
+      for (const theme of ["light", "dark"]) {
+        await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+        await settled(page);
+        await page.screenshot({ path: join(evidence, `pi-${state}-${width}-${theme}.png`) });
+      }
+    }
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.evaluate((value) => {
+      if (value === undefined) delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = value;
+    }, previous);
+  };
+  // StrictMode discards its first mount's read: refuse that probe and the active mount once each,
+  // so only an automatic retry (not the second mount's initial read) can produce the rows.
+  piBusy = 2;
+  const busyOnce = page.waitForResponse((response) => response.url().includes("/sessions/history?") && response.status() === 503);
+  await page.evaluate(() => window.qa.openHistory("w1", "pi", "p1"));
+  await busyOnce;
+  await dialog.getByRole("status").waitFor();
+  assert.equal(await dialog.getByRole("alert").count(), 0);
+  assert.equal(await dialog.locator(".session-empty").count(), 0);
+  await dialog.locator('[data-session-id="pi-named"]').waitFor();
+  assert.equal(piLists, 3, "the active listing recovers from one busy answer without a click");
+  assert.equal(await dialog.locator(".session-error").count(), 0);
+  await capturePi("busy-recovered");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  piBusy = 100;
+  const beforeBusy = piLists;
+  await page.evaluate(() => window.qa.openHistory("w1", "pi", "p1"));
+  await dialog.locator(".session-error[role=status]").waitFor({ timeout: 75_000 });
+  assert.equal(piLists - beforeBusy, 7, "one discarded StrictMode probe plus an active read and five retries");
+  assert.equal(await dialog.getByRole("alert").count(), 0);
+  assert.equal(await dialog.locator(".session-empty").count(), 0);
+  assert.equal(await dialog.locator(".session-row").count(), 0);
+  assert.ok((await dialog.locator(".session-error").textContent())?.trim());
+  await capturePi("busy-retry");
+  piBusy = 0;
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+  await dialog.locator('[data-session-id="pi-named"]').waitFor();
+  assert.equal(await dialog.locator(".session-error").count(), 0);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  const openPi = async () => {
+    await page.evaluate(() => window.qa.openHistory("w1", "pi", "p1"));
+    await dialog.locator(".session-row").first().waitFor();
+  };
+  await openPi();
+  assert.deepEqual(await dialog.locator(".session-title").allTextContents(), ["Deep Pi name", "Late Pi prompt"]);
+  assert.equal(await dialog.locator(".session-id").count(), 0);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  appendFileSync(piNamed, piLine({ type: "session_info", name: "Renamed Pi" }));
+  utimesSync(piNamed, 1_790_000_003, 1_790_000_003);
+  await openPi();
+  assert.equal(await dialog.locator(".session-title").first().textContent(), "Renamed Pi");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  appendFileSync(piNamed, piLine({ type: "session_info", name: " " }));
+  utimesSync(piNamed, 1_790_000_004, 1_790_000_004);
+  await openPi();
+  assert.deepEqual(await dialog.locator(".session-title").allTextContents(), ["Named Pi first prompt", "Late Pi prompt"]);
+  assert.equal(await dialog.locator(".session-id").count(), 0);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  console.log("PASS Pi busy-once automatic recovery, bounded persistent busy with Retry, late labels and fresh rename/clear");
   // the keyboard alone: the row's context-menu key, the item, the first row's button focused, arrows
   // along the rows, Tab inside, Escape closing with the focus back on the row
   await row("w1").focus();
   await contextMenuKey(page);
   const keyMenu = page.getByRole("menu");
   await keyMenu.waitFor();
+  // RowMenu places its initial focus in an animation frame; let it finish before choosing another item.
+  await settled(page);
   await keyMenu.getByRole("menuitem", { name: "Earlier sessions…", exact: true }).focus();
   await page.keyboard.press("Enter");
   await dialog.waitFor();
@@ -492,5 +592,7 @@ try {
   releases.forEach((release) => release());
   await browser?.close();
   server?.stop(true);
+  piReader.close();
+  await piReader.idle();
   rmSync(root, { recursive: true, force: true });
 }

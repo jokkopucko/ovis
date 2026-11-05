@@ -111,6 +111,7 @@ describe("independently managed bridge updates", () => {
     // that PC's own Ovis answers through the tunnel as a server its updater did not start
     const tunnels: ReturnType<typeof Bun.serve>[] = [];
     const asked: string[] = [];
+    let bridgeReady = false;
     const ssh = { run: async (script: string) => {
       commands.push(script);
       if (script.includes("uname")) return `Linux\nx86_64\n/home/u\n/home/u/.config\n/usr/bin/herdr\nbundle-older\n${JSON.stringify(descriptor)}\n`;
@@ -122,6 +123,7 @@ describe("independently managed bridge updates", () => {
       tunnels.push(Bun.serve({ hostname: "127.0.0.1", port: local, fetch(request) {
         asked.push(`${request.method} ${new URL(request.url).pathname}`);
         if (new URL(request.url).pathname === "/api/updates") return Response.json({ managed: false, phase: "idle", available: false, blocked_reason: "Start with bun run start or the herdr plugin to enable updates." });
+        if (new URL(request.url).pathname === "/api/bridge" && bridgeReady) return Response.json({ ...descriptor, socket_id: "fixture:1", herdr: { version: "0.9.3", protocol: 22 } });
         return new Response("not found", { status: 404 });
       } }));
     } } as unknown as SshConnection;
@@ -133,7 +135,10 @@ describe("independently managed bridge updates", () => {
       // it was only asked how it updates, never to install anything
       expect(asked.every((request) => request.startsWith("GET "))).toBe(true);
       descriptor.managed_remote = true;
+      await expect(prepare(runtime)).rejects.toThrow("Bridge verification failed (404)");
+      bridgeReady = true;
       await expect(prepare(runtime)).rejects.toMatchObject({ action: "update_bridge" });
+      expect(asked.every((request) => request.startsWith("GET "))).toBe(true);
       expect(commands.every(script => script.includes("uname") || script.includes("socket=") || script.includes("--version") || script.includes("kill -0"))).toBe(true);
     } finally { manager.stop(); for (const tunnel of tunnels) tunnel.stop(true); rmSync(dir, { recursive: true, force: true }); }
   });
@@ -354,9 +359,9 @@ describe("machine boundaries", () => {
     for (const path of ["pane/focus/extra", "pane/move", "layout/apply", "layout/ratio/extra", "layout/../auth", "agent/commands/extra", "agent/start"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
     // the commands an agent offers in a folder before any pane runs it (the new workspace and tab dialogs)
     for (const path of ["agent/rename", "agent/commands"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
-    // the install catalog a PC answers for itself, and nothing under it
-    expect(MACHINE_PROXY_PATH.test("agent-catalog")).toBe(true);
-    for (const path of ["agent-catalog/install", "agent-catalog/../auth"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
+    // the install catalog a PC answers for itself, and an install or sign-in started on that PC; nothing else under it
+    for (const path of ["agent-catalog", "agent-catalog/install", "agent-catalog/sign-in"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
+    for (const path of ["agent-catalog/uninstall", "agent-catalog/install/extra", "agent-catalog/../auth"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
     for (const path of ["auth", "push", "updates/install", "machines/setup", "bridge", "../auth", "pane/../../auth", "pane/prompt/answer/extra", "pane/rewind", "tab/move/extra", "tab/close/extra"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
     for (const path of ["session", "agents", "integrations", "pane/files", "pane/find", "pane/image", "pane/prompt/answer", "pane/omo-tasks", "pane/background-agent", "pane/input", "workspace/create", "tab/create", "tab/rename", "tab/close"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
     for (const path of ["session", "agents", "integrations", "pane/files", "pane/find", "pane/image", "pane/prompt/answer", "pane/split", "pane/zoom", "pane/swap", "pane/resize", "pane/clear", "workspace/create", "tab/create", "tab/rename", "tab/close"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
@@ -1044,6 +1049,12 @@ describe("terminal attach capability", () => {
     expect(attachableIdentity(mirrored, false)).toEqual(mirrored);
   });
 
+  it("attaches on herdr-core without a PTY host: its stream runs on the server's own hc connection", () => {
+    const declared = { version: "0.1.14", protocol: 22, terminal_attach: true };
+    expect(attachableIdentity(declared, false, true)).toEqual(declared);
+    expect(attachableIdentity(declared, false, false)).toEqual({ ...declared, terminal_attach: false, terminal_mirror: true });
+  });
+
   it("counts the sidecar as runnable only with both node and node-pty", () => {
     expect(sidecarAvailable({ node: () => true, pty: () => true })).toBe(true);
     expect(sidecarAvailable({ node: () => false, pty: () => true })).toBe(false);
@@ -1466,7 +1477,7 @@ describe("a Windows startup retried after a scheduler failure", () => {
     const mocks = [
       spyOn(windowsHost, "inspect").mockResolvedValue({ platform: "win32-x64", home: "C:\\Users\\u", herdrPath: "C:\\herdr.exe", expectedSocket: socket, bundleReady: true, bundleOlder: false, descriptors: [], runtimeDir: "C:\\runtime", registryDir: "C:\\registry" }),
       spyOn(windowsHost, "herdrVersion").mockResolvedValue("herdr 0.9.5"),
-      spyOn(manager as never, "verify").mockResolvedValue({ endpoint: { url: "http://fixture", token: "fixture" }, identity: { herdr: { version: "0.9.5", protocol: 22 } } } as never),
+      spyOn(manager as never, "verify").mockResolvedValue({ endpoint: { url: "http://fixture", token: "fixture" }, identity: { ...descriptor, socket_id: "fixture-socket", herdr: { version: "0.9.5", protocol: 22 } } } as never),
       // The new bridge loads, clears any status itself and registers after the first poll.
       spyOn(Bun, "sleep").mockImplementation(async () => { if (launched) { status = null; registered = true; } }),
     ];

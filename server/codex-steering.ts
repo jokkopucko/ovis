@@ -17,7 +17,7 @@ function lastLine<T>(lines: T[], matches: (line: T) => boolean): number {
   return -1;
 }
 /** The rows under the composer: the model and folder (with `fast` after the effort in Fast mode), context left, warnings, and (0.162) the shortcuts hint. */
-const FOOTER = /^(?:\S+\s+(?:default|minimal|none|low|medium|high|xhigh|max|ultra)(?:\s+fast)?\s*·|\d+% context left\b|⚠\s*\d+\s*warnings?\b|(?:←[^·]*·\s*)?\?\s*for shortcuts\b|[/\\]|[A-Za-z]:\\)/;
+export const FOOTER = /^(?:\S+(?:[ \t]+\S+){0,3}[ \t]+(?:default|minimal|none|low|medium|high|xhigh|max|ultra)(?:[ \t]+[Ff]ast)?[ \t]*·|\d+% context left\b|⚠\s*\d+\s*warnings?\b|(?:←[^·]*·\s*)?\?\s*for shortcuts\b|[/\\]|[A-Za-z]:\\)/;
 
 /**
  * A native steering panel in the live composer, never a hint quoted in scrollback, whose last

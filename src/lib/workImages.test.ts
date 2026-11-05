@@ -32,7 +32,9 @@ describe("cachedImageRef", () => {
   const codex = `codex-${"ab".repeat(32)}`;
   const opencode = "opencode:msg_01HZY8K2:0";
 
-  it("keeps Claude's and pi's pictures, which are served immutable", () => {
+  it("keeps Claude's, pi's, Grok's and Copilot's pictures, which are served immutable", () => {
+    expect(cachedImageRef(`grok-image:${"cd".repeat(32)}`)).toBe(true);
+    expect(cachedImageRef(`copilot:${"cd".repeat(32)}`)).toBe(true);
     expect(cachedImageRef(claude)).toBe(true);
     expect(cachedImageRef("6f1c2a9e-4b7d-4e2a-9c1f-0a2b3c4d5e6f:2")).toBe(true);
     expect(cachedImageRef("pi:call_7:0")).toBe(true);

@@ -3,12 +3,271 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DevicePairedEvent } from "../shared/protocol.ts";
-import { DeviceStore, newStreamKey, normalizeLabel, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
+import { DeviceStore, newStreamKey, normalizeLabel, PairingRateLimitedError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
 import { privateStateFs } from "./private-state.ts";
 import { isTaggedNode, parseTailscaleOwner } from "./tailscale.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "herdr-devices-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+async function relayKeys() {
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  return { ...keys, publicKeySpki: Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url") };
+}
+
+async function relaySignature(key: CryptoKey, nonce: Uint8Array, serverId = "server-a"): Promise<string> {
+  return Buffer.from(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key,
+    Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from(serverId)]))).toString("base64url");
+}
+
+describe("relay device", () => {
+  it("loads as kind ok and closes an ungated store with one durable write before announcing", async () => {
+    const root = mkdtempSync(join(dir, "relay-first-"));
+    const store = new DeviceStore(root);
+    const candidate = store.pair(store.startPairing().code, "Cookie candidate", "drive");
+    if (!candidate) throw new Error("Expected cookie candidate");
+    const keys = await relayKeys();
+    const notices: DevicePairedEvent[] = [];
+    store.onPaired((event) => {
+      expect(new DeviceStore(root).gated).toBe(true);
+      expect(store.match(candidate.token)).toBeNull();
+      notices.push(event);
+    });
+    const rename = spyOn(privateStateFs, "renameSync");
+    let paired: ReturnType<DeviceStore["pairRelay"]>;
+    try {
+      paired = store.pairRelay(store.startPairing().code, "Phone", keys.publicKeySpki);
+      expect(rename).toHaveBeenCalledTimes(1);
+    } finally { rename.mockRestore(); }
+    if (!paired) throw new Error("Expected relay pairing");
+    expect(Object.keys(paired)).toEqual(["device"]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.device_id).toBe(paired.device.id);
+    const registry = readDeviceRegistry(join(root, "devices.json"));
+    expect(registry.kind).toBe("ok");
+    if (registry.kind !== "ok") throw new Error("Expected readable registry");
+    expect(registry.devices[0]?.relay_public_key).toBe(keys.publicKeySpki);
+    expect(registry.devices[0]?.token_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(registry.devices[0]).not.toHaveProperty("private_key");
+    const fresh = new DeviceStore(root);
+    expect(fresh.list(paired.device.id)).toEqual([expect.objectContaining({ id: paired.device.id, via_relay: true, current: true })]);
+    const nonce = crypto.getRandomValues(new Uint8Array(32));
+    expect(await fresh.matchRelay(paired.device.id, nonce, await relaySignature(keys.privateKey, nonce), "server-a")).toEqual(paired.device);
+    expect(fresh.match(keys.publicKeySpki)).toBeNull();
+    expect(store.pairRelay(store.startPairing().code, "Again", keys.publicKeySpki)).not.toBeNull();
+    expect(notices).toHaveLength(2);
+  });
+
+  it("does not publish a device or close the gate when persistence fails", async () => {
+    const root = mkdtempSync(join(dir, "relay-write-failure-"));
+    const store = new DeviceStore(root);
+    const keys = await relayKeys();
+    const code = store.startPairing().code;
+    const notices: DevicePairedEvent[] = [];
+    store.onPaired((event) => notices.push(event));
+    const fsync = spyOn(privateStateFs, "fsyncSync").mockImplementation(() => { throw new Error("EIO"); });
+    try {
+      expect(() => store.pairRelay(code, "Phone", keys.publicKeySpki)).toThrow("EIO");
+    } finally { fsync.mockRestore(); }
+    expect(store.gated).toBe(false);
+    expect(store.list(null)).toEqual([]);
+    expect(new DeviceStore(root).gated).toBe(false);
+    expect(notices).toEqual([]);
+    expect(store.pairRelay(code, "Retry", keys.publicKeySpki)).not.toBeNull();
+  });
+
+  for (const invalid of ["nonce", "server_id", "other key", "short nonce", "long nonce", "bad signature", "short signature", "padded signature", "unknown device"] as const) {
+    it(`rejects authentication with ${invalid}`, async () => {
+      const store = new DeviceStore(mkdtempSync(join(dir, "relay-auth-")));
+      const keys = await relayKeys();
+      const paired = store.pairRelay(store.startPairing().code, "Phone", keys.publicKeySpki);
+      if (!paired) throw new Error("Expected relay pairing");
+      const nonce = new Uint8Array(32).fill(7);
+      const key = invalid === "other key" ? (await relayKeys()).privateKey : keys.privateKey;
+      const signature = await relaySignature(key, nonce);
+      const suppliedNonce = invalid === "nonce" ? new Uint8Array(32).fill(8)
+        : invalid === "short nonce" ? new Uint8Array(31) : invalid === "long nonce" ? new Uint8Array(33) : nonce;
+      const suppliedSignature = invalid === "bad signature" ? "!".repeat(86)
+        : invalid === "short signature" ? signature.slice(0, -1) : invalid === "padded signature" ? `${signature}==` : signature;
+      expect(await store.matchRelay(invalid === "unknown device" ? "unknown" : paired.device.id, suppliedNonce, suppliedSignature,
+        invalid === "server_id" ? "server-b" : "server-a")).toBeNull();
+    });
+  }
+
+  it("rejects a signature over the nonce without the server identity", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "relay-server-binding-")));
+    const keys = await relayKeys();
+    const paired = store.pairRelay(store.startPairing().code, "Phone", keys.publicKeySpki);
+    if (!paired) throw new Error("Expected relay pairing");
+    const nonce = new Uint8Array(32).fill(3);
+    expect(await store.matchRelay(paired.device.id, nonce, await relaySignature(keys.privateKey, nonce, ""), "server-a")).toBeNull();
+  });
+
+  it("rejects a revoked device and keeps revoke-all gated after restart", async () => {
+    const root = mkdtempSync(join(dir, "relay-revoked-"));
+    const store = new DeviceStore(root);
+    const keys = await relayKeys();
+    const first = store.pairRelay(store.startPairing().code, "First", keys.publicKeySpki);
+    const second = store.pairRelay(store.startPairing().code, "Second", keys.publicKeySpki);
+    if (!first || !second) throw new Error("Expected relay pairings");
+    const nonce = new Uint8Array(32).fill(1);
+    const signature = await relaySignature(keys.privateKey, nonce);
+    store.revoke(first.device.id);
+    expect(await store.matchRelay(first.device.id, nonce, signature, "server-a")).toBeNull();
+    expect(store.revokeAll()).toEqual([second.device.id]);
+    expect(store.gated).toBe(true);
+    const fresh = new DeviceStore(root);
+    expect(fresh.gated).toBe(true);
+    expect(fresh.list(null)).toEqual([]);
+    expect(await fresh.matchRelay(second.device.id, nonce, signature, "server-a")).toBeNull();
+  });
+
+  for (const action of ["revoke", "update"] as const) {
+    it(`does not return stale authority when ${action} races verification`, async () => {
+      const store = new DeviceStore(mkdtempSync(join(dir, "relay-race-")));
+      const keys = await relayKeys();
+      const paired = store.pairRelay(store.startPairing().code, "Phone", keys.publicKeySpki);
+      if (!paired) throw new Error("Expected relay pairing");
+      const nonce = new Uint8Array(32).fill(1);
+      const signature = await relaySignature(keys.privateKey, nonce);
+      const verify = crypto.subtle.verify.bind(crypto.subtle);
+      const during = spyOn(crypto.subtle, "verify").mockImplementation(async (...args) => {
+        if (action === "revoke") store.revoke(paired.device.id);
+        else store.update(paired.device.id, { role: "watch" });
+        return verify(...args);
+      });
+      try {
+        expect(await store.matchRelay(paired.device.id, nonce, signature, "server-a")).toBeNull();
+      } finally { during.mockRestore(); }
+    });
+  }
+
+  it("announces updates only after durability and authenticates the stored role", async () => {
+    const root = mkdtempSync(join(dir, "relay-role-"));
+    const store = new DeviceStore(root);
+    const keys = await relayKeys();
+    const paired = store.pairRelay(store.startPairing().code, "Phone", keys.publicKeySpki);
+    if (!paired) throw new Error("Expected relay pairing");
+    let closed = 0;
+    store.onRevoke(paired.device.id, () => {
+      expect(new DeviceStore(root).list(null)[0]?.role).toBe("watch");
+      closed++;
+    });
+    const fsync = spyOn(privateStateFs, "fsyncSync").mockImplementation(() => { throw new Error("EIO"); });
+    try {
+      expect(() => store.update(paired.device.id, { role: "watch" })).toThrow("EIO");
+    } finally { fsync.mockRestore(); }
+    expect(closed).toBe(0);
+    store.update(paired.device.id, { role: "watch" });
+    expect(closed).toBe(1);
+    store.onRevoke(paired.device.id, () => { closed++; });
+    store.update(paired.device.id, { label: "Renamed" });
+    expect(closed).toBe(1);
+    const nonce = new Uint8Array(32).fill(2);
+    expect(await store.matchRelay(paired.device.id, nonce, await relaySignature(keys.privateKey, nonce), "server-a"))
+      .toEqual({ id: paired.device.id, label: "Renamed", role: "watch" });
+    store.revoke(paired.device.id);
+    expect(closed).toBe(2);
+  });
+
+  it("keeps relay authority when a rename races key verification", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "relay-rename-race-")));
+    const keys = await relayKeys();
+    const paired = store.pairRelay(store.startPairing().code, "Phone", keys.publicKeySpki);
+    if (!paired) throw new Error("Expected relay pairing");
+    const nonce = new Uint8Array(32).fill(3);
+    const signature = await relaySignature(keys.privateKey, nonce);
+    const verify = crypto.subtle.verify.bind(crypto.subtle);
+    const during = spyOn(crypto.subtle, "verify").mockImplementation(async (...args) => {
+      store.update(paired.device.id, { label: "Renamed" });
+      return verify(...args);
+    });
+    try {
+      expect(await store.matchRelay(paired.device.id, nonce, signature, "server-a"))
+        .toEqual({ id: paired.device.id, label: "Renamed", role: "drive" });
+    } finally { during.mockRestore(); }
+  });
+
+  for (const lastAttempt of ["cookie", "relay"] as const) {
+    it(`shares five guesses when the last attempt comes from ${lastAttempt}`, async () => {
+      const store = new DeviceStore(mkdtempSync(join(dir, "relay-attempts-")));
+      const keys = await relayKeys();
+      const code = store.startPairing().code;
+      const wrong = code === "999999" ? "000000" : "999999";
+      for (let attempt = 0; attempt < 4; attempt++) {
+        expect(attempt % 2 === 0 ? store.pair(wrong, "Phone", "drive") : store.pairRelay(wrong, "Phone", keys.publicKeySpki)).toBeNull();
+      }
+      expect(lastAttempt === "cookie" ? store.pair(wrong, "Phone", "drive") : store.pairRelay(wrong, "Phone", keys.publicKeySpki)).toBeNull();
+      expect(store.pairRelay(code, "Phone", keys.publicKeySpki)).toBeNull();
+      expect(store.pair(code, "Phone", "drive")).toBeNull();
+    });
+  }
+
+  it("expires relay pairing codes without enrolling a device", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "relay-expiry-")));
+    const keys = await relayKeys();
+    const code = store.startPairing(1000).code;
+    expect(store.pairRelay(code, "Late", keys.publicKeySpki, 601001)).toBeNull();
+    expect(store.gated).toBe(false);
+  });
+
+  it("rejects malformed public keys and fails closed on malformed registry entries", async () => {
+    const keys = await relayKeys();
+    const other = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
+    const invalidKeys = ["", "not-spki", `${keys.publicKeySpki}=`, 42, null, {},
+      Buffer.from(await crypto.subtle.exportKey("pkcs8", keys.privateKey)).toString("base64url"),
+      Buffer.from(await crypto.subtle.exportKey("spki", other.publicKey)).toString("base64url")];
+    for (const relay_public_key of invalidKeys) {
+      const root = mkdtempSync(join(dir, "relay-invalid-"));
+      const store = new DeviceStore(root);
+      if (typeof relay_public_key === "string") {
+        expect(store.pairRelay(store.startPairing().code, "Bad", relay_public_key)).toBeNull();
+        expect(store.gated).toBe(false);
+      }
+      const path = join(root, "devices.json");
+      const contents = JSON.stringify({ gate_closed_at: null, devices: [{
+        id: "0123456789abcdef", label: "Bad", role: "drive", token_hash: "hash",
+        created_at: new Date(0).toISOString(), last_seen_at: null, relay_public_key,
+      }] });
+      writeFileSync(path, contents);
+      expect(readDeviceRegistry(path)).toEqual({ kind: "bad" });
+      const fresh = new DeviceStore(root);
+      expect(fresh.gated).toBe(true);
+      expect(() => fresh.startPairing()).toThrow();
+      expect(readFileSync(path, "utf8")).toBe(contents);
+    }
+  });
+
+  it("limits code issues to ten in a sliding window without extending refusals", () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "relay-issue-limit-")));
+    for (let i = 0; i < 10; i++) store.startPairing(1000 + i);
+    for (const now of [1010, 300000, 600999]) expect(() => store.startPairing(now)).toThrow(PairingRateLimitedError);
+    expect(store.startPairing(601000).code).toMatch(/^\d{6}$/);
+    expect(() => store.startPairing(601000)).toThrow(PairingRateLimitedError);
+  });
+
+  it("holds all relay PAIR requests for ten minutes after twenty failures without extending the hold", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "relay-global-limit-")));
+    const keys = await relayKeys();
+    const code = store.startPairing(1000).code;
+    for (let i = 0; i < 20; i++) expect(store.pairRelay("wrong", `Phone ${i}`, keys.publicKeySpki, 1000 + i)).toBeNull();
+    for (const now of [1020, 300000, 601018]) {
+      expect(() => store.pairRelay(code, "Blocked", keys.publicKeySpki, now)).toThrow(PairingRateLimitedError);
+    }
+    const freshCode = store.startPairing(601019).code;
+    expect(store.pairRelay(freshCode, "Recovered", keys.publicKeySpki, 601019)).not.toBeNull();
+  });
+
+  it("does not count failures outside the sliding window or reset the budget on code replacement", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "relay-window-")));
+    const keys = await relayKeys();
+    for (let i = 0; i < 19; i++) expect(store.pairRelay("wrong", "Phone", keys.publicKeySpki, 1000)).toBeNull();
+    store.startPairing(2000);
+    expect(store.pairRelay("wrong", "Phone", keys.publicKeySpki, 601000)).toBeNull();
+    const code = store.startPairing(601001).code;
+    expect(store.pairRelay(code, "Phone", keys.publicKeySpki, 601001)).not.toBeNull();
+  });
+});
 
 describe("DeviceStore", () => {
   it("keeps an unreadable or invalid registry gated and intact for recovery", () => {
@@ -83,6 +342,27 @@ describe("DeviceStore", () => {
     expect(store.match("not-a-token")).toBeNull();
     // and a second store reading the same file knows the device
     expect(new DeviceStore(dir).match(paired!.token)?.label).toBe("My phone");
+  });
+
+  it("returns the active pairing without changing it", () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "active-pairing-")));
+    const pairing = store.startPairing(1000);
+    expect(store.activePairing(1000)).toEqual(pairing);
+    expect(store.activePairing(601000)).toEqual(pairing);
+    expect(store.pair(pairing.code, "Phone", "drive", 1000)).not.toBeNull();
+    expect(store.activePairing(1000)).toBeNull();
+  });
+
+  it("does not return expired or exhausted pairing codes", () => {
+    const expired = new DeviceStore(mkdtempSync(join(dir, "expired-pairing-")));
+    expired.startPairing(1000);
+    expect(expired.activePairing(601001)).toBeNull();
+
+    const exhausted = new DeviceStore(mkdtempSync(join(dir, "exhausted-pairing-")));
+    const { code } = exhausted.startPairing(1000);
+    const wrong = code === "000000" ? "000001" : "000000";
+    for (let attempt = 0; attempt < 5; attempt += 1) expect(exhausted.pair(wrong, "Wrong", "drive", 1000)).toBeNull();
+    expect(exhausted.activePairing(1000)).toBeNull();
   });
 
   it("expires a code after ten minutes and after five wrong tries", () => {
@@ -424,6 +704,31 @@ it("flushes the last-seen update before it replaces the registry", () => {
     expect(fsync.mock.calls.length).toBeGreaterThan(authorizationSyncs);
   } finally { fsync.mockRestore(); }
   expect(new DeviceStore(root).list(null)[0]?.last_seen_at).toBe(new Date(confirmedAt + 61_000).toISOString());
+});
+
+it("notes when a relay device was last seen, at most once a minute on disk", async () => {
+  const root = mkdtempSync(join(dir, "relay-last-seen-"));
+  const store = new DeviceStore(root);
+  const keys = await relayKeys();
+  const pairedAt = Date.now() - 120_000;
+  const paired = store.pairRelay(store.startPairing().code, "Phone", keys.publicKeySpki, pairedAt)!;
+  expect(new DeviceStore(root).list(null)[0]?.last_seen_at).toBe(new Date(pairedAt).toISOString());
+  const auth = async (now: number) => {
+    const nonce = crypto.getRandomValues(new Uint8Array(32));
+    return store.matchRelay(paired.device.id, nonce, await relaySignature(keys.privateKey, nonce), "server-a", now);
+  };
+  const seenAt = Date.now();
+  expect(await auth(seenAt)).toEqual(paired.device);
+  expect(new DeviceStore(root).list(null)[0]?.last_seen_at).toBe(new Date(seenAt).toISOString());
+  expect(await auth(seenAt + 30_000)).toEqual(paired.device);
+  expect(new DeviceStore(root).list(null)[0]?.last_seen_at).toBe(new Date(seenAt).toISOString());
+  expect(await auth(seenAt + 61_000)).toEqual(paired.device);
+  expect(new DeviceStore(root).list(null)[0]?.last_seen_at).toBe(new Date(seenAt + 61_000).toISOString());
+  const before = readFileSync(join(root, "devices.json"), "utf8");
+  const blocked = new DeviceStore(root, "Sibling registry unreadable");
+  const nonce = crypto.getRandomValues(new Uint8Array(32));
+  expect(await blocked.matchRelay(paired.device.id, nonce, await relaySignature(keys.privateKey, nonce), "server-a", seenAt + 200_000)).toEqual(paired.device);
+  expect(readFileSync(join(root, "devices.json"), "utf8")).toBe(before);
 });
 
 it("keeps the previous registry intact and the credential valid when a last-seen write fails before rename", () => {

@@ -94,7 +94,7 @@ export function useSplitState() {
   return { split, setSplit, soloSlot, endSplit, splitRef, splitShownRef, lastKeyAtRef, paneDragging, setPaneDragging, dropAt, dropAtRef, showDropTarget, clearDropPreview, paneAreaRef, tabDrag, draggedPaneRef, markSwap };
 }
 
-export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, dropAtRef, clearDropPreview, tabDrag, showDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, swapPanes }: {
+export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, dropAtRef, clearDropPreview, tabDrag, showDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, swapPanes, swapRefused }: {
   machines: Machine[];
   split: SplitState | null;
   wideScreen: boolean;
@@ -129,6 +129,8 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
   markSwap: (head: HTMLElement | null) => void;
   /** herdr's pane.swap of the dragged pane and another pane of its tab */
   swapPanes: (dragged: SplitTarget, targetPaneId: string) => void;
+  /** a PC whose panes cannot swap (herdr-core: the Herdr app owns its splits): its pane docks in a half instead */
+  swapRefused: (machineId: string) => boolean;
 }) {
   // The split view (lib/split.ts): drawn only where the sidebar stands beside the pane, and only
   // while a pane is selected; a narrower window shows the active half alone and keeps the split
@@ -259,7 +261,8 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     if (!splitDragOn || !event.dataTransfer.types.includes(PANE_DRAG_TYPE)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    const head = swapHead(event.target);
+    const dragging = draggedPaneRef.current;
+    const head = dragging && swapRefused(dragging.machineId) ? null : swapHead(event.target);
     markSwap(head);
     setPaneDragging(head === null);
     if (head) { showDropTarget(null); return; }
@@ -281,7 +284,7 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     event.preventDefault();
     event.stopPropagation();
     const dragged = draggedPane(event.dataTransfer.getData(PANE_DRAG_TYPE));
-    const target = swapHead(event.target)?.parentElement?.getAttribute("data-layout-pane");
+    const target = dragged && swapRefused(dragged.machineId) ? null : swapHead(event.target)?.parentElement?.getAttribute("data-layout-pane");
     if (dragged && target) {
       clearDropPreview();
       swapPanes(dragged, target);

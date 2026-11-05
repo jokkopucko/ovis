@@ -5,7 +5,14 @@ supported coding agent and the always-on assistants. For each it holds the vendo
 command per platform (macOS, Linux, Windows), what that command needs on the PC, how Ovis tells the
 agent is installed (its binary and version flag), how it is signed in to afterwards, and the oldest
 version an Ovis feature for it needs. `GET /api/agent-catalog` answers it for the PC that is asked,
-with what is installed there (see `shared/protocol.ts`).
+with what is installed there (see `shared/protocol.ts`). A version flag gets 5 s to answer; an agent
+whose flag is slower (Hermes loads the whole agent for it) sets `detect.version_timeout_ms`, at most
+30 s. The first catalog read waits for every agent's flag, so it can take that long.
+
+A version is read only from what the version flag prints on stdout when it succeeds. A flag that
+exits with an error or does not start is `version_error: "failed"`, and one that hangs is
+`"timeout"`: such an agent is there but does not run (`agentRuns()`), as a wrapper whose target was
+removed leaves it, and no screen offers it as ready. Its error text is never read for a version.
 
 ## What may go in
 
@@ -47,10 +54,11 @@ Vendors change their install commands. When one changes, or every few releases:
 ## Detection
 
 The server looks for an agent's binary on its own `PATH`, then on the `PATH` its user's login shell
-sets (read at most once a minute; not on Windows). Most installers put agents in `~/.local/bin` or
+sets (read at most once a minute, and again for an agent an install just put in its installer's
+folder, at most every 30 s while that PATH still misses it; not on Windows). Most installers put agents in `~/.local/bin` or
 the like, which a login shell adds and a server run as a service often lacks: without the second
 look, an agent that was just installed would read as not installed. It runs the binary's version
-flag with no input and a 5 s limit, and reads the first dotted version it prints. A version is kept until the executable file changes (path, size or
+flag with no input and a 5 s limit (longer where the entry sets `detect.version_timeout_ms`), and reads the first dotted version it prints. A version is kept until the executable file changes (path, size or
 modification time), so an install or update shows on the next read; a run that times out is tried
 again after a minute. On Windows, Command Code's `cmd` is the name of Windows' own command prompt,
 so Ovis does not say whether it is installed there.

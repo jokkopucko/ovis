@@ -74,6 +74,21 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalFontSize).toBe(18);
   });
 
+  it("keeps Return's default unchosen, and a choice, through an old tab's whole-record save", () => {
+    // unchosen: the old tab reads the boolean it knows and writes it back, which is still no choice
+    saveSettings(sanitizeSettings({}));
+    expect(oldSanitizeSettings(readOld()).enterSends).toBe(true);
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().enterSends).toBeNull();
+    expect(loadSettings().terminalFontSize).toBe(18);
+    // chosen either way: the old tab's unrelated save keeps it
+    for (const enterSends of [true, false]) {
+      saveSettings({ ...loadSettings(), enterSends });
+      oldSaveSettings({ ...readOld(), terminalFontSize: 20 });
+      expect(loadSettings().enterSends).toBe(enterSends);
+    }
+  });
+
   it("keeps the interface font in its own key, out of an old tab's whole-record save", () => {
     saveSettings(sanitizeSettings({ uiFontFamily: "system-ui" }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("uiFontFamily");
@@ -122,6 +137,38 @@ describe("saved theme migration", () => {
     expect(loadSettings().historyPrompts).toBe(10);
     records.set("ovis:history-prompts", "not json");
     expect(loadSettings().historyPrompts).toBe(10);
+  });
+
+  it("keeps the composer's Artifacts chip in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().composerArtifacts).toBe(false);
+    saveSettings(sanitizeSettings({ composerArtifacts: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("composerArtifacts");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().composerArtifacts).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), composerArtifacts: false });
+    expect(loadSettings().composerArtifacts).toBe(false);
+    records.set("ovis:composer-artifacts", "\"true\"");
+    expect(loadSettings().composerArtifacts).toBe(false);
+    records.set("ovis:composer-artifacts", "not json");
+    expect(loadSettings().composerArtifacts).toBe(false);
+  });
+
+  it("keeps Expand thinking and Collapse work in keys of their own, out of an old tab's whole-record save", () => {
+    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"]] as const) {
+      expect(loadSettings()[key]).toBe(false);
+      saveSettings(sanitizeSettings({ [key]: true }));
+      expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty(key);
+      oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+      expect(loadSettings()[key]).toBe(true);
+      expect(loadSettings().terminalFontSize).toBe(18);
+      saveSettings({ ...loadSettings(), [key]: false });
+      expect(loadSettings()[key]).toBe(false);
+      records.set(stored, "\"true\"");
+      expect(loadSettings()[key]).toBe(false);
+      records.set(stored, "not json");
+      expect(loadSettings()[key]).toBe(false);
+    }
   });
 
   it("survives repeated stale saves from an already-open old tab (f1)", () => {
@@ -222,6 +269,23 @@ it("keeps the composer's New tab button off until this device turns it on, and k
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("composerNewTabButton");
 });
 
+it("keeps the composer's Artifacts chip off until this device turns it on, and keeps that choice its own", () => {
+  expect(sanitizeSettings({}).composerArtifacts).toBe(false);
+  expect(sanitizeSettings({ composerArtifacts: true }).composerArtifacts).toBe(true);
+  expect(sanitizeSettings({ composerArtifacts: "true" }).composerArtifacts).toBe(false);
+  expect(SETTING_SCOPE.composerArtifacts).toBe("device");
+});
+
+it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {
+  for (const key of ["expandThinking", "foldWork"] as const) {
+    expect(sanitizeSettings({})[key]).toBe(false);
+    expect(sanitizeSettings({ [key]: true })[key]).toBe(true);
+    expect(sanitizeSettings({ [key]: "true" })[key]).toBe(false);
+    expect(SETTING_SCOPE[key]).toBe("device");
+    expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain(key);
+  }
+});
+
 it("keeps the screen wake lock off until this device explicitly enables it", () => {
   expect(DEFAULT_SETTINGS.keepScreenOn).toBe(false);
   expect(sanitizeSettings({}).keepScreenOn).toBe(false);
@@ -294,7 +358,7 @@ describe("telemetry settings snapshot", () => {
     });
     const snapshot = telemetrySettingsSnapshot(settings);
 
-    expect(NOTICE_VERSION).toBe(4);
+    expect(NOTICE_VERSION).toBe(5);
     expect(snapshot).toMatchObject({
       terminalInputMode: "direct",
       theme: "light",

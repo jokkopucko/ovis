@@ -30,9 +30,12 @@ const buildRevision: Plugin = {
   },
 };
 
-export default defineConfig({
+// `vite build --mode shell` builds the hosted shell (scripts/shell-build.ts) into its own directory;
+// its plugin is loaded only then, so the server-served build stays as it is
+export default defineConfig(async ({ mode }) => ({
   // the theme boot script is emitted before compressedAssets and serviceWorkerBuild read the bundle
-  plugins: [react(), thirdPartyNotices, buildRevision, themeBootstrapBuild(), compressedAssets(), serviceWorkerBuild()],
+  plugins: [react(), thirdPartyNotices, buildRevision, themeBootstrapBuild(), compressedAssets(), serviceWorkerBuild(mode === "shell"),
+    ...(mode === "shell" ? [(await import("./scripts/shell-build.ts")).shellBuild()] : [])],
   define: {
     __APP_REVISION__: JSON.stringify(revision),
     __APP_VERSION__: JSON.stringify((JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version),
@@ -49,7 +52,7 @@ export default defineConfig({
     },
   },
   // Keep Vite 6's syntax targets when changing the bundler, including installed mobile clients.
-  build: { outDir: "dist", target: ["es2020", "edge88", "firefox78", "chrome87", "safari14"] },
+  build: { outDir: mode === "shell" ? "dist-shell" : "dist", target: ["es2020", "edge88", "firefox78", "chrome87", "safari14"] },
   // The Bun patch targets xterm's readable source, not its minified distribution. Build that
   // source so dev, production and the website use the same reviewed IME backport.
   resolve: { alias: [
@@ -60,4 +63,4 @@ export default defineConfig({
     { find: /^vs\//, replacement: `${xtermSource}/vs/` },
     { find: "@shared", replacement: new URL("./shared", import.meta.url).pathname },
   ] },
-});
+}));

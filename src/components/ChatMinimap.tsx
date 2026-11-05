@@ -71,6 +71,8 @@ export function ChatMinimap({ turns, rowKeys, scroller, onJump, onWheel }: ChatM
   if (turns.length < MINIMAP_MIN_TURNS || !fits || railPx <= 0) return null;
   const count = turns.length;
   const slots = minimapSlots(count, railPx);
+  // a rail too short to keep MINIMAP_MIN_TURNS ticks apart draws nothing, as too few turns do
+  if (slots < MINIMAP_MIN_TURNS) return null;
   const currentSlot = current === null ? null : minimapTurnSlot(current, slots, count);
   const stop = Math.min(focusIndex ?? currentSlot ?? slots - 1, slots - 1);
   const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {

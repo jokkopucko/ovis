@@ -147,3 +147,22 @@
   font-size: var(--fs-xs);
   text-align: center;
 }
+
+/* Installed app with the title bar folded away: the header's drag region and the browser's window
+   controls stay over the title bar band under the preview (Chromium takes drag regions from
+   app-region, not from what is stacked on top), so the preview opts out of dragging and its bar
+   starts below the band; the fitted picture keeps the same room clear of the bar (#2026). */
+@media (display-mode: window-controls-overlay) {
+  .image-lightbox-scrim {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+
+  .image-lightbox-bar {
+    top: calc(var(--space-3) + env(titlebar-area-y, 0px) + env(titlebar-area-height, 0px));
+  }
+
+  .image-lightbox-canvas img {
+    max-height: calc(100% - 2 * (var(--control-h) + 2 * var(--space-3) + env(titlebar-area-y, 0px) + env(titlebar-area-height, 0px)));
+  }
+}

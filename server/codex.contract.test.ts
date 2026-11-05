@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
@@ -34,7 +34,26 @@ beforeAll(async () => {
   workspaceId = created.workspace.workspace_id;
   paneId = created.root_pane.pane_id;
   await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "idle", agent_session_path: rollout });
-  await herdrRpc("pane.send_text", { pane_id: paneId, text: `printf '%s\\n' '${answerPrefix}Answer one' '${answerPrefix}Answer two'\n` });
+  // a stand-in Codex that shows both answers, then says so with a file, and keeps running: the chat reads
+  // a screen only while a Codex process runs in the pane
+  mkdirSync(join(root, "bin"));
+  const codex = join(root, "bin", "codex");
+  const ready = join(root, "bin", "ready");
+  // each answer as Codex shows one: a bullet, wrapped below the pane's width, what it wraps onto indented
+  const show = (text: string) => `printf '%s\\n' '${text}' | fold -s -w 60 | sed '1s/^/• /;2,$s/^/  /'`;
+  writeFileSync(codex, `#!/bin/sh\n${show(`${answerPrefix}Answer one`)}\n${show(`${answerPrefix}Answer two`)}\n: > '${ready}'\nsleep 600\n`);
+  chmodSync(codex, 0o755);
+  // watched before the command is sent, so its creation cannot be missed
+  const watcher = watch(join(root, "bin"));
+  const started = new Promise<void>((done) => watcher.on("change", (_, name) => { if (name === "ready" && existsSync(ready)) done(); }));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await herdrRpc("pane.send_text", { pane_id: paneId, text: `${codex}\n` });
+    await Promise.race([started, new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error("the stand-in codex never started")), 10_000); })]);
+  } finally {
+    clearTimeout(timer);
+    watcher.close();
+  }
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "push"), codexHome });
 });
 

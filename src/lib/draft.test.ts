@@ -1,5 +1,18 @@
 import { describe, expect, it } from "bun:test";
-import { applyToDraft, draftIsEmpty, DRAFT_TTL_MS, EMPTY_DRAFT, restoreDraft } from "./draft.ts";
+import { applyToDraft, draftIsEmpty, DRAFT_TTL_MS, EMPTY_DRAFT, holdBefore, restoreDraft } from "./draft.ts";
+
+describe("holdBefore", () => {
+  it("holds typing a connection lost unconfirmed ahead of what was typed after it, each chunk folded as typed (#2587)", () => {
+    expect(holdBefore(["ls", "s", "\x7f", " -la"], EMPTY_DRAFT)).toEqual({ text: "ls -la", truncated: false, leftOut: false });
+    expect(holdBefore(["echo", "\r"], { text: "hi", truncated: false, leftOut: false })).toEqual({ text: "echo hi", truncated: false, leftOut: true });
+  });
+
+  it("leaves the draft as it is when nothing lost can be held", () => {
+    const draft = { text: "x", truncated: false, leftOut: false };
+    expect(holdBefore([], draft)).toBe(draft);
+    expect(holdBefore(["\x03", "\x1b[A"], draft)).toBe(draft);
+  });
+});
 
 describe("applyToDraft", () => {
   it("appends a printable character to the draft", () => {

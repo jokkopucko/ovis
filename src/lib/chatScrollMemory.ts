@@ -40,6 +40,14 @@ export function readChatPosition(storageId: string): ChatPosition | undefined {
   return positions.get(storageId);
 }
 
+/** herdr moved the pane under a new ID (#1503): its chat reads on where the reader left it; a place the new ID has stays. */
+export function moveChatPosition(from: string, to: string): void {
+  const left = positions.get(from);
+  if (left === undefined || from === to) return;
+  positions.delete(from);
+  if (!positions.has(to)) rememberChatPosition(to, left);
+}
+
 export function forgetChatPositions(): void {
   positions.clear();
 }

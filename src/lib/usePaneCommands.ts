@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { SlashCommand } from "../../shared/protocol.ts";
-import { ApiError } from "./api.ts";
+import { ApiError, paneCommandScope } from "./api.ts";
 import { useMachineApi, useMachineId } from "./machineContext.tsx";
 import { cachedPaneCommands, onPaneCommandsInvalidated, paneCommandsNow } from "./paneCommandCache.ts";
 
@@ -13,7 +13,8 @@ const RETRY_MS = [2_000, 5_000, 15_000, 30_000];
 export function usePaneCommands(paneId: string | null, agent?: string | null): readonly SlashCommand[] {
   const { fetchPaneCommands } = useMachineApi();
   const machineId = useMachineId();
-  const key = `${machineId}:${paneId}:${agent ?? ""}`;
+  // the pane's session and folder too: the same agent started in another project reads that project's list
+  const key = `${machineId}:${paneId}:${agent ?? ""}\u0000${paneId === null ? "" : paneCommandScope(paneId, machineId)}`;
   const [loaded, setLoaded] = useState<{ key: string; commands: readonly SlashCommand[]; failures: number } | null>(null);
   const [version, setVersion] = useState(0);
   useEffect(() => onPaneCommandsInvalidated((pane, machine) => {

@@ -130,8 +130,10 @@ try {
         const pane = await newWorkspace(page, "/home/demo/new-project");
         await select(page, pane);
         const greeting = page.locator(".pane-frame.is-current .composer-greeting");
-        // the demo's new agent works for a moment first: it is greeted once it rests
+        // the demo's new agent works for a moment first: a status at work alone leaves the greeting
+        // (#2550), and the steps below start from an agent at rest
         await greeting.waitFor({ timeout: 8_000 });
+        await page.locator('.pane-frame.is-current .composer-status[data-status="idle"]').waitFor({ state: "attached", timeout: 8_000 });
         assert.equal(await greeting.locator(".composer-greeting-title").textContent(), "What should Claude do in new-project?");
         assert.equal(await greeting.locator(".composer-greeting-where").textContent(), "workstation · /home/demo/new-project");
         assert.equal(await page.locator(".pane-frame.is-current .chat-empty").count(), 0, "the greeting stands in for the chat's own empty line");
@@ -192,8 +194,40 @@ try {
 
         // The first message puts the composer back at the bottom, with no animation, before
         // anything is heard back: the submit frame is held, so no turn and no "working" end it.
+        // A send is claimed in the pane's cross-tab Web Lock (#2369), granted in a later task; here
+        // another tab's acknowledgement holds that lock over the click, so the grant always comes
+        // after the click's frame: the greeting goes with the press, not with the grant.
         await page.evaluate(() => { (window as unknown as { heldSubmits: (() => void)[] | null }).heldSubmits = []; });
         await message.fill("Start with the README");
+        await page.waitForFunction(() => Object.keys(localStorage).some((key) => key.startsWith("ovis:composer-draft:") && localStorage.getItem(key) === "Start with the README"));
+        const holdSendLock = (): Promise<void> => page.evaluate(() => new Promise<void>((granted, refused) => {
+          const key = Object.keys(localStorage).find((name) => name.startsWith("ovis:composer-draft:") && localStorage.getItem(name) === "Start with the README")!;
+          navigator.locks.request(`ovis-send:${key}`, () => new Promise<void>((release) => {
+            (window as unknown as { releaseSendLock: () => void }).releaseSendLock = release;
+            granted();
+          })).catch(refused);
+        }));
+        const pressSend = (): Promise<void> => page.evaluate(() => { document.querySelector<HTMLElement>('.pane-frame.is-current button[aria-label="Send message"]')!.click(); });
+
+        // a press whose claim the composer leaves behind (another lens) sends nothing: the greeting
+        // comes back with the chat, and does not wait for the other tab's lock
+        await holdSendLock();
+        await pressSend();
+        await greeting.waitFor({ state: "detached" });
+        await page.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
+        await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
+        await page.getByTitle("Chat transcript (⌘⇧J)", { exact: true }).click();
+        await greeting.waitFor({ timeout: 5_000 });
+        await page.evaluate(() => (window as unknown as { releaseSendLock: () => void }).releaseSendLock());
+        // the lock taken after it queues behind the left claim: once it is granted, that claim has run (and sent nothing)
+        await holdSendLock();
+        assert.equal(await page.evaluate(() => (window as unknown as { heldSubmits: unknown[] }).heldSubmits.length), 0, "a claim left behind sends nothing");
+        await page.evaluate(() => (window as unknown as { releaseSendLock: () => void }).releaseSendLock());
+        await greeting.waitFor();
+        await message.fill("Start with the README");
+        console.log("PASS a send left waiting for another tab's lock gives the greeting back when its composer goes");
+
+        await holdSendLock();
         const sent = await page.evaluate(async () => {
           document.querySelector<HTMLElement>('.pane-frame.is-current button[aria-label="Send message"]')!.click();
           // the frame the click is painted in, and nothing later
@@ -206,17 +240,25 @@ try {
             animations: composer.getAnimations().length,
             gap: Math.abs(composer.getBoundingClientRect().bottom - document.querySelector(".pane-frame.is-current .terminal-stack")!.getBoundingClientRect().bottom),
             turns: document.querySelectorAll(".pane-frame.is-current .chat-turn").length,
+            empty: document.querySelectorAll(".pane-frame.is-current .chat-empty").length,
             status: document.querySelector(".pane-frame.is-current .composer-status")!.getAttribute("data-status"),
           };
         });
-        assert.equal(sent.held, 1, "the message is on its way and nothing answered it");
+        assert.equal(sent.held, 0, "the claim waits for the other tab's lock");
         assert.equal(sent.turns, 0);
         assert.notEqual(sent.status, "working");
         assert.equal(sent.greetings, 0, `the greeting goes with the send itself: ${JSON.stringify(sent)}`);
+        assert.equal(sent.empty, 0, `"No conversation yet" does not stand in for the greeting while the message is on its way: ${JSON.stringify(sent)}`);
         assert.equal(sent.transform, "none");
         assert.equal(sent.animations, 0, "the composer snaps: nothing animates");
         assert.ok(sent.gap <= 1, `composer docked in the frame of the first send: ${JSON.stringify(sent)}`);
         assert.deepEqual((await geometryOf(page)).mount, docked.mount, "the xterm mount keeps its size when the greeting goes");
+        // the lock goes free: the claim runs and the message is on its way, still docked and ungreeted
+        await page.evaluate(() => (window as unknown as { releaseSendLock: () => void }).releaseSendLock());
+        await page.waitForFunction(() => (window as unknown as { heldSubmits: unknown[] }).heldSubmits.length === 1, undefined, { timeout: 5_000 });
+        assert.equal(await page.locator(".pane-frame.is-current .composer-greeting").count(), 0, "the greeting stays away once the claim ran");
+        assert.equal(await page.locator(".pane-frame.is-current .chat-empty").count(), 0);
+        assert.equal((await geometryOf(page)).transform, "none");
         console.log("PASS the first message sent docks the composer in the same frame, before any turn or status arrives");
 
         // still nothing heard back: another lens and back, and a conversation read again, do not
@@ -225,9 +267,11 @@ try {
         await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
         await page.getByTitle("Chat transcript (⌘⇧J)", { exact: true }).click();
         await page.locator(".pane-frame.is-current .terminal-stack.is-chat").waitFor();
-        await page.locator(".pane-frame.is-current .chat-empty").waitFor();
+        // the conversation was read again and is presented
+        await page.locator(".pane-frame.is-current .chat-frame[data-pane-content]").waitFor({ state: "attached" });
         assert.equal(await page.locator(".pane-frame.is-current .chat-turn").count(), 0);
         assert.equal(await page.locator(".pane-frame.is-current .composer-greeting").count(), 0, "the greeting does not return after a send");
+        assert.equal(await page.locator(".pane-frame.is-current .chat-empty").count(), 0, "nor does the empty line stand in for it");
         assert.equal((await geometryOf(page)).transform, "none");
         console.log("PASS the greeting does not return when the chat is left and shown again after a send");
 

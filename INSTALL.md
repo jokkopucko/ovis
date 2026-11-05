@@ -60,9 +60,21 @@ for a GitHub star, unless the account gh is signed in to has starred the reposit
 asks whether to give one only at a terminal, and goes on by itself after 20 seconds: do not answer
 the question, and do not star the repository for the user.
 
+On a Linux or macOS PC that has herdr-core (`hc`, the core the Herdr desktop app runs on) and no herdr,
+C installs neither herdr nor the plugin. It installs Bun when missing, puts Ovis in its own checkout
+(`~/.local/share/ovis/app`, built as herdr builds the plugin), writes `OVIS_RUNTIME=herdr-core` and
+the hc it found (`OVIS_HC_BIN`) to `~/.config/ovis/env`, and starts it with `bun ~/.local/share/ovis/app/scripts/plugin.ts start` from a
+user service that starts it again at login: `ovis.service` (`systemctl --user`) on Linux, the
+`sh.ovis.server` LaunchAgent on macOS. Without systemd it starts Ovis once and says how to start it
+again. `OVIS_RUNTIME=herdr` or `OVIS_RUNTIME=herdr-core` before `sh` picks the runtime instead.
+Where the herdr plugin already runs Ovis, it does not add a second one: it says to set
+`OVIS_RUNTIME=herdr-core` in the plugin's own settings instead. Updates work as for the plugin.
+
 On Windows x64, use `irm https://ovis.sh/install.ps1 | iex` in PowerShell.
 It requires Git for Windows and installs missing herdr and Bun for the user, without Node or WSL.
 It starts the plugin when herdr runs. Phone access stays optional: use the **Phone setup** action.
+On Windows it uses herdr even where herdr-core is installed: Ovis runs on herdr-core on Linux and
+macOS only.
 `OVIS_REF` selects a branch or tag for testing; otherwise it installs the latest release.
 
 ## 3A. Install as a herdr plugin
@@ -260,6 +272,15 @@ The old `HERDR_WEB_*` names still work. The [user guide](docs/guide.md#configura
 # an install from before the rename runs, or is registered, under its old id until the installer moves it
 herdr plugin action invoke devswha.ovis.stop || herdr plugin action invoke devswha.herdr-web-ui.stop
 herdr plugin uninstall devswha.ovis || herdr plugin uninstall devswha.herdr-web-ui
+```
+
+An install on herdr-core (no herdr) has no plugin: stop it and remove its service and checkout.
+
+```bash
+bun ~/.local/share/ovis/app/scripts/plugin.ts stop
+systemctl --user disable --now ovis && rm ~/.config/systemd/user/ovis.service   # Linux
+launchctl bootout gui/$(id -u)/sh.ovis.server; rm ~/Library/LaunchAgents/sh.ovis.server.plist   # macOS
+rm -rf ~/.local/share/ovis/app
 ```
 
 Uninstall removes herdr's managed checkout. It does not touch `~/.config/ovis` (push

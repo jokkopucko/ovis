@@ -230,6 +230,11 @@
   cursor: pointer;
 }
 
+/* an artifact's row (Artifacts.tsx) is a link to its page: drawn as a task's row, not as a link */
+a.bg-task-open {
+  text-decoration: none;
+}
+
 @media (hover: hover) {
   .bg-task-open:hover {
     background: var(--bg-hover);

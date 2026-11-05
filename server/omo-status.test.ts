@@ -1,11 +1,13 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { AgentStatus, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { CompletionTracker, type OmoRest } from "./completion.ts";
 import { Finishes } from "./finishes.ts";
+import { createGjcStatus } from "./gjc-status.ts";
+import { createServer } from "./index.ts";
 import { paneAfterStatus } from "./machines.ts";
 import { earliestStart, holderStartedAt } from "./omo.ts";
 import { projectStateKey } from "./omo-state-dir.ts";
@@ -539,6 +541,198 @@ describe("OmO panes' status in place of herdr's", () => {
     const { omo } = setup(lines(asking("old", false), acceptedResult("old"), message("toolResult", undefined, undefined, "x".repeat(1_200_000)), message("assistant", "stop")));
     await omo.refresh(herdr().panes);
     expect(statuses(omo.apply(herdr()))["omo"]).toBe("omo/blocked");
+  });
+
+  it("serves a concurrent request before a large initial replay publishes its status", async () => {
+    const path = join(root, "responsive_01a0f88b-481c-7139-8125-c9cd453b9e17.jsonl");
+    writeFileSync(path, lines(message("user"), asking("old", false), acceptedResult("old"), message("toolResult", undefined, undefined, "x".repeat(16 * 1024 * 1024)), message("assistant", "stop")));
+    const started = Promise.withResolvers<void>();
+    const told: AgentStatus[] = [];
+    let finished = false;
+    const omo = new OmoStatus({
+      discover: async () => new Map([["omo", { path, startedAt: null }]]),
+      snapshot: async () => herdr(),
+      background: () => new Map(),
+      onChange: (_id, status) => told.push(status),
+      turnAfter: (turn, line) => { started.resolve(); return omoTurnAfter(turn, line); },
+    });
+    const server = createServer({ hostname: "127.0.0.1", port: 0, stateDir: mkdtempSync(join(root, "server-")), token: "", machines: false, sidecar: false, tailscaleOwner: null });
+    const health = () => fetch(`http://127.0.0.1:${server.port}/api/health?scope=bridge`, { signal: AbortSignal.timeout(5000) });
+    expect((await health()).status).toBe(200);
+    const replay = omo.refresh(herdr().panes).then(() => { finished = true; });
+    try {
+      await started.promise;
+      const response = await health();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ ok: true });
+      expect(finished).toBe(false);
+      expect(told).toEqual([]);
+      await replay;
+      expect(told).toEqual(["blocked"]);
+      expect(statuses(omo.apply(herdr()))["omo"]).toBe("omo/blocked");
+    } finally {
+      omo.stop();
+      await replay;
+      server.stop();
+    }
+  });
+
+  for (const agent of ["omo", "gjc"] as const) {
+    it(`publishes one ${agent} baseline and coalesces polls during a large replay`, async () => {
+      const path = join(root, `${agent}-baseline.jsonl`);
+      writeFileSync(path, lines(message("user"), message("assistant", "stop", undefined, "x".repeat(2 * 1024 * 1024))));
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const told: AgentStatus[] = [];
+      let reads = 0;
+      const deps = {
+        discover: async () => new Map([["omo", { path, startedAt: null }]]),
+        snapshot: async () => herdr(),
+        onChange: (_id: string, status: AgentStatus) => told.push(status),
+        background: () => new Map<string, number>(),
+        file: {
+          stat: () => ({ size: statSync(path).size, id: "1" }),
+          // Hold the I/O boundary, not the reducer or status logic.
+          lines: async (_path: string, from: number, size: number, each: (line: OmoLine) => void) => {
+            reads++;
+            started.resolve();
+            await release.promise;
+            const fd = openSync(path, "r");
+            try { return readLines(fd, from, size, each); } finally { closeSync(fd); }
+          },
+        },
+      };
+      const tracker = agent === "omo" ? new OmoStatus(deps) : createGjcStatus(deps);
+      const replay = tracker.refresh(herdr().panes);
+      try {
+        await started.promise;
+        const poll = tracker.poll();
+        expect(reads).toBe(1);
+        expect(told).toEqual([]);
+        if (agent === "gjc") expect(tracker.tracks("omo")).toBe(false);
+        release.resolve();
+        await Promise.all([replay, poll]);
+        expect(told).toEqual([]);
+        expect(tracker.tracks("omo")).toBe(true);
+        appendFileSync(path, lines(message("user")));
+        const append = tracker.poll();
+        if (agent === "gjc") {
+          expect(tracker.tracks("omo")).toBe(false);
+          expect(tracker.apply(snapshotOf(pane("omo", "gjc", "working"))).panes[0]?.agent_status).toBe("working");
+        }
+        await append;
+        expect(told).toEqual(["working"]);
+      } finally {
+        tracker.stop();
+        release.resolve();
+        await replay;
+      }
+    });
+  }
+
+  it("does not start replay when stopped during discovery", async () => {
+    const discovery = Promise.withResolvers<Map<string, OmoPane>>();
+    const told: AgentStatus[] = [];
+    const omo = new OmoStatus({
+      discover: () => discovery.promise,
+      snapshot: async () => herdr(),
+      onChange: (_id, status) => told.push(status),
+      background: () => new Map(),
+    });
+    const refresh = omo.refresh(herdr().panes);
+    omo.stop();
+    discovery.resolve(new Map([["omo", { path: FILE, startedAt: null }]]));
+    await refresh;
+    expect(omo.runs("omo")).toBe(false);
+    expect(told).toEqual([]);
+  });
+
+  for (const change of ["session", "removed", "agent", "stop", "replace", "truncate", "peer"] as const) {
+    it(`handles ${change} during an in-flight replay without stale publication`, async () => {
+      const path = join(root, `${change}_01a0f88b-481c-7139-8125-c9cd453b9e17.jsonl`);
+      const other = join(root, `${change}-other.jsonl`);
+      writeFileSync(path, lines(message("user"), message("toolResult", undefined, undefined, "x".repeat(2 * 1024 * 1024))));
+      writeFileSync(other, lines(message("assistant", "stop")));
+      const started = Promise.withResolvers<void>();
+      const told: AgentStatus[] = [];
+      let reduced = 0;
+      const found = new Map<string, OmoPane>([["omo", { path, startedAt: null }]]);
+      if (change === "peer") found.set("peer", { path: null, startedAt: null });
+      const omo = new OmoStatus({
+        discover: async () => new Map(found),
+        snapshot: async () => herdr(),
+        onChange: (_id, status) => told.push(status),
+        background: () => new Map(),
+        refreshMs: 0,
+        turnAfter: (turn, line) => { reduced++; started.resolve(); return omoTurnAfter(turn, line); },
+      });
+      const replay = omo.refresh(herdr().panes);
+      try {
+        await started.promise;
+        switch (change) {
+          case "session":
+            found.set("omo", { path: other, startedAt: null });
+            await omo.refresh(herdr().panes);
+            break;
+          case "removed":
+            found.clear();
+            await omo.refresh(herdr().panes);
+            break;
+          case "agent": omo.named("omo", "codex"); break;
+          case "peer": omo.named("peer", "codex"); break;
+          case "stop": omo.stop(); break;
+          case "replace": renameSync(other, path); break;
+          case "truncate": writeFileSync(path, lines(message("assistant", "stop"))); break;
+        }
+        await replay;
+        expect(told).toEqual(change === "peer" ? ["working"] : []);
+        if (change === "session") {
+          expect(omo.pathOf("omo")).toBe(other);
+          expect(reduced).toBe(2); // one old record, one new record; the old tail was canceled
+        }
+        if (change === "removed" || change === "agent") expect(omo.runs("omo")).toBe(false);
+        if (change === "stop") expect(reduced).toBe(1);
+        if (change === "replace" || change === "truncate") {
+          expect(reduced).toBe(1);
+          await omo.poll();
+          expect(told).toEqual([]);
+          expect(statuses(omo.apply(herdr()))["omo"]).toBe("omo/idle");
+        }
+      } finally {
+        omo.stop();
+        await replay;
+      }
+    });
+  }
+
+  it("replays a truncated append from zero even when it is longer than the old offset", async () => {
+    const path = join(root, "truncated-append.jsonl");
+    writeFileSync(path, lines(message("assistant", "stop")));
+    const started = Promise.withResolvers<void>();
+    const told: AgentStatus[] = [];
+    let appended = false;
+    const omo = new OmoStatus({
+      discover: async () => new Map([["omo", { path, startedAt: null }]]),
+      snapshot: async () => herdr(),
+      onChange: (_id, status) => told.push(status),
+      background: () => new Map(),
+      turnAfter: (turn, line) => { if (appended) started.resolve(); return omoTurnAfter(turn, line); },
+    });
+    await omo.refresh(herdr().panes);
+    appendFileSync(path, lines(message("user"), message("toolResult", undefined, undefined, "x".repeat(2 * 1024 * 1024))));
+    appended = true;
+    const replay = omo.poll();
+    try {
+      await started.promise;
+      writeFileSync(path, lines(asking("replacement", false), bookkeeping("x".repeat(1024))));
+      await replay;
+      expect(told).toEqual([]);
+      await omo.poll();
+      expect(told).toEqual(["blocked"]);
+    } finally {
+      omo.stop();
+      await replay;
+    }
   });
 
   it("reads INPUT while a question waits on the user, whether OmO waits for it or goes on", async () => {

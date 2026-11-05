@@ -96,6 +96,17 @@ describe("WebSocket liveness ping", () => {
     expect(socket.seen.slice(before).some((message) => message.type === "pong")).toBe(false);
   }, 20_000);
 
+  // #511: a remote PC's own bridge enforces agent_only, so the relay must hand it the flag as sent: an invalid one
+  // (only true is allowed) comes back refused by the remote, which a relay that dropped or rewrote it would not cause
+  it("relays a submit's agent_only to a remote PC unchanged, and its agent-only feature back", async () => {
+    const socket = await connect(`ws://127.0.0.1:${proxy!.port}/ws`);
+    const snapshot = socket.seen.find((message) => message.type === "snapshot");
+    expect(snapshot?.type === "snapshot" && snapshot.features).toContain("agent-only");
+    socket.send({ type: "submit", id: 77, pane_id: "w9:p9", text: "x", payload: "x", agent_only: false } as never);
+    expect(await socket.next((message) => message.type === "submit-result" && message.id === 77, "relayed submit result"))
+      .toMatchObject({ ok: false, code: "invalid_delivery" });
+  }, 20_000);
+
   it("relays a ping to a remote PC and its pong back unchanged", async () => {
     const socket = await connect(`ws://127.0.0.1:${proxy!.port}/ws`);
     const snapshot = socket.seen.find((message) => message.type === "snapshot");

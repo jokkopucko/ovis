@@ -13,6 +13,8 @@ export interface PtySessionOptions {
   onExit: (code: number | null) => void;
   /** Extra environment for the command, on top of this process's own. */
   env?: Record<string, string>;
+  /** A private CLI gets only its supplied environment, not the server's credentials and hooks. */
+  inheritEnv?: boolean;
 }
 
 /** Writes a line to a child's stdin. On Windows a pipe write settles later, so a child that already
@@ -41,14 +43,14 @@ export class PtySession {
 
   constructor(private readonly options: PtySessionOptions) {
     // The bridge's bearer token is for browsers; neither the sidecar nor the attach needs it.
-    const env = { ...process.env, ...options.env };
+    const env = { ...(options.inheritEnv === false ? {} : process.env), ...options.env };
     delete env["OVIS_TOKEN"];
     delete env["HERDR_WEB_TOKEN"];
     const args = [String(options.cols), String(options.rows), options.command, ...options.args];
     const spawnOptions = { stdin: "pipe", stdout: "pipe", stderr: "inherit", env } as const;
     // only a real Node runs pty-host.mjs: `bun run` puts a `node` that is Bun on a PC without one
     const node = () => {
-      const executable = nodeSidecarAvailable() ? realNode(env) : null;
+      const executable = nodeSidecarAvailable() ? realNode(options.inheritEnv === false ? process.env : env) : null;
       if (!executable) throw new Error("no PTY host: the Rust host cannot run and this PC has no Node for the PTY sidecar");
       return Bun.spawn([executable, HOST_SCRIPT, ...args], spawnOptions);
     };

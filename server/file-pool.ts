@@ -21,8 +21,9 @@ import type { FileTask, FileTaskResult } from "./file-tasks.ts";
 export const FILE_TASK_DEADLINE_MS = 3_000;
 /**
  * A task of many calls rather than one: a page rendered with its own files (work for the processor
- * too), or a folder walked for a name (up to its 5,000 entries, each a call to a disk that may be
- * slow). It may take longer.
+ * too), a folder walked for a name (up to its 5,000 entries, each a call to a disk that may be
+ * slow), a Claude task list scanned from its agent session's history, or an Agy catalog copied (up to
+ * 64 MiB). It may take longer.
  */
 export const FILE_LONG_TASK_DEADLINE_MS = 15_000;
 /**
@@ -45,11 +46,16 @@ interface PoolOptions {
   longDeadlineMs: number;
   scanDeadlineMs: number;
   /**
-   * At most this many threads run a commands scan at once: a scan can hold its thread for many
-   * seconds, and the file routes keep the others. A scan past that waits, and the tasks behind it
-   * still take a free thread.
+   * At most this many threads run a scan at once, a commands scan or a Claude task list's
+   * (`claude-tasks`) alike: a scan can hold its thread for many seconds, and the file routes keep
+   * the others. A scan past that waits, and the tasks behind it still take a free thread.
    */
   scans: number;
+  /**
+   * Of those, at most this many run a Claude task list's scan: a stuck one still leaves commands
+   * scans a thread.
+   */
+  taskScans: number;
   /** the module a thread runs (a stand-in, in tests) */
   worker: URL;
   /** run each task on the calling thread instead (tests that set `pageFileHooks`, which a thread cannot see) */
@@ -63,6 +69,7 @@ const DEFAULTS: PoolOptions = {
   longDeadlineMs: FILE_LONG_TASK_DEADLINE_MS,
   scanDeadlineMs: FILE_SCAN_DEADLINE_MS,
   scans: 2,
+  taskScans: 1,
   worker: new URL("./file-worker.ts", import.meta.url),
   inline: null,
 };
@@ -157,7 +164,7 @@ export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: Abor
   // failed or was ended mid-task) can still be closed (`abandon`)
   if (task.op === "open" || task.op === "describe") task = { ...task, opened: openedCell() };
   return new Promise<T>((done, fail) => {
-    const deadline = task.op === "commands" ? options.scanDeadlineMs : task.op === "render" || task.op === "walk" ? options.longDeadlineMs : options.deadlineMs;
+    const deadline = task.op === "commands" ? options.scanDeadlineMs : task.op === "render" || task.op === "walk" || task.op === "claude-tasks" || task.op === "agy-catalog" ? options.longDeadlineMs : options.deadlineMs;
     const pending: Pending = { task, done: done as (result: FileTaskResult) => void, fail, settled: false, timer: setTimeout(() => expire(pending, "the file system did not answer in time"), deadline), ...(onRun ? { onRun } : {}) };
     if (signal !== undefined) {
       const cancel = () => expire(pending, "the request was cancelled");
@@ -171,12 +178,21 @@ export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: Abor
   });
 }
 
-/** A scan only while fewer than `scans` threads run one (a scan past its deadline keeps its thread, and counts, until it returns); any other task always. */
+/**
+ * A scan only while fewer than `scans` threads run a scan of either kind, and a task list's only
+ * while fewer than `taskScans` run one of its own kind (a scan past its deadline keeps its thread,
+ * and counts, until it returns); any other task always.
+ */
 function mayRun(task: FileTask): boolean {
-  if (task.op !== "commands") return true;
+  if (task.op !== "commands" && task.op !== "claude-tasks") return true;
   let scanning = 0;
-  for (const thread of threads) if (thread.pending?.task.op === "commands") scanning += 1;
-  return scanning < options.scans;
+  let taskScanning = 0;
+  for (const thread of threads) {
+    const op = thread.pending?.task.op;
+    if (op === "commands" || op === "claude-tasks") scanning += 1;
+    if (op === "claude-tasks") taskScanning += 1;
+  }
+  return scanning < options.scans && (task.op !== "claude-tasks" || taskScanning < options.taskScans);
 }
 
 /** The first waiting task that may run now, taken out of the queue. */

@@ -176,7 +176,9 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
                 selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${epoch}:${position}` };
                 unregistered = null;
               } else {
-                unregistered = selected && selected.sessionId === match[2] ? selected : null;
+                // A legacy parent's complete log may first name its session when releasing it to a child.
+                unregistered = selected && selected.sessionId === match[2] ? selected : selected === null
+                  ? { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${epoch}:${position}` } : null;
                 selected = undefined;
               }
             }

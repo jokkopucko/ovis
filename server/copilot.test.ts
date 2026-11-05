@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync,
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCopilotTranscript } from "./copilot.ts";
+import { copilotImage, parseCopilotTranscript } from "./copilot.ts";
 import * as copilotStore from "./copilot-store.ts";
 import { copilotProcessSession, copilotTranscriptFile as selectedTranscriptFile, copilotUnwrittenSession as selectedUnwrittenSession, heldSessions } from "./copilot-store.ts";
 import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, paneConversation, toolOutput, transcriptPage, transcriptToolOutput } from "./conversation.ts";
@@ -139,6 +139,52 @@ it.skipIf(process.platform !== "linux")("never reuses cached handoff unregister 
   } finally { await fixture.close(); }
 });
 
+for (const observed of [false, true]) {
+  it.skipIf(process.platform !== "linux")(`records legacy unregister proof from ${observed ? "continuous" : "initial"} log evidence without authorizing parent history`, async () => {
+    const fixture = await logFixture([session]);
+    const { environment, log, pid } = fixture;
+    const ended = () => copilotProcessSession(environment, ["copilot"], pid, "unregistered");
+    try {
+      appendFileSync(log, "CLI started\n");
+      if (observed) expect(copilotProcessSession(environment, ["copilot"], pid)?.logged).toBe(false);
+      appendFileSync(log, register(session, "Unregistering").trimEnd());
+      expect(ended()).toBeNull();
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+      appendFileSync(log, "\n");
+      const released = ended();
+      expect(released).toMatchObject({ sessionId: session, logged: true });
+      if (!released?.logged) throw new Error("Fixture unregister proof missing");
+      expect(ended()).toEqual(released);
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+      appendFileSync(log, register(session, "Unregistering"));
+      expect(ended()).toBeNull();
+      appendFileSync(log, register(other));
+      expect(ended()).toBeNull();
+      expect(copilotProcessSession(environment, ["copilot"], pid)?.sessionId).toBe(other);
+      appendFileSync(log, register(session, "Unregistering"));
+      expect(ended()).toBeNull();
+    } finally { await fixture.close(); }
+  });
+}
+
+for (const loss of ["rewrite", "descriptor gap"] as const) {
+  it.skipIf(process.platform !== "linux")(`does not bootstrap legacy unregister proof after a log ${loss}`, async () => {
+    const fixture = await logFixture([session]);
+    const { environment, log, pid } = fixture;
+    try {
+      appendFileSync(log, "CLI started with an ordinary complete log\n");
+      expect(copilotProcessSession(environment, ["copilot"], pid)?.logged).toBe(false);
+      if (loss === "rewrite") writeFileSync(log, "replacement\n");
+      else await fixture.command("close");
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+      if (loss === "descriptor gap") await fixture.command("open");
+      appendFileSync(log, register(session, "Unregistering"));
+      expect(copilotProcessSession(environment, ["copilot"], pid, "unregistered")).toBeNull();
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+    } finally { await fixture.close(); }
+  });
+}
+
 it("parses persisted Copilot messages and tool rounds once, with failures and recorded metadata", () => {
   const text = start + prompt("Visible prompt")
     + line("assistant.message", { content: "Checking.", phase: "commentary", toolRequests: [{ toolCallId: "call-1", name: "shell", arguments: { command: "pwd" }, toolTitle: "Check directory" }], model: "fixture-model" })
@@ -170,6 +216,36 @@ it("reads a redacted recorded CLI session with root task ancestry and a tool-onl
     { kind: "text", text: "Recorded fixture text.", phase: "commentary" },
   ]);
   expect(parseConversationMetadata(recorded, "copilot-transcript").model).toBe("fixture-model");
+});
+
+it("names the pictures a recorded 1.0.105 session interned, attached and tool-read, and reads each back by its digest", async () => {
+  const recorded = readFileSync(new URL("./fixtures/copilot-pictures-1.0.105-events.jsonl", import.meta.url), "utf8");
+  const red = "copilot:db47bba5fe6470a832370fa0ca3cbfd9194dd1e36eaa3d67fdd33bea01d4b66a";
+  const blue = "copilot:c75fe07b33afb7b182fa53cd500727a7cfa1699443a17d87d053d6536ad65438";
+  const turns = parseCopilotTranscript(recorded);
+  expect(turns.map(({ role }) => role)).toEqual(["user", "assistant"]);
+  expect(turns[0]?.parts.slice(1)).toEqual([{ kind: "image", media_type: "image/png", ref: red }]);
+  expect(turns[1]?.parts[0]).toMatchObject({ kind: "tool", name: "view", images: [{ media_type: "image/png", ref: blue }] });
+  const dir = mkdtempSync(join(tmpdir(), "copilot-pictures-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    writeFileSync(path, recorded);
+    for (const ref of [red, blue]) {
+      const image = await copilotImage(path, ref);
+      expect(image?.mediaType).toBe("image/png");
+      expect(new Bun.CryptoHasher("sha256").update(image!.bytes).digest("hex")).toBe(ref.slice("copilot:".length));
+    }
+    // a digest the session never interned, and bytes that no longer hash to the name they are filed under
+    expect(await copilotImage(path, `copilot:${"0".repeat(64)}`)).toBeNull();
+    // a line past the largest picture record is passed over without ending the search
+    writeFileSync(path, `${"x".repeat(16 * 1024 * 1024)}\n${recorded}`);
+    expect((await copilotImage(path, red))?.mediaType).toBe("image/png");
+    // the picture's record last in the file, with no newline after it yet
+    writeFileSync(path, recorded.split("\n")[2]!);
+    expect((await copilotImage(path, red))?.mediaType).toBe("image/png");
+    writeFileSync(path, recorded.replace("iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAU0lEQVR4", "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAU0lEQVR5"));
+    expect(await copilotImage(path, red)).toBeNull();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 it.each(["assistant.message", "tool.execution_start"])("preserves string arguments from %s with bounded display and verified tool output", (type) => {
@@ -1507,4 +1583,59 @@ it.skipIf(process.platform !== "linux")("follows process-owned foreground eviden
     expect(binding()).toBeNull();
     expect(copilotTranscriptFile(session, options, args, pid)).toBeNull();
   } finally { await fixture.close(); }
+});
+
+it("keeps a recorded turn whole when the pictures Copilot interned in it pass the page window (#2478)", () => {
+  // the real recorded turn, with two interned pictures (Copilot 1.0.105's `session.binary_asset`) between its
+  // tool call and the call's result, together more than one page window of bytes
+  const recorded = readFileSync(new URL("./fixtures/copilot-recorded.jsonl", import.meta.url), "utf8").split("\n").filter(Boolean);
+  const complete = recorded.findIndex((record) => record.includes('"tool.execution_complete"'));
+  const picture = (n: number) => JSON.stringify({ type: "session.binary_asset", data: { assetId: `sha256:${String(n).repeat(64)}`, type: "image", mimeType: "image/png", byteLength: 6_700_000, data: "A".repeat(9 * 1024 * 1024) }, id: crypto.randomUUID(), timestamp: "2026-01-01T00:00:00.000Z", parentId: null });
+  const dir = mkdtempSync(join(tmpdir(), "copilot-page-split-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    // an earlier turn first, so the pictured turn starts mid-file and an older page has something to hold
+    const earlier = recorded.filter((record) => /"type":"(user\.message|assistant\.message)"/.test(record) && !record.includes("toolRequests\":[{"))
+      .map((record) => record.replace("Recorded fixture text.", "Earlier turn."));
+    writeFileSync(path, [recorded[0]!, ...earlier, ...recorded.slice(1, complete), picture(1), picture(2), ...recorded.slice(complete)].join("\n") + "\n");
+    // more than a page window (TRANSCRIPT_WINDOW_BYTES, 16 MiB)
+    expect(statSync(path).size).toBeGreaterThan(16 * 1024 * 1024);
+    const whole = parseCopilotTranscript(readFileSync(path, "utf8"));
+    expect(whole.map((turn) => turn.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    // one page at a prompt each: the newest holds the pictured turn whole, the older one the turn before it
+    const latest = transcriptPage("copilot-transcript", path, { prompts: 1 });
+    expect(latest.turns).toEqual(whole.slice(2));
+    expect(latest.turns[1]?.parts[0]).toMatchObject({ kind: "tool", name: "shell", output: "Recorded fixture text." });
+    expect(latest.cursor).not.toBeNull();
+    const older = transcriptPage("copilot-transcript", path, { before: latest.cursor!, prompts: 1 });
+    expect(older.turns).toEqual(whole.slice(0, 2));
+    // while the turn is live, a poll reads what was appended, not the turn again
+    const appended = JSON.stringify({ type: "assistant.message", data: { content: "Appended answer.", toolRequests: [], phase: "final_answer" }, id: crypto.randomUUID(), timestamp: "2026-01-01T00:00:01.000Z", parentId: null }) + "\n";
+    appendFileSync(path, appended);
+    let read = 0;
+    const realRead = fs.readSync;
+    const counting = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      const count = (realRead as (...args: Parameters<typeof fs.readSync>) => number)(...args);
+      read += count;
+      return count;
+    }) as typeof fs.readSync);
+    let grown: ReturnType<typeof transcriptPage>;
+    try { grown = transcriptPage("copilot-transcript", path, { prompts: 1 }); } finally { counting.mockRestore(); }
+    // the spy sees the page's own reads: the appended record is read, and nothing much besides
+    expect(read).toBeGreaterThan(0);
+    expect(read).toBeLessThan(64 * 1024);
+    expect(grown.turns).toEqual(parseCopilotTranscript(readFileSync(path, "utf8")).slice(2));
+    expect(grown.turns.at(-1)?.parts.at(-1)).toEqual({ kind: "text", text: "Appended answer.", phase: "final_answer" });
+    // a file written anew rather than appended to is read whole again
+    const rewritten = readFileSync(path, "utf8").replace("Appended answer.", "Rewritten answer");
+    writeFileSync(path, rewritten);
+    expect(transcriptPage("copilot-transcript", path, { prompts: 1 }).turns).toEqual(parseCopilotTranscript(rewritten).slice(2));
+    // a newer prompt appended between polls with more than a window after it: its turn is the newest page
+    const later = recorded.find((record) => record.includes('"user.message"'))!.replace("Recorded fixture text.", "Later prompt.");
+    appendFileSync(path, [later, picture(3), picture(4)].join("\n") + "\n");
+    const afterLater = parseCopilotTranscript(readFileSync(path, "utf8"));
+    expect(transcriptPage("copilot-transcript", path, { prompts: 1 }).turns).toEqual(afterLater.slice(-1));
+    // a line on disk shaped like the page's own stand-in for a picture is no record: the strict reader refuses it
+    expect(() => parseCopilotTranscript(`\u0000copilot-set-aside:12\n${recorded[1]}\n`)).toThrow();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

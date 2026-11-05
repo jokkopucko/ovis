@@ -20,6 +20,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+      actions: read
   build:
     if: >-
       github.ref == 'refs/heads/main' &&

@@ -1,11 +1,20 @@
 import { constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { sep } from "node:path";
 
-import type { FileInfo, SlashCommand } from "../shared/protocol.ts";
+import type { FileInfo, OmoTask, SlashCommand } from "../shared/protocol.ts";
+import { agyCatalog } from "./agy.ts";
+import type { HistoryEvidence } from "./claude-command-history.ts";
+import { wholeClaudeSubagents } from "./claude-subagents.ts";
 import { paneCommands } from "./commands.ts";
 import type { ProcessRoots } from "./skills/index.ts";
 import { byteRange, describeWithin, fileInfo, openAuthorized, pageFileHooks, pageWithLocalFiles, pathsByName, release, STREAM_CHUNK_BYTES, type PageMedia, type PageMediaGrant } from "./file-view.ts";
 import { walkFiles } from "./files.ts";
+
+/**
+ * How long a Claude task list reads on before it answers with what it read so far: well inside the
+ * long-task deadline (`FILE_LONG_TASK_DEADLINE_MS`, 15 s), so its one scan thread is free by then.
+ */
+const CLAUDE_TASKS_READ_MS = 10_000;
 
 /**
  * What a file thread (`file-pool.ts`) does: each synchronous filesystem step of the file routes,
@@ -18,6 +27,10 @@ export type FileTask =
   /** a file the scratch fallback found, described from what was opened in `folder` (`describeWithin`); `opened` as for `open` */
   | { op: "describe"; path: string; folder: string; opened?: Int32Array<SharedArrayBuffer> }
   | { op: "walk"; cwd: string }
+  /** an Agy ledger's catalog (`agyCatalogOffThread`): its active step indices */
+  | { op: "agy-catalog"; path: string }
+  /** A Claude agent session's background-task list, read whole with the thread's own parser caches (`wholeClaudeSubagents`). */
+  | { op: "claude-tasks"; path: string; live: boolean; since: number | null; history?: HistoryEvidence | null }
   /**
    * The commands `agent` offers in `cwd`: its skill and command folders scanned (`paneCommands`,
    * #2254), each a call to a disk that may be slow. `home` and `serverEnv` are the server's own, as a
@@ -53,7 +66,7 @@ export interface OpenedFile { size: number; range: [number, number] | "unsatisfi
 export const FAST_DISK_MS = 50;
 const PROBE_BYTES = 64 * 1024;
 
-export type FileTaskResult = FileInfo | FileInfo[] | string[] | SlashCommand[] | boolean | RenderedPage | OpenedFile | { info: FileInfo; within: string } | null;
+export type FileTaskResult = FileInfo | FileInfo[] | string[] | number[] | SlashCommand[] | OmoTask[] | boolean | RenderedPage | OpenedFile | { info: FileInfo; within: string } | null;
 
 export function runFileTask(task: FileTask): FileTaskResult {
   switch (task.op) {
@@ -62,6 +75,8 @@ export function runFileTask(task: FileTask): FileTaskResult {
     case "within": return within(task.paths, task.folder);
     case "describe": return describeWithin(task.path, task.folder, task.opened);
     case "walk": return walkFiles(task.cwd);
+    case "agy-catalog": return [...agyCatalog(task.path)];
+    case "claude-tasks": return wholeClaudeSubagents(task.path, task.live, Date.now(), task.since, Date.now() + CLAUDE_TASKS_READ_MS, Date.now, task.history ?? null);
     case "commands": return paneCommands(task.agent, task.cwd, task.home, task.roots, task.version, task.serverEnv);
     case "render": return render(task.path, task.media, task.within ?? null);
     case "open": return open(task.path, task.get, task.opened, task.fastDiskMs ?? FAST_DISK_MS, task.within ?? null);

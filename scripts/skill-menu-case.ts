@@ -31,6 +31,9 @@ export interface SkillMenuCase {
   widths?: readonly number[];
   /** the themes the scenarios run in (the app's theme setting); dark alone when absent */
   schemes?: readonly ColorScheme[];
+  /** the phone widths where this device chose Enter sends (Settings > Chat > Composer); a phone's Return breaks the
+   *  line otherwise, and its scenarios send with the Send button */
+  enterSendsAt?: readonly number[];
   /** the scenarios, run once at every width on a page showing the pane's chat */
   expect: (run: CaseRun) => Promise<void>;
 }

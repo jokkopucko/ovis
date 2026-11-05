@@ -1,0 +1,40 @@
+ 
+  [0m[38;2;99;168;248m>_ [0m[1mOpenAI Codex[0m[2m (v0.166.0)[0m
+     [0m[2m~/.cache/qs-capture[0m
+[0m[2m  permissions: [0m[1m[38;5;5mYOLO mode[0m
+ 
+[0m[2m  To get started, describe a task or try one of these commands:[0m
+ 
+  /init[0m[2m - create an AGENTS.md file with instructions for Codex[0m
+  /status[0m[2m - show current session configuration[0m
+  /permissions[0m[2m - choose what Codex is allowed to do[0m
+  /model[0m[2m - choose what model and reasoning effort to use[0m
+  /review[0m[2m - review any changes and find issues[0m
+ 
+[0m[48;5;8m                                                                                                                        [0m
+[0m[1m[2m[48;5;8m› [0m[48;5;8mUse request_user_input exactly once to ask me two single-choice multiple-choice questions: Color (Red/Blue) and Size  [0m
+[0m[48;5;8m  (Small/Large). Do nothing else.                                                                                       [0m
+[0m[48;5;8m                                                                                                                        [0m
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+  [0m[2mQuestion 1/2 (2 unanswered)[0m
+  [0m[38;2;99;168;248mWhich color do you choose?[0m
+ 
+  [0m[1m[7m› 1. Red                [0m[7mChoose red.[0m[1m[7m                                                                                 [0m
+    2. Blue               [0m[2mChoose blue.[0m
+    3. None of the above  [0m[2mOptionally, add details in notes (tab)[0m
+ 
+  [0m[1mtab[0m to add notes[0m[2m | [0m[1menter[0m to submit answer[0m[2m | [0m[1m←/→[0m to navigate questions[0m[2m | [0m[1mesc [0mto interrupt
+ 

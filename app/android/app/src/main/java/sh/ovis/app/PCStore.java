@@ -26,6 +26,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * The PCs this app knows, kept in SharedPreferences, as PCStore in the iOS app keeps them in
@@ -75,7 +77,12 @@ final class PCStore {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    /** Origins opened before, the latest first. */
+    /**
+     * PCs opened before, the latest first, each by its key: the origin of a PC opened at its own
+     * address, or the scope of one opened through the Ovis relay (`https://app.ovis.sh/s/<server_id>/`),
+     * as every relay PC shares the hosted shell's origin. Entries saved before relay PCs are origins
+     * and stay as they are.
+     */
     static List<String> saved(Context context) {
         List<String> list = new ArrayList<>();
         try {
@@ -91,7 +98,27 @@ final class PCStore {
         prefs(context).edit().putString("saved", new JSONArray(list).toString()).apply();
     }
 
-    /** The PC the app opens at launch, an origin; null shows the connect screen. */
+    /** Labels of saved PCs by key, from a relay pairing offer's name. */
+    static JSONObject names(Context context) {
+        try {
+            return new JSONObject(prefs(context).getString("names", "{}"));
+        } catch (JSONException damaged) {
+            return new JSONObject();
+        }
+    }
+
+    static void setName(Context context, String key, String name) {
+        JSONObject names = names(context);
+        try {
+            if (name == null) names.remove(key);
+            else names.put(key, name);
+        } catch (JSONException notStored) {
+            return;
+        }
+        prefs(context).edit().putString("names", names.toString()).apply();
+    }
+
+    /** The PC the app opens at launch, a key (see saved); null shows the connect screen. */
     static String current(Context context) {
         return prefs(context).getString("current", null);
     }
@@ -105,28 +132,119 @@ final class PCStore {
         return prefs(context).getString("last", null);
     }
 
-    /** Makes origin the PC to open; it joins the saved PCs only once a page of it loads (remember). */
-    static void open(Context context, String origin, String start) {
-        prefs(context).edit().putString("current", origin).putString("last", origin).apply();
+    /** Makes the PC `key` the one to open; it joins the saved PCs only once a page of it loads (remember). */
+    static void open(Context context, String key, String start) {
+        prefs(context).edit().putString("current", key).putString("last", key).apply();
         pendingStart = start;
     }
 
-    /** Puts origin first in the saved PCs: a page of it has loaded, so an address that never answered is not kept. */
-    static void remember(Context context, String origin) {
+    /** Puts the PC `key` first in the saved PCs: a page of it has loaded, so an address that never answered is not kept. */
+    static void remember(Context context, String key) {
         List<String> list = saved(context);
-        list.remove(origin);
-        list.add(0, origin);
+        list.remove(key);
+        list.add(0, key);
         setSaved(context, list);
     }
 
-    static void forget(Context context, String origin) {
+    static void forget(Context context, String key) {
         List<String> list = saved(context);
-        list.remove(origin);
+        list.remove(key);
         setSaved(context, list);
+        setName(context, key, null);
         SharedPreferences.Editor edit = prefs(context).edit();
-        if (origin.equals(current(context))) edit.remove("current");
-        if (origin.equals(last(context))) edit.remove("last");
+        if (key.equals(current(context))) edit.remove("current");
+        if (key.equals(last(context))) edit.remove("last");
         edit.apply();
+    }
+
+    /**
+     * The key of a PC opened through the Ovis relay: `scope`, when it is an http or https origin with a
+     * path ending in `/` and `url` is on that origin within that path; null otherwise.
+     */
+    static String scopeKey(String scope, String url) {
+        String origin = origin(scope);
+        String path = rawPath(scope);
+        if (origin == null || !origin.equals(origin(url)) || path.length() < 2 || !path.endsWith("/")) return null;
+        return scope.equals(origin + path) && belongs(url, scope) ? scope : null;
+    }
+
+    /**
+     * Whether `url` is a page of the PC `key`: on its origin, and for a relay PC within its scope, path
+     * segment by path segment (`/s/A/` is not within `/s/AB/`) and only as a browser would load it
+     * (cleanPath): `<scope>../<other>/` resolves to another PC. A PC saved by its origin takes any page of it.
+     */
+    static boolean belongs(String url, String key) {
+        String origin = origin(url);
+        if (origin == null || !origin.equals(origin(key))) return false;
+        String scope = rawPath(key);
+        if (scope.isEmpty() || scope.equals("/")) return true;
+        String path = cleanPath(rawPath(url));
+        return path != null && cleanPath(scope) != null && scope.endsWith("/") && (path.endsWith("/") ? path : path + "/").startsWith(scope);
+    }
+
+    /**
+     * `path` (percent-encoded, as a URL carries it) when a browser loads it as written, else null: no
+     * `.` or `..` segment, plain or percent-encoded (once or twice), no encoded `/` and no `\`, which a
+     * browser reads as `/`. A page within a scope never needs any of them.
+     */
+    static String cleanPath(String path) {
+        if (path == null || path.indexOf('\\') >= 0) return null;
+        String lower = path.toLowerCase(Locale.ROOT);
+        if (lower.contains("%2f") || lower.contains("%5c")) return null;
+        String decoded = percentDecoded(path);
+        if (decoded == null || decoded.indexOf('\\') >= 0) return null;
+        String twice = decoded.toLowerCase(Locale.ROOT);
+        if (twice.contains("%2e") || twice.contains("%2f") || twice.contains("%5c")) return null;
+        for (String segment : decoded.split("/", -1)) {
+            if (segment.equals(".") || segment.equals("..")) return null;
+        }
+        return path;
+    }
+
+    /** `text` with its percent escapes read as UTF-8, or null for a malformed escape or malformed UTF-8. */
+    private static String percentDecoded(String text) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c != '%') {
+                byte[] bytes = String.valueOf(c).getBytes(StandardCharsets.UTF_8);
+                out.write(bytes, 0, bytes.length);
+                continue;
+            }
+            if (i + 2 >= text.length()) return null;
+            int high = Character.digit(text.charAt(i + 1), 16), low = Character.digit(text.charAt(i + 2), 16);
+            if (high < 0 || low < 0 || text.charAt(i + 1) > 'f' || text.charAt(i + 2) > 'f') return null;
+            out.write(high * 16 + low);
+            i += 2;
+        }
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(out.toByteArray()))
+                .toString();
+        } catch (java.nio.charset.CharacterCodingException malformed) {
+            return null;
+        }
+    }
+
+    /** The path, query and fragment the PC `key` opens at: a pairing link's on the PC's origin, else the PC's scope or root. */
+    static String startPath(String start, String key) {
+        String origin = origin(key);
+        if (start == null || origin == null || !origin.equals(origin(start))) {
+            String scope = rawPath(key);
+            return scope.isEmpty() ? "/" : scope;
+        }
+        return startOn(origin, start).substring(origin.length());
+    }
+
+    private static String rawPath(String text) {
+        try {
+            String path = new URI(text).getRawPath();
+            return path == null ? "" : path;
+        } catch (URISyntaxException e) {
+            return "";
+        }
     }
 
     /**

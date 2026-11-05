@@ -72,6 +72,20 @@
   font-size: var(--fs-xs);
 }
 
+/* "Next" sits at the header's end, before the fold: on to the next question, unanswered */
+.prompt-card-next {
+  flex: none;
+  height: var(--space-6);
+  margin-inline-start: auto;
+  padding: 0 var(--space-2);
+  gap: var(--space-1);
+  font-size: var(--fs-xs);
+}
+
+.prompt-card-next + .prompt-card-fold {
+  margin-inline-start: 0;
+}
+
 /* "View plan" sits at the header's end, beside the title */
 .prompt-card-plan-file {
   margin-inline-start: auto;
@@ -239,16 +253,16 @@
 
 /* What the agent said before asking, read off the terminal (#2088): its prose, as the chat shows
    an answer, under a caption that says where it came from. Like the body it gives way, eight lines
-   at rest and two when the card is short, with its own scroll. */
+   at rest and two when the card is short, with its own scroll. The two are the card's own flex
+   items (the wrapper draws no box): a box around them could only shrink as a whole, and its floor
+   would have to guess the caption's height, which wraps in some languages; as the card's items
+   the text keeps its two-line floor and the caption its full height, whatever it wraps to. */
 .prompt-card-words {
-  flex: 0 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  display: contents;
 }
 
 .prompt-card-words-text {
+  flex: 0 1 auto;
   min-height: 2lh;
   max-height: 8lh;
   margin: 0;
@@ -261,8 +275,10 @@
   overflow-wrap: anywhere;
 }
 
+/* the caption keeps its lines and sits closer to its text than the card's gap */
 .prompt-card-words .prompt-card-hint {
-  margin: 0;
+  flex: none;
+  margin-top: calc(-1 * var(--space-1));
 }
 
 /* omp's own Markdown (text_format) keeps the card's question size, and an option's inline code reads as the chat's */

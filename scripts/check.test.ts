@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { CI_NODE_MAJOR, DESK_WAIT_MS, HOST_LIMITS, MAX_LOCK_PORT, MAX_RUNS_LIMIT, acquire, acquireWaiting, takeTicket, ticketDesk, ticketPorts, applyHostLimits, checkoutIdentity, describeGroup, describeHolders, endGroup, isolate, lock, lockPort, maxRuns, needsLock, plan, sanitizeCommand, stopSessions, teardown, waitSeconds, warnNodeVersionMismatch } from "./check.ts";
+import { CI_NODE_MAJOR, DESK_WAIT_MS, HOST_LIMITS, MAX_LOCK_PORT, MAX_RUNS_LIMIT, acquire, acquireWaiting, takeTicket, ticketDesk, ticketPorts, applyHostLimits, checkoutIdentity, describeGroup, describeHolders, endGroup, isolate, lock, lockPort, maxRuns, needsLock, plan, processStart, sanitizeCommand, takeoverLock, stopSessions, teardown, waitSeconds, warnNodeVersionMismatch } from "./check.ts";
 
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -334,6 +334,44 @@ describe("slots", () => {
     release(next);
   });
 
+  it("claims the checkout for a run that takes no slot, so fast and a herdr-backed run refuse each other", async () => {
+    const base = await freeRange(3);
+    const checkoutLock = join(scratch(), "checkout.lock");
+    const fast = await acquire({ slots: 0, scan: 3, base, checkout: "/same", checkoutLock });
+    try {
+      expect("release" in fast).toBe(true);
+      const secondFast = await acquire({ slots: 0, scan: 3, base, checkout: "/same", checkoutLock });
+      try { expect(secondFast).toMatchObject({ refused: "same-checkout", holders: [{ heldBy: process.pid, checkout: "/same" }] }); }
+      finally { release(secondFast); }
+      const lane = await acquire({ slots: 1, scan: 3, base, checkout: "/same", checkoutLock });
+      try { expect(lane).toMatchObject({ refused: "same-checkout", holders: [{ heldBy: process.pid, checkout: "/same" }] }); }
+      finally { release(lane); }
+    } finally { release(fast); }
+    const lane = await acquire({ slots: 1, scan: 3, base, checkout: "/same", checkoutLock });
+    try {
+      expect("release" in lane).toBe(true);
+      const fastBeside = await acquire({ slots: 0, scan: 3, base, checkout: "/same", checkoutLock });
+      try { expect(fastBeside).toMatchObject({ refused: "same-checkout" }); }
+      finally { release(fastBeside); }
+      // another checkout's fast run is no business of this one
+      const elsewhere = await acquire({ slots: 0, scan: 3, base, checkout: "/other", checkoutLock: join(scratch(), "checkout.lock") });
+      try { expect(elsewhere).toMatchObject({ port: null }); }
+      finally { release(elsewhere); }
+    } finally { release(lane); }
+  });
+
+  it("admits a run that takes no slot while another run holds the admission port", async () => {
+    const base = await freeRange(3);
+    // base + max(slots, scan): the port a herdr-backed run holds while it is admitted
+    const admitting = await lock(base + 3, 111, "/admitting");
+    if (!("release" in admitting)) throw new Error("the admission port was free");
+    try {
+      const fast = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", checkoutLock: join(scratch(), "checkout.lock") });
+      try { expect(fast).toMatchObject({ port: null }); }
+      finally { release(fast); }
+    } finally { release(admitting); }
+  });
+
   it("takes over a checkout claim left by a dead pid", async () => {
     const base = await freeRange(3);
     const checkoutLock = join(scratch(), "checkout.lock");
@@ -347,7 +385,7 @@ describe("slots", () => {
     } finally { release(result); }
   });
 
-  it("refuses a stale checkout marker while a live process holds its reclaim claim", async () => {
+  it("refuses a stale checkout marker while a live process holds its reclaim file (no takeover socket)", async () => {
     const base = await freeRange(3);
     const checkoutLock = join(scratch(), "checkout.lock");
     const finished = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
@@ -355,35 +393,157 @@ describe("slots", () => {
     const marker = `${checkoutLock}.check-lock`;
     writeFileSync(marker, JSON.stringify({ pid: Number(finished.stdout.trim()), checkout: "/dead" }));
     writeFileSync(`${marker}.reclaim`, JSON.stringify({ pid: process.pid, checkout: "/reclaimer" }));
-    const result = await acquire({ slots: 1, scan: 3, base, checkout: "/mine", checkoutLock });
+    const result = await acquire({ slots: 1, scan: 3, base, checkout: "/mine", checkoutLock, fileTakeover: true });
     try {
       expect(result).toEqual({ refused: "same-checkout", holders: [{ port: base + 3, heldBy: process.pid, checkout: "/reclaimer" }] });
       expect(readFileSync(marker, "utf8")).toContain('"/dead"');
     } finally { release(result); }
   });
 
-  it("stops at a reclaim claim a dead run left, naming it, and touches neither file", async () => {
+  it.skipIf(process.platform !== "linux")("refuses a stale checkout marker while a live run holds its takeover lock, and takes it over once that run is killed", async () => {
+    const base = await freeRange(3);
     const checkoutLock = join(scratch(), "checkout.lock");
     const finished = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
     expect(finished.status).toBe(0);
     const marker = `${checkoutLock}.check-lock`;
+    writeFileSync(marker, JSON.stringify({ pid: Number(finished.stdout.trim()), checkout: "/dead" }));
+    const script = fileURLToPath(new URL("./check.ts", import.meta.url));
+    // a run that took the lock and is killed before it lets go, as a SIGKILL mid-takeover would leave it
+    const holder = Bun.spawn([process.execPath, "-e", `const { takeoverLock } = await import(${JSON.stringify(script)}); const lock = await takeoverLock(process.env.MARKER, JSON.stringify({ pid: process.pid, checkout: "/taking-over" })); console.log("release" in lock ? "HELD" : "NOT HELD"); setInterval(() => {}, 1000);`], {
+      env: { ...process.env, MARKER: marker }, stdout: "pipe", stderr: "inherit",
+    });
+    try {
+      const reader = holder.stdout.getReader();
+      let said = "";
+      while (!said.includes("HELD")) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("the lock holder exited before it held the lock");
+        said += new TextDecoder().decode(value);
+      }
+      expect(said.trim()).toBe("HELD");
+      const refused = await acquire({ slots: 1, scan: 3, base, checkout: "/mine", checkoutLock });
+      try { expect(refused).toEqual({ refused: "same-checkout", holders: [{ port: base + 3, heldBy: holder.pid, checkout: "/taking-over" }] }); }
+      finally { release(refused); }
+      holder.kill("SIGKILL");
+      await holder.exited;
+      const taken = await acquire({ slots: 1, scan: 3, base, checkout: "/mine", checkoutLock });
+      try {
+        expect("release" in taken).toBe(true);
+        expect(JSON.parse(readFileSync(marker, "utf8"))).toMatchObject({ pid: process.pid, checkout: "/mine" });
+      } finally { release(taken); }
+    } finally { holder.kill("SIGKILL"); }
+  });
+
+  it("clears a reclaim file a run killed while taking over left, and the run after it meets the claim", async () => {
+    const checkoutLock = join(scratch(), "checkout.lock");
+    const finished = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
+    expect(finished.status).toBe(0);
+    const marker = `${checkoutLock}.check-lock`;
+    // what a run killed right after linking its reclaim leaves: both files name a pid that is gone
     const stale = JSON.stringify({ pid: Number(finished.stdout.trim()), checkout: "/dead" });
     writeFileSync(marker, stale);
     writeFileSync(`${marker}.reclaim`, stale);
-    // two runs on other lock bases, as two checks started at once would be: neither may take over
+    // two runs on other lock bases, as two checks started at once would be
     const firstBase = await freeRange(3);
     let secondBase = await freeRange(3);
     while (Math.abs(firstBase - secondBase) <= 3) secondBase = await freeRange(3);
-    const results = await Promise.allSettled([firstBase, secondBase].map((base) => acquire({ slots: 1, scan: 3, base, checkout: "/mine", checkoutLock })));
-    for (const result of results) {
-      expect(result.status).toBe("rejected");
-      if (result.status === "rejected") expect(String(result.reason)).toContain(`${marker}.reclaim`);
-    }
-    expect(readFileSync(marker, "utf8")).toBe(stale);
-    expect(readFileSync(`${marker}.reclaim`, "utf8")).toBe(stale);
+    const results = await Promise.all([firstBase, secondBase].map((base) => acquire({ slots: 1, scan: 3, base, checkout: "/mine", checkoutLock, fileTakeover: true })));
+    try {
+      expect(results.filter((result) => "release" in result)).toHaveLength(1);
+      expect(results.find((result) => "refused" in result)).toMatchObject({ refused: "same-checkout", holders: [{ heldBy: process.pid, checkout: "/mine" }] });
+      expect(JSON.parse(readFileSync(marker, "utf8")).pid).toBe(process.pid);
+      expect(existsSync(`${marker}.reclaim`)).toBe(false);
+    } finally { for (const result of results) release(result); }
+    expect(existsSync(marker)).toBe(false);
   });
 
-  it("admits exactly one cross-base contender reclaiming a stale checkout marker", async () => {
+  it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("names a process's start the same for runs in other time zones and locales", () => {
+    // macOS reads it from ps, whose clock and words follow the caller's TZ and locale; ps on Linux does too
+    const script = fileURLToPath(new URL("./check.ts", import.meta.url));
+    const said = [{ TZ: "UTC", LC_ALL: "C" }, { TZ: "Asia/Seoul", LC_ALL: "fr_FR.UTF-8" }].map((zone) => {
+      const child = spawnSync(process.execPath, ["-e", `const { processStart } = await import(${JSON.stringify(script)}); console.log(processStart(${process.pid}, "darwin"));`], { env: { ...process.env, ...zone }, encoding: "utf8" });
+      expect(child.status, child.stderr).toBe(0);
+      return child.stdout.trim();
+    });
+    expect(said[0]).not.toBe("null");
+    expect(said[1]).toBe(said[0]!);
+  });
+
+  it.skipIf(process.platform !== "linux" || !Bun.which("perl"))("takes over a marker whose run has exited but is not reaped yet", async () => {
+    const base = await freeRange(3);
+    const checkoutLock = join(scratch(), "checkout.lock");
+    const marker = `${checkoutLock}.check-lock`;
+    // a parent that never reaps its child: the child exits at once, and the parent's SIGCHLD, which the
+    // kernel sends as the child becomes a zombie, says so
+    const parent = spawn("perl", ["-MPOSIX", "-e", '$| = 1; $SIG{CHLD} = sub { print "ZOMBIE\\n" }; my $pid = fork() // die "fork: $!"; POSIX::_exit(0) unless $pid; print "PID $pid\\n"; POSIX::pause() while 1;'], { stdio: ["ignore", "pipe", "inherit"] });
+    try {
+      let said = "";
+      const heard = new Promise<void>((resolve, reject) => {
+        parent.stdout!.on("data", (chunk: Buffer) => { said += chunk.toString(); if (/^PID \d+$/m.test(said) && /^ZOMBIE$/m.test(said)) resolve(); });
+        parent.once("exit", (code) => reject(new Error(`the parent exited (${code}) before its child was a zombie: ${said}`)));
+      });
+      await within(heard, 5_000, "the parent did not hear its child exit", () => said);
+      const pid = Number(/^PID (\d+)$/m.exec(said)![1]);
+      expect(readFileSync(`/proc/${pid}/stat`, "utf8")).toMatch(/\) Z /);
+      const started = processStart(pid);
+      for (const claim of [{ pid, checkout: "/exited", start: started }, { pid, checkout: "/exited-old" }]) {
+        writeFileSync(marker, JSON.stringify(claim));
+        const result = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", checkoutLock });
+        try { expect(result).toMatchObject({ port: null }); }
+        finally { release(result); }
+      }
+    } finally { parent.kill("SIGKILL"); }
+  });
+
+  it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("takes over a dead marker although a draft a killed run left is still the same file", async () => {
+    const base = await freeRange(3);
+    const checkoutLock = join(scratch(), "checkout.lock");
+    const marker = `${checkoutLock}.check-lock`;
+    // a run killed between linking its draft into place and removing it, whose pid is this one's now
+    writeFileSync(marker, JSON.stringify({ pid: process.pid, checkout: "/killed", start: "an-earlier-start" }));
+    linkSync(marker, `${marker}.${process.pid}.draft`);
+    const result = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", checkoutLock });
+    try {
+      expect(result).toMatchObject({ port: null });
+      expect(JSON.parse(readFileSync(marker, "utf8"))).toMatchObject({ pid: process.pid, checkout: "/mine" });
+    } finally { release(result); }
+  });
+
+  it("claims a report whose name is long, its working files named apart from it", async () => {
+    const base = await freeRange(3);
+    // 220 bytes: the claim's name (+ ".check-lock") fits under the 255-byte limit; a draft named after it would not
+    const report = join(scratch(), `${"r".repeat(215)}.json`);
+    const result = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", reports: [report] });
+    try { expect(result).toMatchObject({ port: null }); }
+    finally { release(result); }
+  });
+
+  it("names no start rather than failing when the boot id cannot be read", () => {
+    // a directory where the boot id should be: reading it fails, whoever runs the test
+    expect(processStart(process.pid, "linux", scratch())).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("takes over a marker whose pid now belongs to a process that started later", async () => {
+    const base = await freeRange(3);
+    const checkoutLock = join(scratch(), "checkout.lock");
+    const marker = `${checkoutLock}.check-lock`;
+    const started = processStart(process.pid);
+    expect(started).not.toBeNull();
+    // the same pid, honoured while it is the process that wrote the claim
+    writeFileSync(marker, JSON.stringify({ pid: process.pid, checkout: "/old", start: started }));
+    const honoured = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", checkoutLock });
+    try { expect(honoured).toMatchObject({ refused: "same-checkout", holders: [{ heldBy: process.pid, checkout: "/old" }] }); }
+    finally { release(honoured); }
+    // a claim left by a run that is gone, its pid since given to this process
+    writeFileSync(marker, JSON.stringify({ pid: process.pid, checkout: "/old", start: `${started}-earlier` }));
+    const reused = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", checkoutLock });
+    try {
+      expect(reused).toMatchObject({ port: null });
+      expect(JSON.parse(readFileSync(marker, "utf8"))).toMatchObject({ pid: process.pid, checkout: "/mine", start: started });
+    } finally { release(reused); }
+  });
+
+  for (const fileTakeover of process.platform === "linux" ? [false, true] : [true]) it(`admits exactly one cross-base contender reclaiming a stale checkout marker (${fileTakeover ? "reclaim file" : "takeover socket"})`, async () => {
     const checkoutLock = join(scratch(), "checkout.lock");
     const marker = `${checkoutLock}.check-lock`;
     const finished = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
@@ -395,9 +555,9 @@ describe("slots", () => {
       let secondBase = await freeRange(3);
       while (Math.abs(firstBase - secondBase) <= 3) secondBase = await freeRange(3);
       const bases = [firstBase, secondBase];
-      const childCode = `import { readFileSync } from "node:fs"; import { acquire } from ${JSON.stringify(script)}; console.log("READY"); await new Promise(resolve => process.stdin.once("data", resolve)); const result = await acquire({ slots: 1, scan: 3, base: Number(process.env.BASE), checkout: "/same", checkoutLock: process.env.CHECKOUT_LOCK }); console.log("RESULT " + ("release" in result ? "held " + process.pid + " " + readFileSync(process.env.CHECKOUT_LOCK + ".check-lock", "utf8") : result.refused)); if ("release" in result) { await new Promise(resolve => { process.stdin.once("data", resolve); process.stdin.once("end", resolve); }); result.release(); }`;
+      const childCode = `import { readFileSync } from "node:fs"; import { acquire } from ${JSON.stringify(script)}; console.log("READY"); await new Promise(resolve => process.stdin.once("data", resolve)); const result = await acquire({ slots: 1, scan: 3, base: Number(process.env.BASE), checkout: "/same", checkoutLock: process.env.CHECKOUT_LOCK, fileTakeover: process.env.FILE_TAKEOVER === "1" }); console.log("RESULT " + ("release" in result ? "held " + process.pid + " " + readFileSync(process.env.CHECKOUT_LOCK + ".check-lock", "utf8") : result.refused)); if ("release" in result) { await new Promise(resolve => { process.stdin.once("data", resolve); process.stdin.once("end", resolve); }); result.release(); }`;
       const children = bases.map((base) => Bun.spawn([process.execPath, "-e", childCode], {
-        env: { ...process.env, BASE: String(base), CHECKOUT_LOCK: checkoutLock },
+        env: { ...process.env, BASE: String(base), CHECKOUT_LOCK: checkoutLock, FILE_TAKEOVER: fileTakeover ? "1" : "0" },
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
@@ -1432,10 +1592,6 @@ describe("check CLI", () => {
     delete env["CHECK_REPORT"];
     delete env["GITHUB_EVENT_NAME"];
     delete env["GITHUB_EVENT_PATH"];
-    // CHECK_DIR makes the nested run take the PC-wide admission port, which the self-hosted
-    // runners share with every lane of the PC that is waiting for a slot: without a wait, a
-    // moment's overlap refuses the run before it writes its report (#1225).
-    env["CHECK_WAIT_SECONDS"] = "20";
     const runCheck = () => spawnSync(process.execPath, [fileURLToPath(new URL("./check.ts", import.meta.url)), "fast"], {
       cwd,
       env,
@@ -1504,6 +1660,49 @@ describe("check CLI", () => {
     expect(missingBuildReport.errors).toContain("built dist identity unavailable; cannot verify the built artifact");
   }, 180_000);
 
+  it.skipIf(process.platform !== "linux" || process.arch !== "x64")("refuses a fast run in a checkout another check run holds, before any step", () => {
+    const cwd = realpathSync(scratch());
+    git(cwd, "init", "-q");
+    git(cwd, "config", "user.name", "check test");
+    git(cwd, "config", "user.email", "check@example.invalid");
+    writeFileSync(join(cwd, ".gitignore"), "node_modules/\ndist/\nran\n");
+    const noOp = 'node -e "process.exit(0)" --';
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({
+      name: "check-cli-fixture",
+      scripts: {
+        "generate:types": 'node -e "require(\'node:fs\').writeFileSync(\'ran\',\'\')" --',
+        "generate:themes": noOp,
+        typecheck: noOp,
+        build: 'node -e "const fs=require(\'node:fs\');fs.mkdirSync(\'dist\',{recursive:true});fs.writeFileSync(\'dist/index.html\',\'fixture\')"',
+        "test:unit": noOp,
+      },
+    }));
+    git(cwd, "add", ".gitignore", "package.json");
+    git(cwd, "commit", "-qm", "fixture");
+    const actionlintDirectory = join(cwd, "node_modules", ".cache", "actionlint-1.7.12");
+    mkdirSync(actionlintDirectory, { recursive: true });
+    writeFileSync(join(actionlintDirectory, "actionlint"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(actionlintDirectory, "actionlint"), 0o755);
+    // a live run of this checkout (this test's own process stands in for it) holds the checkout claim
+    const marker = join(cwd, "node_modules", ".cache", "check", "checkout.lock.check-lock");
+    mkdirSync(join(cwd, "node_modules", ".cache", "check"), { recursive: true });
+    const holder = JSON.stringify({ pid: process.pid, checkout: "/the-other-run" });
+    writeFileSync(marker, holder);
+    const env: Record<string, string | undefined> = { ...process.env };
+    for (const name of ["CHECK_DIR", "CHECK_REPORT", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH"]) delete env[name];
+
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./check.ts", import.meta.url)), "fast"], { cwd, env, encoding: "utf8", timeout: 30_000 });
+
+    expect(result.status).toBe(1);
+    // refused, not crashed: the refusal names the holder's pid and checkout
+    expect(result.stderr).toContain(String(process.pid));
+    expect(result.stderr).toContain("/the-other-run");
+    // refused before any step and before a report: the claim is the only file under the check cache
+    expect(existsSync(join(cwd, "ran"))).toBe(false);
+    expect(readdirSync(join(cwd, "node_modules", ".cache", "check"))).toEqual(["checkout.lock.check-lock"]);
+    expect(readFileSync(marker, "utf8")).toBe(holder);
+  }, 60_000);
+
   it.skipIf(process.platform !== "linux" || process.arch !== "x64")("says on the console why a run whose steps all passed failed when the source changed mid-run", () => {
     const cwd = scratch();
     git(cwd, "init", "-q");
@@ -1529,8 +1728,7 @@ describe("check CLI", () => {
     mkdirSync(actionlintDirectory, { recursive: true });
     writeFileSync(join(actionlintDirectory, "actionlint"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(actionlintDirectory, "actionlint"), 0o755);
-    // an admission port of its own: on the shared one this run would wait behind every real run
-    const env: Record<string, string | undefined> = { ...process.env, CHECK_DIR: ".check", CHECK_LOCK_PORT: String(freePortRange(MAX_RUNS_LIMIT)) };
+    const env: Record<string, string | undefined> = { ...process.env, CHECK_DIR: ".check" };
     for (const name of ["CHECK_REPORT", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH"]) delete env[name];
 
     const result = spawnSync(process.execPath, [fileURLToPath(new URL("./check.ts", import.meta.url)), "fast"], { cwd, env, encoding: "utf8", timeout: 30_000 });

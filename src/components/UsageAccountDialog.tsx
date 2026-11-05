@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Network, SquareTerminal, X } from "lucide-react";
-import type { CLIProxyStatus } from "../../shared/protocol.ts";
+import type { CLIProxyStatus, UsageProviderId } from "../../shared/protocol.ts";
 import type { UsageLoginProvider } from "../../shared/usage-login.ts";
 import { fetchUsageLoginProviders } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
@@ -16,8 +16,10 @@ import "./UsageAccountDialog.css";
 type Step = { readonly kind: "provider" } | { readonly kind: "hub"; readonly returnTo: UsageLoginProvider | null }
   | { readonly kind: "account"; readonly provider: UsageLoginProvider; readonly method: "choose" | "local" | "hub" };
 
-export function UsageAccountDialog({ editHub, hub, onHubChanged, onAccountsChanged, onLocalLogin, onClose }: {
+export function UsageAccountDialog({ editHub, provider: preset = null, hub, onHubChanged, onAccountsChanged, onLocalLogin, onClose }: {
   readonly editHub: boolean;
+  /** an agent's own Add account or Sign in: the dialog starts at that provider's methods, past the choice of provider */
+  readonly provider?: UsageProviderId | null;
   readonly hub: CLIProxyStatus | null;
   readonly onHubChanged: (status: CLIProxyStatus) => void;
   readonly onAccountsChanged: () => void;
@@ -30,10 +32,14 @@ export function UsageAccountDialog({ editHub, hub, onHubChanged, onAccountsChang
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    void fetchUsageLoginProviders(controller.signal).then((result) => setProviders(result.providers))
+    void fetchUsageLoginProviders(controller.signal).then((result) => {
+      setProviders(result.providers);
+      const named = result.providers.find((candidate) => candidate.id === preset);
+      if (named !== undefined && !editHub) setStep((current) => current.kind === "provider" ? { kind: "account", provider: named, method: "choose" } : current);
+    })
       .catch((cause: unknown) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : t("Could not load sign-in options")); });
     return () => controller.abort();
-  }, [t]);
+  }, [t, preset, editHub]);
   const surface = useFocusTrap<HTMLDivElement>(true);
   const content = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -82,7 +88,7 @@ export function UsageAccountDialog({ editHub, hub, onHubChanged, onAccountsChang
           break;
         case "local":
           title = t("Sign in to {provider}", { provider: PROVIDER_NAME[step.provider.id] }); current = 2;
-          local = <UsageLocalLogin provider={step.provider} onStarted={onLocalLogin} />; showHub = false;
+          local = <UsageLocalLogin provider={step.provider} onStarted={onLocalLogin} onFollowed={done} />; showHub = false;
           back = () => setStep({ ...step, method: "choose" });
           break;
         case "hub":

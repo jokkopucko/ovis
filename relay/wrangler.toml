@@ -1,0 +1,46 @@
+name = "ovis-relay"
+main = "worker.ts"
+compatibility_date = "2026-10-01"
+# PCs and apps dial relay.ovis.sh (the ovis.sh zone must be on the deploying account): no second address.
+workers_dev = false
+routes = [{ pattern = "relay.ovis.sh", custom_domain = true }]
+
+# Workers Logs would keep each request, the connecting address with it: off.
+[observability]
+enabled = false
+
+# One Durable Object per server_id holds that PC's sockets (worker.ts RelayRoom). It keeps them in
+# memory and in each socket's attachment only; its SQLite storage stays empty.
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayRoom"
+
+# Usage counters (worker.ts usagePoint): per PC, bytes each way, time connected and sessions; no
+# frame, address or connection_id. Analytics Engine keeps each data point three months.
+[[analytics_engine_datasets]]
+binding = "USAGE"
+dataset = "ovis_relay_usage"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayRoom"]
+
+# Socket connections per address and minute, per Cloudflare location, before any Durable Object
+# wakes (README.md). namespace_id is any integer unique to the account (push-relay has 1695, 1696).
+[[ratelimits]]
+name = "RELAY_LIMITER"
+namespace_id = "1697"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+# The backstop: connections per minute from all addresses together, per Cloudflare location.
+# Asked only after an address's own limit lets a connection through.
+[[ratelimits]]
+name = "RELAY_GLOBAL_LIMITER"
+namespace_id = "1698"
+
+  [ratelimits.simple]
+  limit = 600
+  period = 60

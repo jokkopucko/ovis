@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { PreferenceStore } from "../../server/preferences.ts";
+/** a document saved at least once, which names its state folder */
+const named = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
 import { type PreferencesChange, type SharedPreferences } from "../../shared/preferences.ts";
 import { DEFAULT_SETTINGS, SettingsProvider, sanitizeSettings, useSettings, type Settings } from "./settings.ts";
-import { setSidebarPins } from "./sidebarPins.ts";
+import { currentSidebarPins, setSidebarPins } from "./sidebarPins.ts";
 import { currentPaneMutes, setPaneMutes } from "./paneMutes.ts";
 import { usePreferencesSync } from "./preferencesSync.ts";
 import type { UserError } from "./userError.ts";
@@ -40,10 +42,14 @@ describe("preferences sync real send path", () => {
   /** every PUT body in the order it was sent, refused or not */
   let bodies: PreferencesChange[];
   let answerListeners: Set<() => void>;
+  /** the page's own events (pagehide, visibilitychange) */
+  let pageEvents: EventTarget;
+  /** whether each PUT asked to outlive the page */
+  let keepalives: boolean[];
   /** the bodies the PUTs carried, in order */
   let sent: PreferencesChange[];
-  /** an older server: no theme sides, and no mute list in what it keeps or answers */
-  const dropNewKeys = ({ muted_panes: _muted, ...doc }: SharedPreferences): SharedPreferences => ({
+  /** an older server: no theme sides, no mute list and no state folder id in what it keeps or answers */
+  const dropNewKeys = ({ muted_panes: _muted, state_id: _id, ...doc }: SharedPreferences): SharedPreferences => ({
     ...doc, settings: Object.fromEntries(Object.entries(doc.settings).filter(([key]) => key !== "darkTheme" && key !== "lightTheme")),
   });
   interface Client {
@@ -63,25 +69,36 @@ describe("preferences sync real send path", () => {
   }
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT", "localStorage"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     records = new Map();
     waits = new Map();
     syncEnabled = true;
+    pageEvents = new EventTarget();
+    keepalives = [];
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en-US"] } });
+    const localStorage = { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => records.set(key, value), removeItem: (key: string) => records.delete(key) };
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: localStorage });
+    const tab = new Map<string, string>();
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => records.set(key, value) },
+      localStorage,
+      // this tab's session storage, which a reload keeps
+      sessionStorage: { getItem: (key: string) => tab.get(key) ?? null, setItem: (key: string, value: string) => tab.set(key, value), removeItem: (key: string) => tab.delete(key) },
       setTimeout: (fn: () => void, ms: number) => {
         const id = globalThis.setTimeout(() => { waits.delete(id); fn(); }, ms);
         waits.set(id, ms);
         return id;
       },
       clearTimeout: (id: number) => { waits.delete(id); globalThis.clearTimeout(id); },
-      addEventListener() {}, removeEventListener() {},
+      addEventListener: pageEvents.addEventListener.bind(pageEvents),
+      removeEventListener: pageEvents.removeEventListener.bind(pageEvents),
     } });
     Object.defineProperty(globalThis, "document", { configurable: true, value: {
       documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
       querySelector: () => null,
+      visibilityState: "visible",
+      addEventListener: pageEvents.addEventListener.bind(pageEvents),
+      removeEventListener: pageEvents.removeEventListener.bind(pageEvents),
     } });
     // the stylesheet is loaded: its theme blocks own the page surface (applyToDocument)
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: (name: string) => (name === "--bg" ? "#12100e" : "") }) });
@@ -101,6 +118,8 @@ describe("preferences sync real send path", () => {
     answerListeners = new Set();
     // the mute list is page state (lib/paneMutes.ts): each test opens as a page that has heard none
     setPaneMutes(null);
+    // and the pins are this browser's own, with none it knew the server to hold
+    setSidebarPins([]);
     store.subscribe((doc) => {
       revisions.push(doc.revision);
       for (const client of clients) client.receive(oldServer ? dropNewKeys(doc) : doc);
@@ -108,6 +127,7 @@ describe("preferences sync real send path", () => {
     const fetchPreferences = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       if (init?.method !== "PUT") return Response.json(oldServer ? dropNewKeys(store.get()) : store.get());
       bodies.push(JSON.parse(String(init.body)));
+      keepalives.push(init.keepalive === true);
       if (refuse !== null || refusing !== null) {
         const answer = refuse;
         refuse = null;
@@ -142,8 +162,9 @@ describe("preferences sync real send path", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function open(raw: object = DEFAULT_SETTINGS): Promise<Client> {
-    records.clear();
+  /** a page of a browser opening; `again` keeps what an earlier page of the same browser stored */
+  async function open(raw: object = DEFAULT_SETTINGS, again = false): Promise<Client> {
+    if (!again) records.clear();
     records.set("ovis:settings", JSON.stringify(raw));
     const unmounted = () => { throw new Error("not mounted"); };
     const client: Client = { settings: sanitizeSettings(raw), rendered: { id: "amber", mode: "dark" }, update: unmounted, receive: unmounted, saveError: null, paused: false, retrying: false, retry: unmounted, resubscribed: unmounted, disconnected: unmounted, closed: unmounted, rerender: unmounted };
@@ -193,7 +214,7 @@ describe("preferences sync real send path", () => {
     store.set({ settings: { palette: "catppuccin" } });
     store.set({ settings: { theme } });
     store = new PreferenceStore(dir);
-    expect(store.get()).toEqual({ revision: 2, settings: { palette: "catppuccin", theme }, muted_panes: [] });
+    expect(store.get()).toEqual(named({ revision: 2, settings: { palette: "catppuccin", theme }, muted_panes: [] }));
     revisions.length = 0;
     store.subscribe((doc) => {
       revisions.push(doc.revision);
@@ -248,6 +269,100 @@ describe("preferences sync real send path", () => {
     expect(client.settings.darkTheme).toBe(palette);
     expect(JSON.parse(records.get("ovis:themes") ?? "{}").darkTheme).toBe(palette);
     expect(revisions).toEqual([1, 2]);
+  });
+
+  it.each(["pagehide", "visibilitychange"])("sends a change at once, to outlive the page, on %s", async (type) => {
+    // Given a change made here, still inside the send delay.
+    const client = await open();
+    await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
+
+    // When the page closes, or is hidden (a phone may kill it then).
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    await act(async () => { pageEvents.dispatchEvent(new Event(type)); });
+
+    // Then the change went out without waiting, in a request that survives the page.
+    expect(keepalives).toEqual([true]);
+    expect(store.get().settings.showUsage).toBe(!DEFAULT_SETTINGS.showUsage);
+    await windows(3);
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("sends an edit made while a save is on its way when the page goes", async () => {
+    // Given a save on its way, and a second edit made before its answer.
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
+    await windows();
+    await act(async () => { client.update({ showThinking: !DEFAULT_SETTINGS.showThinking }); });
+
+    // When the page goes before that answer.
+    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
+
+    // Then both edits go out at once in a request that outlives the page.
+    expect(keepalives).toEqual([false, true]);
+    expect(bodies[1]?.settings).toMatchObject({ showUsage: !DEFAULT_SETTINGS.showUsage, showThinking: !DEFAULT_SETTINGS.showThinking });
+    await act(async () => { gate.resolve(); });
+    releaseAnswer = undefined;
+  });
+
+  it("sends a change once when the page is hidden and then goes, and nothing when it shows again", async () => {
+    // Given a change made here, still inside the send delay.
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
+
+    // When the page is hidden, then goes, before the answer (a reload fires both).
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    await act(async () => { pageEvents.dispatchEvent(new Event("visibilitychange")); pageEvents.dispatchEvent(new Event("pagehide")); });
+
+    // Then one request went out.
+    expect(keepalives).toEqual([true]);
+    const answered = nextAnswer();
+    await act(async () => { gate.resolve(); await answered; });
+    releaseAnswer = undefined;
+
+    // And a page shown again sends nothing more.
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    await act(async () => { pageEvents.dispatchEvent(new Event("visibilitychange")); });
+    await windows(3);
+    expect(keepalives).toEqual([true]);
+  });
+
+  it.each([
+    ["sends it again", false],
+    ["takes a newer value saved elsewhere instead", true],
+  ] as const)("when the request on the way out of a reload is lost, the reloaded page %s", async (_name, savedElsewhere) => {
+    // Given a switch turned on and saved, then off again just before a reload whose request on the way out is lost.
+    const on = !DEFAULT_SETTINGS.showUsage;
+    const client = await open();
+    await act(async () => { client.update({ showUsage: on }); });
+    await send();
+    await act(async () => { client.update({ showUsage: !on }); });
+    refusing = () => Promise.reject(new TypeError("Failed to fetch"));
+    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { renderers.pop()!.unmount(); });
+    clients.length = 0;
+    refusing = null;
+    expect(store.get().settings.showUsage).toBe(on);
+    if (savedElsewhere) store.set({ settings: { showUsage: on } });
+
+    // When the page comes back in the same tab.
+    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    await windows(3);
+
+    // Then the value it went with is the server's and the page's, unless another browser saved the setting since.
+    expect(store.get().settings.showUsage).toBe(savedElsewhere ? on : !on);
+    expect(reloaded.settings.showUsage).toBe(savedElsewhere ? on : !on);
+  });
+
+  it("sends nothing on its way out when nothing changed", async () => {
+    await open();
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); pageEvents.dispatchEvent(new Event("visibilitychange")); });
+    await windows(3);
+    expect(bodies).toEqual([]);
   });
 
   it("sends a new dark choice once and another client takes it (i)", async () => {
@@ -360,6 +475,124 @@ describe("preferences sync real send path", () => {
     // (the pins ride along with the first change, as they always have)
     expect(sent).toEqual([{ settings: { showThinking: true }, pins: [] }]);
     expect(currentPaneMutes()).toBeNull();
+  });
+
+  it("a page opened again keeps a pin another client removed meanwhile removed, instead of sending its own back", async () => {
+    // a server that already shares pins
+    store.set({ settings: {}, pins: [] });
+    await open();
+    await windows();
+    await act(async () => { setSidebarPins(["local:t1"]); });
+    await send();
+    expect(store.get().pins).toEqual(["local:t1"]);
+    // the page goes; meanwhile the pin is removed elsewhere (another browser, or the Herdr app)
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    store.set({ settings: {}, pins: [] });
+    const before = sent.length;
+    // the same browser opens again, its own copy still holding the old pin
+    await open(DEFAULT_SETTINGS, true);
+    await windows(3);
+    expect(store.get().pins).toEqual([]);
+    expect(currentSidebarPins()).toEqual([]);
+    expect(sent.slice(before)).toEqual([]);
+  });
+
+  it("a page opened again on a server that holds no pins any more shares its own with its next change", async () => {
+    store.set({ settings: {}, pins: [] });
+    await open();
+    await windows();
+    await act(async () => { setSidebarPins(["local:t1"]); });
+    await send();
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    // the server starts over with a fresh state folder
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
+    store = new PreferenceStore(dir);
+    store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
+    const client = await open(DEFAULT_SETTINGS, true);
+    await windows();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await send();
+    expect(store.get().pins).toEqual(["local:t1"]);
+  });
+
+  it("a page opened again on a server started over that already holds other pins keeps its own too", async () => {
+    store.set({ settings: {}, pins: [] });
+    await open();
+    await windows();
+    await act(async () => { setSidebarPins(["local:t1"]); });
+    await send();
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    // the server starts over with a fresh state folder, and gets a pin from elsewhere first
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
+    store = new PreferenceStore(dir);
+    store.set({ settings: {}, pins: ["local:t2"] });
+    store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
+    const client = await open(DEFAULT_SETTINGS, true);
+    await windows();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await send();
+    expect(store.get().pins).toEqual(["local:t2", "local:t1"]);
+  });
+
+  // the new server's saves from elsewhere reach the revision this browser kept (2), or pass it
+  for (const saves of [2, 3]) it(`a page opened again on a server started over whose saves reached revision ${saves} keeps its own pins too`, async () => {
+    store.set({ settings: {}, pins: [] });
+    await open();
+    await windows();
+    await act(async () => { setSidebarPins(["local:t1"]); });
+    await send();
+    expect(store.get().revision).toBe(2);
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    // the server starts over with a fresh state folder, and another device saves there meanwhile
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
+    store = new PreferenceStore(dir);
+    for (let index = 0; index < saves; index += 1) store.set({ settings: {}, pins: ["local:t2"] });
+    expect(store.get().revision).toBe(saves);
+    store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
+    const client = await open(DEFAULT_SETTINGS, true);
+    await windows();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await send();
+    expect(store.get().pins).toEqual(["local:t2", "local:t1"]);
+  });
+
+  it("a page that took a baseline from a release naming no folder does not bring back a pin removed after the upgrade", async () => {
+    store.set({ settings: {}, pins: [] });
+    await open();
+    await windows();
+    await act(async () => { setSidebarPins(["local:t1"]); });
+    await send();
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    // the server starts over with a fresh state folder on a release that names none, and holds the pin at revision 3
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
+    store = new PreferenceStore(dir);
+    for (let index = 0; index < 3; index += 1) store.set({ settings: {}, pins: ["local:t1"] });
+    rmSync(join(dir, "preferences-id.json"));
+    store = new PreferenceStore(dir);
+    store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
+    oldServer = true;
+    // the same browser opens there and takes its document as what the server holds
+    await open(DEFAULT_SETTINGS, true);
+    await windows();
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    // the server is upgraded, and another device removes the pin: that save names the folder
+    oldServer = false;
+    store.set({ settings: {}, pins: [] });
+    const client = await open(DEFAULT_SETTINGS, true);
+    await windows();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await send();
+    expect(store.get().pins).toEqual([]);
   });
 
   it("mute survives restart and another browser", async () => {

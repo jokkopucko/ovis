@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isWorkspacePinKey, loadSidebarPins, pinnedGroupIds, pinnedWorkspaceIds, pruneSidebarPins, pruneWorkspacePins, reorderWorkspacePins, sidebarPinKey, splitPinnedGroups, splitPinnedRows, toggleSidebarPin, workspacePinKey } from "./sidebarPins.ts";
+import { isWorkspacePinKey, loadSidebarPins, movedSidebarPins, pinnedGroupIds, pinnedWorkspaceIds, pruneSidebarPins, pruneWorkspacePins, reorderWorkspacePins, sidebarPinKey, splitPinnedGroups, splitPinnedRows, toggleSidebarPin, workspacePinKey } from "./sidebarPins.ts";
 
 describe("sidebar agent pins", () => {
   it("moves workspace pins in both directions without moving other pin slots", () => {
@@ -144,5 +144,16 @@ describe("sidebar agent pins", () => {
       if (original) Object.defineProperty(globalThis, "localStorage", original);
       else delete (globalThis as { localStorage?: unknown }).localStorage;
     }
+  });
+});
+
+describe("a pane moved under a new ID (#1503)", () => {
+  it("keeps its pin in place under the new ID, on its own PC only", () => {
+    expect(movedSidebarPins(["pc:workspace:a", "pc:w1:p1", "other:w1:p1", "pc:w1:p2"], "pc", "w1:p1", "w2:p1"))
+      .toEqual(["pc:workspace:a", "pc:w2:p1", "other:w1:p1", "pc:w1:p2"]);
+    const unpinned = ["pc:w1:p2"];
+    expect(movedSidebarPins(unpinned, "pc", "w1:p1", "w2:p1")).toBe(unpinned);
+    // the new ID pinned already keeps its one place
+    expect(movedSidebarPins(["pc:w1:p1", "pc:w2:p1"], "pc", "w1:p1", "w2:p1")).toEqual(["pc:w2:p1"]);
   });
 });

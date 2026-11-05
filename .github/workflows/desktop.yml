@@ -1,0 +1,225 @@
+name: Desktop app
+# Builds Ovis for the desktop (app/electron) on Linux x64 and arm64 and macOS arm64 and x64: its unit
+# tests, its type check, then an AppImage, or dmg and zip, kept as the run's artifacts. A pull
+# request touching the app runs it, and so can anyone by hand for any branch; nothing is published.
+# With a release tag (Release calls it after publishing, or run it by hand from main for an existing
+# release), it builds that tag to update itself from the feed below and attaches the installers,
+# their blockmaps and the feed files (latest-linux.yml, latest-linux-arm64.yml, latest-mac.yml) to
+# that release. The feed is the latest release's assets, so an installed app sees a version once it
+# is GitHub's latest (docs/development.md#releasing).
+on:
+  pull_request:
+    paths:
+      - 'app/electron/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published release to attach the desktop app to (vX.Y.Z); leave empty to only build'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag (vX.Y.Z)'
+        required: true
+        type: string
+    # only the Mac signing hook's secrets, never the repository's others
+    secrets:
+      MAC_DEVELOPER_ID_P12:
+        required: false
+      MAC_DEVELOPER_ID_P12_PASSWORD:
+        required: false
+      MAC_NOTARY_KEY_P8:
+        required: false
+      MAC_NOTARY_KEY_ID:
+        required: false
+      MAC_NOTARY_ISSUER:
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  UPDATE_FEED: https://github.com/${{ github.repository }}/releases/latest/download
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-24.04 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm }
+          - { target: darwin-arm64, os: macos-15 }
+          - { target: darwin-x64, os: macos-15-intel }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Require a release tag from main
+        if: inputs.tag != ''
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$RELEASE_REF" != refs/heads/main ]; then
+            echo "::error::Run a release build from main, not $RELEASE_REF." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$RELEASE_TAG' is not a release tag (vX.Y.Z)." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || '' }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Install the client's packages
+        run: bun install --frozen-lockfile
+      - name: Install the app's packages
+        working-directory: app/electron
+        run: bun install --frozen-lockfile
+      # pull requests run the app's tests; a release build of a tag main already tested only builds,
+      # so a flaky test cannot hold back the release (and Ovis.dmg and Ovis.exe, which wait for it)
+      - name: Unit tests
+        if: inputs.tag == ''
+        working-directory: app/electron
+        run: bun test
+      - name: Type check
+        working-directory: app/electron
+        run: bun run typecheck
+      # The hook for a signed and notarized Mac build: off until the repository variable
+      # DESKTOP_MAC_SIGN is 'true', then it takes the Developer ID and notary key Ovis for Mac uses
+      # (app/mac/README.md): electron-builder signs with them (scripts/sign-mac.mjs) and
+      # scripts/notarize-dmg.mjs notarizes and staples, failing rather than shipping an unnotarized dmg.
+      - name: Mac signing
+        id: sign
+        if: inputs.tag != '' && startsWith(matrix.target, 'darwin-') && vars.DESKTOP_MAC_SIGN == 'true'
+        env:
+          MAC_NOTARY_KEY_P8: ${{ secrets.MAC_NOTARY_KEY_P8 }}
+          HAS_MAC_DEVELOPER_ID_P12: ${{ secrets.MAC_DEVELOPER_ID_P12 != '' }}
+          HAS_MAC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD != '' }}
+          HAS_MAC_NOTARY_KEY_P8: ${{ secrets.MAC_NOTARY_KEY_P8 != '' }}
+          HAS_MAC_NOTARY_KEY_ID: ${{ secrets.MAC_NOTARY_KEY_ID != '' }}
+          HAS_MAC_NOTARY_ISSUER: ${{ secrets.MAC_NOTARY_ISSUER != '' }}
+        run: |
+          missing=""
+          for name in MAC_DEVELOPER_ID_P12 MAC_DEVELOPER_ID_P12_PASSWORD MAC_NOTARY_KEY_P8 MAC_NOTARY_KEY_ID MAC_NOTARY_ISSUER; do
+            has="HAS_$name"; [ "${!has}" = true ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::DESKTOP_MAC_SIGN is on, but these repository secrets are not set:$missing." >&2
+            exit 1
+          fi
+          (umask 077 && printf '%s' "$MAC_NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary-key.p8")
+          echo "key=$RUNNER_TEMP/notary-key.p8" >> "$GITHUB_OUTPUT"
+          echo "on=true" >> "$GITHUB_OUTPUT"
+      - name: Build ${{ matrix.target }}
+        working-directory: app/electron
+        env:
+          # a release build checks the tag against package.json and updates itself from the feed
+          OVIS_RELEASE_TAG: ${{ inputs.tag }}
+          OVIS_UPDATE_FEED: ${{ inputs.tag != '' && env.UPDATE_FEED || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ steps.sign.outputs.on == 'true' && 'true' || 'false' }}
+          CSC_LINK: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_DEVELOPER_ID_P12 || '' }}
+          CSC_KEY_PASSWORD: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_DEVELOPER_ID_P12_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ steps.sign.outputs.key }}
+          APPLE_API_KEY_ID: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_NOTARY_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_NOTARY_ISSUER || '' }}
+          OVIS_REQUIRE_NOTARIZATION: ${{ steps.sign.outputs.on == 'true' && '1' || '' }}
+        run: bun run dist
+      - name: Remove the notary key
+        if: always() && steps.sign.outputs.key != ''
+        env:
+          KEY: ${{ steps.sign.outputs.key }}
+        run: rm -f "$KEY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ovis-desktop-${{ matrix.target }}
+          path: |
+            app/electron/dist/Ovis-*
+            app/electron/dist/latest*.yml
+          if-no-files-found: error
+  # Each Mac build wrote its own latest-mac.yml; electron-updater reads one for both CPUs. No secret
+  # and read-only: it gathers the files to attach, with the two Mac feeds merged.
+  feed:
+    needs: build
+    if: inputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+          no-cache: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ovis-desktop-*
+          path: ${{ runner.temp }}/builds
+      - name: Gather the release files
+        run: |
+          out="$RUNNER_TEMP/release"
+          mkdir "$out"
+          for dir in "$RUNNER_TEMP"/builds/ovis-desktop-*; do
+            find "$dir" -maxdepth 1 -type f ! -name latest-mac.yml -exec cp {} "$out/" \;
+          done
+          bun app/electron/scripts/build.ts merge-feed "$out/latest-mac.yml" \
+            "$RUNNER_TEMP/builds/ovis-desktop-darwin-arm64/latest-mac.yml" \
+            "$RUNNER_TEMP/builds/ovis-desktop-darwin-x64/latest-mac.yml"
+          # every name a download page links and every feed, so a release never gets part of the app
+          for name in latest-linux.yml latest-linux-arm64.yml latest-mac.yml \
+            Ovis-linux-x64.deb Ovis-linux-arm64.deb Ovis-linux-x64.AppImage Ovis-linux-arm64.AppImage \
+            Ovis-mac-arm64.dmg Ovis-mac-x64.dmg Ovis-mac-arm64.zip Ovis-mac-x64.zip; do
+            test -s "$out/$name" || { echo "::error::No $name among the builds." >&2; exit 1; }
+          done
+          ls -l "$out"
+      # not ovis-desktop-*: a rerun's download would take an earlier attempt's gathered files with the builds
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-release-files
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+  # the write token runs no repository code: it only uploads what feed gathered
+  attach:
+    needs: feed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-release-files
+          path: ${{ runner.temp }}/release
+      - name: Attach the desktop app to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" != false ]; then
+            echo "::error::$RELEASE_TAG is not a published release." >&2
+            exit 1
+          fi
+          # installed apps read the latest release's feed: replacing its installers (rebuilt, with other
+          # hashes) under that feed would fail their updates, so a latest release is fixed by a new one
+          if [ "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "$RELEASE_TAG" ]; then
+            echo "::error::$RELEASE_TAG is already the latest release; publish a new patch release instead of replacing its desktop files." >&2
+            exit 1
+          fi
+          # installers first, the feed files last: an app never reads a feed whose files are missing
+          cd "$RUNNER_TEMP/release"
+          find . -maxdepth 1 -type f ! -name 'latest*.yml' -print0 | xargs -0 gh release upload "$RELEASE_TAG" --clobber
+          gh release upload "$RELEASE_TAG" latest*.yml --clobber

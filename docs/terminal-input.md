@@ -399,6 +399,22 @@ web views. Chrome, Edge and Opera on a Mac still say Chrome and stay out.
 This applies to installed apps as soon as the PC's Ovis is updated, with no new app build. The
 replay runs the same trace under the app's recorded user agent.
 
+#### A keyboard that commits a whole string as one key (#1488)
+
+Updated: 2026-10-30
+
+A dictation keyboard such as FluidVoice commits the transcript with one `insertText` call. In
+the iOS 27.0 simulator, a minimal keyboard extension doing the same put the whole sentence in a
+plain textarea but sent only `h` to the pane. WebKit reports such a commit as one key: a
+keydown whose `key` is the whole string (`code` `Unidentified`), a keypress whose `charCode` is
+its first character, then `beforeinput` and `input` (`insertText`) with the whole string. xterm
+sent the keypress's character and then ignored the insertion as already handled. The patch now
+holds a keypress whose `key` is longer than one character and starts with the code point its
+`charCode` names, which may be an emoji (a key name never does: Enter's `charCode` is 13), and
+the insertion carrying that string sends it whole, once. If no such insertion follows before the next key, keyup, other input or blur, the
+held character is sent, as before. Hangul committed this way is text too, not a syllable to
+compose. `scripts/terminal-ipad-ime-regression.ts` replays the recorded sequence.
+
 ### Native Linux check: a candidate picked with a digit (#1649)
 
 Updated: 2026-10-22

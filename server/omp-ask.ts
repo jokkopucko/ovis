@@ -1,8 +1,68 @@
-import { askedQuestions } from "../shared/askQuestions.ts";
+import { askedQuestions, type AskedQuestion } from "../shared/askQuestions.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 import { parseInline, parseMarkdown, shownText, type InlineNode, type MarkdownBlock } from "../shared/markdown.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import type { OmoAsks } from "./omo-ask.ts";
+
+/** The pane's one open ask call, named by its session and call id: none when no call, or more than one, is open. */
+export function ompOpenCall(open: OmoAsks, session: string): string | null {
+  return open.length === 1 && session ? JSON.stringify([session, open[0]!.id]) : null;
+}
+
+/**
+ * An omp card read under the pane's one open ask call names that call (`ompCall`): omp asking again with the same
+ * questions draws them alike, and a card read under the first call must not answer the next one, so another call
+ * starts another asking (prompt.ts asked). The id stays the screen's, so a read that proves no call (it was answered,
+ * a lookup failed) and the same call read again keep the card's id. With no call proved, nothing tells such cards
+ * apart but the screen.
+ *
+ * A question omp cut short binds no call: its first rows may be another call's as well.
+ *
+ * Two of the call's questions drawn alike (other headers, the same text and options) are told apart only by the strip:
+ * the id then carries the question the strip proves is shown, and without that proof the read authorizes no key.
+ */
+export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): { prompt: InteractivePrompt; unverified?: true } {
+  const parsed = parsedByPublicPrompt.get(prompt);
+  const call = ompOpenCall(open, session);
+  if (!parsed || call === null) return { prompt };
+  // only a call the screen draws: one of its questions as the question shown, or (the review) its headers as the
+  // review's rows, which omp draws whatever the strip's colours prove
+  const asked = askedQuestions("ask", open[0]!.args) ?? [];
+  const shown = parsed.responder === "omp-submit" ? [] : asked.flatMap((question, index) => questionShown(prompt, question, false) ? [index] : []);
+  const drawn = parsed.responder === "omp-submit"
+    ? JSON.stringify(callLabels(open[0]!.args, asked)) === JSON.stringify((parsed.answers ?? []).map(answer => answer.question))
+    : shown.length > 0;
+  if (!drawn) return { prompt };
+  const at = parsed.nativeSteps?.index;
+  if (shown.length > 1 && (at === undefined || !shown.includes(at))) return { prompt, unverified: true };
+  const position = shown.length > 1 ? `@${at}` : "";
+  return { prompt: publicPrompt({ ...parsed, id: `${parsed.id}${position}`, ompCall: call }) };
+}
+
+/**
+ * A tab strip proves positions, not a call: only the pane's one matching open call authorizes moves, and only on a
+ * question whose drawn text and options are that call's. The review draws headers and answers alone, which another call
+ * with the same headers draws as well: it offers no move. The card's id stays as read, with or without the binding.
+ */
+export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): InteractivePrompt {
+  const parsed = parsedByPublicPrompt.get(prompt);
+  const form = parsed?.nativeSteps;
+  if (!parsed || !form) return prompt;
+  const call = open.length === 1 ? open[0] : undefined;
+  const questions = call ? askedQuestions("ask", call.args) : null;
+  const active = questions?.[form.index];
+  const labels = questions ? callLabels(call!.args, questions) : null;
+  const matches = labels && labels.length + 1 === form.count && labels.every((label, index) => label === parsed.steps?.[index]?.label)
+    && parsed.responder !== "omp-submit" && active !== undefined && questionShown(prompt, active, false);
+  const identity = call && matches && session ? JSON.stringify([session, call.id, call.args]) : null;
+  return publicPrompt({
+    ...parsed,
+    nativeSteps: identity ? { ...form, identity } : undefined,
+    steps: parsed.steps?.map(step => ({ ...step, can_navigate: identity ? step.can_navigate : false })),
+    can_step_back: identity ? parsed.can_step_back : false,
+    can_step_next: identity ? parsed.can_step_next : false,
+  });
+}
 
 /**
  * omp's Ask card in the agent's own Markdown (#1644). The terminal draws the call's text through
@@ -22,15 +82,8 @@ import type { OmoAsks } from "./omo-ask.ts";
 export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): InteractivePrompt {
   const parsed = parsedByPublicPrompt.get(prompt);
   if (parsed?.responder !== "omp-question" || open.length !== 1) return prompt;
-  const matches = (askedQuestions("ask", open[0]!.args) ?? []).filter((asked) => asked.multi === prompt.multi_select
-    && asked.options.length === prompt.options.length
-    && asked.options.every((option, index) => {
-      const shown = prompt.options[index]!;
-      const description = option.description?.trim() ? option.description : null;
-      return option.preview === null && shows(shown.label, drawn(label(option.label), false))
-        && (description === null ? shown.description === null : shown.description !== null && shows(shown.description, drawn(description, false)));
-    })
-    && shows(prompt.question, drawn(asked.question, true), parsed.ompQuestionCut === true));
+  // the whole question, never a prefix omp cut: another call's question may start the same way
+  const matches = (askedQuestions("ask", open[0]!.args) ?? []).filter(asked => questionShown(prompt, asked, false));
   if (matches.length !== 1) return prompt;
   const asked = matches[0]!;
   const options = asked.options.map((option) => ({ label: label(option.label), description: option.description?.trim() ? option.description : null }));
@@ -39,6 +92,29 @@ export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): Int
   const shown = options.map((option) => alike(cardDrawn(option.label, false) ?? option.label));
   if (new Set(shown).size !== shown.length) return prompt;
   return publicPrompt({ ...parsed, question: asked.question, options, text_format: "markdown" });
+}
+
+/** The tab labels omp draws for a call's questions: the header, else the question's id, else its place. */
+function callLabels(input: unknown, questions: readonly AskedQuestion[]): string[] {
+  const rawQuestions = input !== null && typeof input === "object" && "questions" in input && Array.isArray(input.questions) ? input.questions : [];
+  return questions.map((question, index) => {
+    const raw: unknown = rawQuestions[index];
+    const id = raw !== null && typeof raw === "object" && "id" in raw && typeof raw.id === "string" ? raw.id : "";
+    return question.header?.trim() || id || `Q${index + 1}`;
+  });
+}
+
+/** The same drawn question and ordered options must authorize both Markdown and tab moves. */
+function questionShown(prompt: InteractivePrompt, asked: AskedQuestion, cut: boolean): boolean {
+  return asked.multi === prompt.multi_select
+    && asked.options.length === prompt.options.length
+    && asked.options.every((option, index) => {
+      const shown = prompt.options[index]!;
+      const description = option.description?.trim() ? option.description : null;
+      return option.preview === null && shows(shown.label, drawn(label(option.label), false))
+        && (description === null ? shown.description === null : shown.description !== null && shows(shown.description, drawn(description, false)));
+    })
+    && shows(prompt.question, drawn(asked.question, true), cut);
 }
 
 /** a name as a page shows it, for telling the card's options apart: one Unicode form by look, spacing collapsed, any case (src/lib/promptAnswer.ts `spaced`) */
@@ -97,8 +173,9 @@ function cardBlock(block: MarkdownBlock): string {
   switch (block.type) {
     case "paragraph": return block.lines.map((line) => cardInline(line, true)).join("\n");
     case "heading": return `${block.level > 2 ? `${"#".repeat(block.level)} ` : ""}${cardInline(block.content, true)}`;
-    // the chat draws a ```mermaid fence as a diagram (src/components/Markdown.tsx), not the code omp shows (#2233)
-    case "code": return block.language === "mermaid" ? undrawn() : block.value;
+    // the chat draws a ```mermaid fence as a diagram, a ```svg one as a figure and a ```math one as a formula
+    // (src/components/Markdown.tsx), not the code omp shows (#2233)
+    case "code": return block.language === "mermaid" || block.language === "math" || block.language.toLowerCase() === "svg" ? undrawn() : block.value;
     case "list": return block.items.map((item, index) => item.checked !== undefined ? undrawn()
       : `${block.ordered ? `${(block.start ?? 1) + index}. ` : "- "}${cardInline(item.content, true)}\n${(item.blocks ?? []).map(cardBlock).join("\n")}`).join("\n");
     default: return undrawn();

@@ -29,6 +29,11 @@ jobs:
   build:
     needs: gate
     uses: ./.github/workflows/pty-sidecar.yml
+    # its attest job signs each binary's build provenance
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     with:
       ref: refs/tags/${{ inputs.tag }}
   attach:

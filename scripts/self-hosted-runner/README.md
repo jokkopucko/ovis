@@ -98,13 +98,17 @@ still use the network.
 
 ## Routing jobs to it
 
-`ci.yml`'s Linux jobs go to `["self-hosted","self-hosted-ovis"]` by default, the launcher's default
-label. The repository variable overrides that:
+`ci.yml`'s Linux jobs of a push go to `["self-hosted","self-hosted-ovis"]` by default, the launcher's
+default label. A same-repository pull request goes there only while at most
+`CI_SELF_HOSTED_CAPACITY` (default 10) minus its four Linux jobs are queued or running on that label,
+and GitHub-hosted otherwise. Set the capacity to the number of `self-hosted-ovis` runners you keep
+online. The repository variable overrides the choice:
 
 ```sh
 gh variable set CI_SELF_HOSTED_LABELS --body '"ubuntu-24.04"'   # PC offline: everything GitHub-hosted
-gh variable set CI_SELF_HOSTED_LABELS --body '["self-hosted","self-hosted-ovis"]'   # pages.yml and release.yml too
+gh variable set CI_SELF_HOSTED_LABELS --body '["self-hosted","self-hosted-ovis"]'   # every pull request, pages.yml and release.yml too
 gh variable delete CI_SELF_HOSTED_LABELS   # back to the default
+gh variable set CI_SELF_HOSTED_CAPACITY --body 10   # self-hosted-ovis runners online
 ```
 
 Pushes to main can have runners of their own, so a merge's CI never queues behind pull request runs.
@@ -131,7 +135,7 @@ share `check.ts`'s slots (`CHECK_HOST_MAX_RUNS`) with theirs, so they can wait t
 On the maintainer PC the launcher runs as the systemd user unit `ovis-ci-runner.service`
 (`run.sh --repo devswha/ovis --count 4 --labels self-hosted-ovis` from a copy of this directory in
 `~/.local/share/ovis-ci-runner`): four slots let one CI run's four Linux jobs start together, and
-`check.ts`'s shared slots still cap its herdr-backed lanes at three. Copy the directory again and
+`check.ts`'s shared slots cap its herdr-backed lanes at `ci.yml`'s `CHECK_MAX_RUNS`. Copy the directory again and
 restart the unit after changing these files.
 
 ## Per-host limits

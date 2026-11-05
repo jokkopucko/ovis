@@ -118,6 +118,24 @@
 
 .agent-item.is-selected { background: var(--side-selected); }
 
+/* as a workspace row's in forced colors (Sidebar.css): a Highlight leading bar instead of the erased fill,
+   drawn inside the row, since the list scrolls and would clip anything pulled into its edge; beside the focus
+   ring, which the row's button draws over its leading edge, rather than under it */
+@media (forced-colors: active) {
+  .agent-item.is-selected::before {
+    position: absolute;
+    inset: 0;
+    border-inline-start: calc(2 * var(--hairline)) solid Highlight;
+    border-radius: inherit;
+    content: "";
+    pointer-events: none;
+  }
+
+  .agent-item.is-selected:has(> .agent-row:focus-visible)::before {
+    inset-inline-start: var(--ring-offset);
+  }
+}
+
 /* As a workspace row's: the ⋯ takes no room until the row is hovered, focused, selected or its
    menu is open, and stays in the focus order, since the menu hands the focus back to it. */
 .agent-actions {
@@ -222,6 +240,74 @@
 .agents-sidebar.is-one-line .agent-context {
   flex: 1 1 0;
   min-width: 0;
+}
+
+/* a helper an agent started (herdr-core's parent) reads under that agent on one line, a workspace
+   row's height: its row steps in per level, and an elbow drawn from under its parent's mark leads
+   to its own. Its place and plugin values are in its tooltip. */
+.agent-item[data-depth] .agent-row { min-height: var(--side-row); }
+.agent-item[data-depth="1"] .agent-row { padding-inline-start: var(--space-6); }
+.agent-item[data-depth="2"] .agent-row { padding-inline-start: calc(2 * var(--space-6)); }
+
+.agent-item[data-depth]::after {
+  position: absolute;
+  top: 0;
+  inset-inline-start: calc(var(--side-box) / 2);
+  width: var(--space-3);
+  height: 50%;
+  border-inline-start: var(--hairline) solid var(--border-strong);
+  border-block-end: var(--hairline) solid var(--border-strong);
+  border-end-start-radius: var(--radius-sm);
+  content: "";
+  pointer-events: none;
+}
+
+.agent-item[data-depth="2"]::after { inset-inline-start: calc(var(--side-box) / 2 + var(--space-6)); }
+
+/* a helper with a sibling further down (AgentSidebar.tsx, data-more): its line runs on through the
+   row to the next one's elbow, so the siblings hang from one line with no break between them */
+.agent-item[data-more]::after {
+  height: 100%;
+  border: 0;
+  /* the elbow's own corner, named as it is set: a rounded corner would clip the line's foot */
+  border-end-start-radius: 0;
+  background:
+    linear-gradient(var(--border-strong), var(--border-strong)) 0 0 / var(--hairline) 100% no-repeat,
+    linear-gradient(var(--border-strong), var(--border-strong)) 0 50% / 100% var(--hairline) no-repeat;
+}
+
+/* a helper's own helper between two siblings (data-through): their line passes by it */
+.agent-item[data-through]::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(var(--side-box) / 2);
+  width: var(--space-3);
+  /* drawn as the elbow's line is (a gradient, not a border), so the two land on the same pixel */
+  background: linear-gradient(var(--border-strong), var(--border-strong)) 0 0 / var(--hairline) 100% no-repeat;
+  content: "";
+  pointer-events: none;
+}
+
+/* a blocked agent's own reason (its OSC 7501 kind, else its message), after the title in the
+   state's colour: it gives way before the title, cut with an ellipsis, the whole text in the tooltip */
+.agent-blocked {
+  flex: 0 1000 auto;
+  min-width: 3em;
+  overflow: hidden;
+  color: var(--status-blocked);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* how far the agent says it is: its percent after the title, digits holding their width */
+.agent-progress {
+  flex: none;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
 }
 
 .agent-row-status {

@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import type { PendingMessage, ServerMessage } from "../../shared/protocol.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { greetingMemory } from "./greeting.ts";
 import { MachineSession, MachineSessionRegistry } from "./machineSession.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { PendingMessageStore, pendingMessages } from "./pendingMessages.ts";
+import { currentWaitingSends, forgetWaitingSends, waitingKey } from "./sentWaiting.ts";
 import type { HerdrSocket } from "./ws.ts";
 
 type FeaturesFrame = Extract<ServerMessage, { type: "features" }>;
@@ -61,6 +62,69 @@ function withStorage(run: () => void): void {
 }
 
 describe("PC connection ownership", () => {
+  it.each(["sent", "discarded"] as const)("settles a reloaded copy after the snapshot proves an early resumed %s receipt's lifetime", (outcome) => {
+    const { session, socket, store } = setup(`reload-receipt-${outcome}`);
+    const owner = paneStorageId(session.machineId, "w1:p1");
+    store.accept(owner, message("saved"), null);
+    session.connect();
+    socket.receive({ type: "features", features: ["pending-input"], connection: "reload", herdr_lifetime: "reload-herdr" });
+    expect(session.scope).toBeNull();
+    // Open's attach replay can finish while the server still awaits clientSnapshot().
+    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "saved", outcome, resumed: true }] });
+    expect(store.read(owner)).toHaveLength(1);
+    socket.receive(named("reload-herdr"));
+    expect(store.read(owner)).toEqual([]);
+    session.close();
+  });
+  it("settles durable reload state only after the lifetime fence exposes that herdr's storage", () => {
+    withStorage(() => {
+      const { session, socket } = setup("durable-reload", pendingMessages);
+      const owner = paneStorageId(session.machineId, "w1:p1");
+      window.localStorage.setItem(`ovis:pane-lifetime:${session.machineId}`, "durable-herdr");
+      window.localStorage.setItem(`ovis:pending:${owner}`, JSON.stringify({ version: 1, messages: [message("saved")] }));
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "reload", herdr_lifetime: "durable-herdr" });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "saved", outcome: "sent", resumed: true }] });
+      expect(window.localStorage.getItem(`ovis:pending:${owner}`)).not.toBeNull();
+      socket.receive(named("durable-herdr"));
+      expect(pendingMessages.read(owner)).toEqual([]);
+      expect(window.localStorage.getItem(`ovis:pending:${owner}`)).toBeNull();
+      session.close();
+    });
+  });
+  it.each(["different lifetime", "no lifetime", "disconnected", "ordinary receipt"] as const)("does not settle an early receipt with %s", (scenario) => {
+    const { session, socket, store } = setup(`reload-reject-${scenario}`);
+    const owner = paneStorageId(session.machineId, "w1:p1");
+    store.accept(owner, message("saved"), null);
+    session.connect();
+    socket.receive({ type: "features", features: ["pending-input"], connection: "reload", herdr_lifetime: "early-herdr" });
+    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{
+      id: "saved", outcome: "sent", ...(scenario === "ordinary receipt" ? {} : { resumed: true }),
+    }] });
+    if (scenario === "disconnected") { socket.disconnect(); session.connect(); }
+    socket.receive(scenario === "no lifetime" ? snapshot : named(scenario === "different lifetime" ? "other-herdr" : "early-herdr"));
+    expect(store.read(owner)).toMatchObject([{ id: "saved", serverOwned: false }]);
+    // A later matching snapshot cannot resurrect a rejected receipt.
+    socket.receive(named("early-herdr"));
+    expect(store.read(owner)).toHaveLength(1);
+    session.close();
+  });
+  it("bounds early resumed receipts and keeps only resumed removals from a mixed frame", () => {
+    const { session, socket, store } = setup("reload-bounded");
+    const owner = paneStorageId(session.machineId, "w1:p1");
+    store.accept(owner, message("oldest"), null);
+    store.accept(owner, message("latest"), null);
+    store.accept(owner, message("ordinary"), null);
+    session.connect();
+    socket.receive({ type: "features", features: ["pending-input"], connection: "reload", herdr_lifetime: "bounded-herdr" });
+    for (let i = 0; i < 129; i++) socket.receive({
+      type: "pending-messages", pane_id: "w1:p1", messages: [message("live")],
+      removed: [{ id: i === 0 ? "oldest" : "latest", outcome: "sent", resumed: true }, { id: "ordinary", outcome: "sent" }],
+    });
+    socket.receive(named("bounded-herdr"));
+    expect(store.read(owner).map(({ id }) => id)).toEqual(["oldest", "ordinary"]);
+    session.close();
+  });
   it("knows the PC's id for the open connection from its snapshot, and none once it drops", () => {
     const { session, socket } = setup();
     expect(session.connection).toBeNull();
@@ -202,6 +266,57 @@ describe("PC connection ownership", () => {
     session.acceptPending("w1:p1", message("p1"), session.epoch);
     expect(store.read(owner)).toEqual([]);
     session.close();
+  });
+
+  // a queued row typed by the turn end's drain or Send now leaves the row list before the transcript
+  // holds its turn: the chat shows it as the user's waiting message meanwhile, as a composer send
+  it("keeps a typed row in the chat as a waiting message, timed from when it went out", () => {
+    const { session, socket } = setup("drain-pc");
+    const key = waitingKey("drain-pc", "w1:p1");
+    const clock = spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      start(session, socket);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1")] });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
+      clock.mockReturnValue(3000);
+      const removal: ServerMessage = { type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] };
+      socket.receive(removal);
+      socket.receive(removal);
+      expect(currentWaitingSends(key)).toMatchObject([{ text: "review this next", at: 1000 }]);
+      // a discarded row was never typed
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p2")] });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p2", outcome: "discarded" }] });
+      expect(currentWaitingSends(key)).toHaveLength(1);
+    } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
+  });
+
+  it("times a row sent again from its own try, not from an earlier one that left it held", () => {
+    const { session, socket } = setup("retry-pc");
+    const key = waitingKey("retry-pc", "w1:p1");
+    const clock = spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      start(session, socket);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
+      // not typed (a draft in the box): held, and sent with Send now long after
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "held")] });
+      clock.mockReturnValue(90_000);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
+      clock.mockReturnValue(91_000);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] });
+      expect(currentWaitingSends(key)).toMatchObject([{ text: "review this next", at: 90_000 }]);
+    } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
+  });
+
+  // sent through another connection: this one never saw it go out, and its turn may be read already
+  it("keeps no waiting message for a row removed as sent that this connection never saw sending", () => {
+    const { session, socket } = setup("elsewhere-pc");
+    const key = waitingKey("elsewhere-pc", "w1:p1");
+    try {
+      start(session, socket);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "held")] });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] });
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); session.close(); }
   });
 
   it("accepts an unmounted pane's submit receipt on its captured live connection", () => {

@@ -13,7 +13,8 @@ const NONE: ReadonlySet<string> = new Set();
 /** `roster`: this reader is the PC's roster, whose branches the panes' composers name too (lib/paneBranch.ts). */
 /** `unmarked`: git workspaces herdr has not marked as a repository's (no `worktree`), read one by one. */
 /** `watching`: this device may only watch, and the PC refuses it the listing (#2250): nothing is asked. */
-export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: boolean, roster = false, unmarked: ReadonlySet<string> = NONE, watching = false): {
+/** `onNotCheckout`: herdr answered that an unmarked workspace is no git checkout, so whoever chose it can stop asking (#2726). */
+export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: boolean, roster = false, unmarked: ReadonlySet<string> = NONE, watching = false, onNotCheckout?: (workspaceId: string) => void): {
   branches: ReadonlyMap<string, WorkspaceBranch>;
   rememberOpened(opened: WorktreeOpened): void;
 } {
@@ -66,7 +67,11 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
           } catch (error) {
             if (error instanceof ApiError && error.code === "read_only") { owner.refused = true; break; }
             // a refusal (4xx) says it is no checkout now; a failure to ask keeps the last known branch
-            if (!stopped && error instanceof ApiError && error.status < 500) changed = owner.cache.forgetUnmarked(workspaceId, generation) || changed;
+            if (!stopped && error instanceof ApiError && error.status < 500) {
+              changed = owner.cache.forgetUnmarked(workspaceId, generation) || changed;
+              // only this cycle's git refusal says so: herdr's dropped connections are 404s too (server/http.ts)
+              if (generation === owner.cache.generation && error.code === "not_git_worktree") onNotCheckout?.(workspaceId);
+            }
           }
         }
         if (!stopped && changed) publish((value) => value + 1);
@@ -83,7 +88,7 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
       owner.cache.invalidate();
       clearTimeout(timer);
     };
-  }, [owner, listWorktrees, signature, unmarkedKey, online, visible, refresh]);
+  }, [owner, listWorktrees, signature, unmarkedKey, online, visible, refresh, onNotCheckout]);
 
   const rememberOpened = useCallback((opened: WorktreeOpened): void => {
     owner.cache.rememberOpened(opened);

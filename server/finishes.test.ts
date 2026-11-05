@@ -137,3 +137,52 @@ it("recognizes a replaced socket file and Windows marker incarnation, never just
     expect(finishHerdrIdentity(join(dir, "missing"), "linux")).toBeNull();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+it("keeps a moved pane's finish count under its new ID, so a finish read before the move stays read (#1503)", () => {
+  const finishes = new Finishes(() => "daemon-a");
+  finishes.status("w1:p1", "working");
+  expect(finishes.status("w1:p1", "done").finish_id).toBe(1);
+  finishes.moved("w1:p1", "w2:p1");
+  // the same finish, told again under the new ID, is not a new one
+  expect(finishes.status("w2:p1", "done").finish_id).toBe(1);
+  finishes.status("w2:p1", "working");
+  expect(finishes.status("w2:p1", "done").finish_id).toBe(2);
+  // herdr reusing the old ID later goes on from its count, as for any ended pane
+  expect(finishes.status("w1:p1", "done").finish_id).toBe(2);
+});
+
+it("counts a moved pane's finishes above what a reused new ID had, and renumbers the reads of its latest (#1503)", () => {
+  const finishes = new Finishes(() => "daemon-a");
+  // an earlier pane under w2:p1 finished four times and ended
+  for (let turn = 0; turn < 4; turn++) { finishes.status("w2:p1", "working"); finishes.status("w2:p1", "done"); }
+  finishes.status("w2:p1", "unknown");
+  finishes.status("w1:p1", "working");
+  expect(finishes.status("w1:p1", "done").finish_id).toBe(1);
+  const renumber = finishes.moved("w1:p1", "w2:p1");
+  // the moved finish is the same one under the new ID: above the earlier pane's, and a read of it stays a read
+  expect(finishes.status("w2:p1", "done").finish_id).toBe(5);
+  expect(renumber(1)).toBe(5);
+  expect(renumber(0)).toBe(0);
+  finishes.status("w2:p1", "working");
+  expect(finishes.status("w2:p1", "done").finish_id).toBe(6);
+});
+
+it("counts a new finish under a moved pane's new ID when its work was still told under the old ID (#1503)", () => {
+  const finishes = new Finishes(() => "daemon-a");
+  finishes.status("w1:p1", "working");
+  expect(finishes.status("w1:p1", "done").finish_id).toBe(1);
+  finishes.moved("w1:p1", "w2:p1");
+  // a late event of the old ID: the moved pane went back to work
+  finishes.status("w1:p1", "working");
+  expect(finishes.status("w2:p1", "done").finish_id).toBe(2);
+});
+
+it("counts a late old-ID status for the pane's newest ID after two moves (#1503)", () => {
+  const finishes = new Finishes(() => "daemon-a");
+  finishes.status("a", "working");
+  expect(finishes.status("a", "done").finish_id).toBe(1);
+  finishes.moved("a", "b");
+  finishes.moved("b", "c");
+  finishes.status("a", "working");
+  expect(finishes.status("c", "done").finish_id).toBe(2);
+});

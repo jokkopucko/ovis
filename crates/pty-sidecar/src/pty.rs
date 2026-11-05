@@ -206,6 +206,16 @@ pub fn wait_exited(pid: libc::pid_t) -> io::Result<()> {
     }
 }
 
+/// Whether the child has exited, without waiting for it or reaping it.
+pub fn has_exited(pid: libc::pid_t) -> bool {
+    // SAFETY: an all-zero siginfo_t is valid, and waitid writes only into it
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+    // with WNOHANG a child still running leaves si_pid 0
+    // SAFETY: waitid filled `info` (or left it zeroed)
+    rc == 0 && unsafe { info.si_pid() } != 0
+}
+
 /// SIGCHLD back to its default: an ignored one, which survives exec, would have the kernel reap the child.
 pub fn default_sigchld() -> io::Result<()> {
     // SAFETY: an all-zero sigaction with SIG_DFL is valid
@@ -217,9 +227,9 @@ pub fn default_sigchld() -> io::Result<()> {
     }
 }
 
-/// Reaps the child, waiting for it unless `nohang`: its exit code, 0 when a signal ended it (node-pty
-/// reports it so), or None when it has not exited.
-pub fn reap(pid: libc::pid_t, nohang: bool) -> Option<i32> {
+/// Reaps the child, waiting for it unless `nohang`: its wait status (see `exit_code`), or None when it
+/// has not exited.
+pub fn reap(pid: libc::pid_t, nohang: bool) -> Option<libc::c_int> {
     let mut status = 0;
     loop {
         let rc = unsafe { libc::waitpid(pid, &mut status, if nohang { libc::WNOHANG } else { 0 }) };
@@ -231,7 +241,20 @@ pub fn reap(pid: libc::pid_t, nohang: bool) -> Option<i32> {
         }
         return if rc == 0 { None } else { Some(0) };
     }
-    Some(if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { 0 })
+    Some(status)
+}
+
+/// A wait status as the host's exit code: the child's own code, or 128 + the signal's number when a
+/// signal ended it (as a shell reports it, and pty-host.mjs), never the 0 a caller reads as success.
+/// One of the signals the host sent the running child itself (`sent`) is the host's own end: 0, as before.
+pub fn exit_code(status: libc::c_int, sent: &[libc::c_int]) -> i32 {
+    if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else if libc::WIFSIGNALED(status) && !sent.contains(&libc::WTERMSIG(status)) {
+        128 + libc::WTERMSIG(status)
+    } else {
+        0
+    }
 }
 
 pub fn signal(pid: libc::pid_t, signal: libc::c_int) {
@@ -275,4 +298,46 @@ pub fn kill_group_on_crash(group: libc::pid_t) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status_of(script: &str) -> libc::c_int {
+        let child = Command::new("sh").args(["-c", script]).spawn().unwrap();
+        reap(child.id() as libc::pid_t, false).unwrap()
+    }
+
+    #[test]
+    fn tells_a_signal_end_as_128_plus_its_number() {
+        assert_eq!(exit_code(status_of("kill -TERM $$"), &[]), 128 + libc::SIGTERM);
+    }
+
+    #[test]
+    fn tells_an_exit_as_its_own_code() {
+        assert_eq!(exit_code(status_of("exit 3"), &[]), 3);
+        assert_eq!(exit_code(status_of("exit 3"), &[libc::SIGHUP, libc::SIGKILL]), 3);
+    }
+
+    #[test]
+    fn tells_a_running_child_from_an_exited_one_without_reaping_it() {
+        let mut child = Command::new("sh").args(["-c", "read -r _; exit 0"]).stdin(Stdio::piped()).spawn().unwrap();
+        let pid = child.id() as libc::pid_t;
+        assert!(!has_exited(pid));
+        drop(child.stdin.take());
+        wait_exited(pid).unwrap();
+        assert!(has_exited(pid));
+        assert_eq!(reap(pid, false).map(|status| exit_code(status, &[])), Some(0));
+    }
+
+    #[test]
+    fn tells_a_signal_the_host_did_not_send_as_its_own() {
+        assert_eq!(exit_code(status_of("kill -TERM $$"), &[libc::SIGHUP, libc::SIGKILL]), 128 + libc::SIGTERM);
+    }
+
+    #[test]
+    fn tells_an_end_the_host_asked_for_as_before() {
+        assert_eq!(exit_code(status_of("kill -HUP $$"), &[libc::SIGHUP]), 0);
+    }
 }

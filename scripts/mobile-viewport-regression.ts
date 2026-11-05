@@ -132,10 +132,15 @@ export async function checkMobileViewport(browser: Browser, origin: string, pane
       mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
       await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "viewport-direct-typing.png") });
     }
+    // back to the line with the keyboard up: the line takes the grid's keyboard, focus and all, so
+    // the switch neither drops nor raises it (#2333)
     await direct.click();
     await shell(true, "500px", 500);
+    assert.equal(await page.evaluate(() => document.activeElement?.className), "terminal-input-text", "direct to line with the keyboard up hands the focus to the line");
     await height(795);
     await shell(false, "", 844);
+    // with no field focused, a smaller viewport is not a keyboard
+    await blur();
     await height(500);
     await shell(false, "", 844);
     await page.getByRole("textbox", { name: "Terminal input line", exact: true }).focus();

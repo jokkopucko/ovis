@@ -38,6 +38,24 @@ function sh(call: string, env: Record<string, string> = {}): { code: number; out
 
 const USAGE = `if [ "$#" -eq 0 ]; then echo "pty-sidecar: usage: fixture" >&2; exit 2; fi`;
 
+describe("bounded", () => {
+  it("reports a command it timed out as failed, even one that exits 0 as its tree is killed", () => {
+    // a host that forks and waits exits 0 once its child is killed, and can do so before its own kill comes:
+    // here the tree's kill only tells the command to end, which it does with 0, as such a host would on a slow PC
+    const result = sh(`fifo=$(mktemp -u); mkfifo "$fifo"
+kill_tree() { echo end > "$fifo"; }
+if bounded 1 sh -c 'read line < "$0"; exit 0' "$fifo"; then echo PASSED; else echo "TIMED OUT"; fi
+rm -f "$fifo"`);
+    expect(result.out).toContain("TIMED OUT");
+    expect(result.ms).toBeLessThan(10_000);
+  });
+
+  it("passes on the status of a command that ends within its bound", () => {
+    expect(sh(`if bounded 5 sh -c 'exit 0'; then echo PASSED; else echo FAILED; fi`).out).toContain("PASSED");
+    expect(sh(`bounded 5 sh -c 'exit 3' || echo "STATUS $?"`).out).toContain("STATUS 3");
+  });
+});
+
 describe("rust_host_runs", () => {
   it("passes a host that answers both legs of the check", () => {
     expect(sh(`rust_host_runs ${script("host", `${USAGE}\nexit 0`)} && echo RUNS`).out).toContain("RUNS");
@@ -243,7 +261,8 @@ describe("node_link", () => {
     const userPath = join(root, "user-path");
     mkdirSync(userPath);
     if (user !== undefined) writeFileSync(join(userPath, "node"), `#!/bin/sh\necho ${user}\n`, { mode: 0o755 });
-    const env: Record<string, string> = { NODE_DIR: join(root, "share/ovis/node"), LEGACY_NODE_DIR: join(root, "share/herdr-web-ui/node"), BIN_DIR: join(root, "bin"), CODE: join(root, "code"), installed_here: "", original_path: `${userPath}:/usr/bin:/bin` };
+    // node_link probes only Node on original_path: do not let the real PC's /usr/bin/node fill an absent fixture.
+    const env: Record<string, string> = { NODE_DIR: join(root, "share/ovis/node"), LEGACY_NODE_DIR: join(root, "share/herdr-web-ui/node"), BIN_DIR: join(root, "bin"), CODE: join(root, "code"), installed_here: "", original_path: userPath };
     mkdirSync(join(env["CODE"]!, "server/pty"), { recursive: true });
     // as the release's server/pty/sidecar.ts names the app's Node, or before it did
     writeFileSync(join(env["CODE"]!, "server/pty/sidecar.ts"), finds ? 'const APP_NODE_DIRS = [".local/share/ovis/node"];' : 'Bun.which("node")');

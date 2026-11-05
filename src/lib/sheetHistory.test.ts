@@ -305,4 +305,48 @@ describe("a phone's sheet in the history", () => {
     expect((h.state as Record<string, unknown>)["ovis:file-preview"]).toBeDefined();
     expect(settings.settingsEntry(h.state)).toBeNull();
   });
+
+  // after the one above: Settings' module is on this browser
+  it("closes Settings when it closes while a sheet opened inside it is still stepping off its entry", async () => {
+    const settingsPath = "./settingsHistory.ts?with-sheets";
+    const settings: typeof import("./settingsHistory.ts") = await import(settingsPath);
+    // Phone & devices on a phone: the list, then the page; Pair a device opens Connect a phone's sheet over it
+    settings.recordSettings(settings.settingsLevels(true, "devices", false));
+    await settled();
+    const base = fake.at() - 2;
+    const leaveConnect = hooks.enter(() => {});
+    const reopened: boolean[] = [];
+    const stopListening = settings.onSettingsHistory((entry, own) => { if (entry !== null && !own) reopened.push(true); });
+    // the phone pairs: the sheet closes by itself, and its step back is queued for after this task.
+    // Escape closes Settings before that step runs
+    leaveConnect();
+    settings.recordSettings([]);
+    await settled();
+    await settled();
+    expect(settings.settingsEntry(h.state)).toBeNull();
+    expect(fake.at()).toBe(base);
+    expect(reopened).toEqual([]);
+    stopListening();
+  });
+
+  it("closes Settings too when the closed sheet's entry had its address changed before its step back", async () => {
+    const settingsPath = "./settingsHistory.ts?with-sheets";
+    const settings: typeof import("./settingsHistory.ts") = await import(settingsPath);
+    settings.recordSettings(settings.settingsLevels(true, "devices", false));
+    await settled();
+    const base = fake.at() - 2;
+    const leaveConnect = hooks.enter(() => {});
+    const reopened: boolean[] = [];
+    const stopListening = settings.onSettingsHistory((entry, own) => { if (entry !== null && !own) reopened.push(true); });
+    // the app writes another address on the sheet's entry (a renamed workspace) as the sheet closes
+    h.replaceState(h.state, "", "/?pane=renamed");
+    leaveConnect();
+    settings.recordSettings([]);
+    await settled();
+    await settled();
+    expect(settings.settingsEntry(h.state)).toBeNull();
+    expect(fake.at()).toBe(base);
+    expect(reopened).toEqual([]);
+    stopListening();
+  });
 });

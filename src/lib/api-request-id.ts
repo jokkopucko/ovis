@@ -1,8 +1,10 @@
+import { getTransport } from "./transport.ts";
+
 /** Only this app's API gets correlation metadata; never change the global fetch function. */
 export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   const origin = typeof location === "undefined" ? "http://localhost" : location.origin;
   const target = new URL(url, origin);
-  if (target.origin !== origin || !target.pathname.startsWith("/api/")) return fetch(url, init);
+  if (target.origin !== origin || !target.pathname.startsWith("/api/")) return getTransport().fetch(url, init);
   const headers = new Headers(init?.headers);
   if (!headers.has("x-request-id")) {
     // getRandomValues works on plain-HTTP LAN origins too; randomUUID does not.
@@ -12,5 +14,5 @@ export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
     }).join("");
     headers.set("x-request-id", `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`);
   }
-  return fetch(url, { ...init, headers });
+  return getTransport().fetch(url, { ...init, headers });
 }

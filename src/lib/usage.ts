@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ProviderUsage, UsageProviderId, UsageReport, UsageWindow } from "../../shared/protocol.ts";
-import { fetchUsage } from "./api.ts";
+import type { ProviderUsage, StatuslineState, UsageProviderId, UsageReport, UsageWindow } from "../../shared/protocol.ts";
+import { ApiError, fetchStatusline, fetchUsage, setStatusline } from "./api.ts";
 import type { UsageCount, UsageGlance } from "./settings.ts";
 import { t } from "./i18n.ts";
 import { usePageVisible } from "./visibility.ts";
@@ -168,4 +168,40 @@ export function useUsage(enabled: boolean) {
 
   const refresh = useCallback(() => { if (enabled) void load(true); }, [enabled, load]);
   return { report, loading, refresh };
+}
+
+const STATUSLINE_CHANGED = "herdr-statusline-changed";
+
+/**
+ * Settings' switch for reading Claude's limits from its status line on the server's PC, and the
+ * usage popover's offer of it: `watch` reads the state (the offer only turns it on). A change asks
+ * every usage view for fresh limits, and every switch for the new state.
+ */
+export function useStatuslineSwitch(watch: boolean) {
+  const [state, setState] = useState<StatuslineState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!watch) return;
+    let live = true;
+    const read = () => void fetchStatusline().then((next) => { if (live) setState(next); }, () => { /* an older server: no switch */ });
+    read();
+    window.addEventListener(STATUSLINE_CHANGED, read);
+    return () => { live = false; window.removeEventListener(STATUSLINE_CHANGED, read); };
+  }, [watch]);
+  const set = useCallback(async (enabled: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setState(await setStatusline(enabled));
+    } catch (cause) {
+      // the server's own words (what was refused, and why), without the URL and status in front
+      setError(cause instanceof ApiError ? cause.detail : t("Could not change Claude's status line"));
+    } finally {
+      setBusy(false);
+      window.dispatchEvent(new Event(STATUSLINE_CHANGED));
+      window.dispatchEvent(new Event("herdr-usage-changed"));
+    }
+  }, []);
+  return { state, busy, error, set };
 }

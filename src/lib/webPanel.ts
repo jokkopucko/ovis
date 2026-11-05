@@ -9,6 +9,19 @@ export interface AppLocation {
   origin: string;
 }
 
+export type WebPanelOpener = (uri: string, shiftKey: boolean, machineId: string) => boolean;
+
+/** Whether a link click asks the app to take over, keeping the browser's modifier-click meanings. */
+export function shouldOpenWebPage(
+  event: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
+  uri: string,
+  openWebPage: WebPanelOpener | null,
+  machineId: string,
+): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.altKey
+    && (openWebPage?.(uri, event.shiftKey, machineId) ?? false);
+}
+
 /** Names a pane prints for the PC it runs on: a dev server's own "Local: http://localhost:5173/". */
 const LOOPBACK = /^(?:localhost|[^.]+(?:\.[^.]+)*\.localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\])$/i;
 
@@ -40,8 +53,8 @@ export function wantsPanel(target: WebLinkTarget, shiftKey: boolean): boolean {
 }
 
 /**
- * Opens a web address in the panel beside the pane when the setting (or Shift) asks for it and the
- * address can be framed; answers false when it did not, and the caller opens it in a new tab.
- * Null where no panel can show (a narrow window); `machineId` is the PC whose pane named the address.
+ * Opens a web address in the docked panel or narrow-screen popup when the setting (or Shift) asks
+ * for it and the address can be framed; false leaves the caller's new-tab behavior in place.
+ * `machineId` is the PC whose pane named the address.
  */
-export const WebPanelContext = createContext<((uri: string, shiftKey: boolean, machineId: string) => boolean) | null>(null);
+export const WebPanelContext = createContext<WebPanelOpener | null>(null);

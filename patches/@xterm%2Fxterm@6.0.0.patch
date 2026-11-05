@@ -1,3 +1,6 @@
+diff --git a/node_modules/@xterm/xterm/.bun-tag-e1e69684691299b1 b/.bun-tag-e1e69684691299b1
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/css/xterm.css b/css/xterm.css
 index 819654e4537eeb7b64364249e52274b7197b9c8a..6df7cfb20f4b5f16cb770377d029ba7088d7af4d 100644
 --- a/css/xterm.css
@@ -14,19 +17,24 @@ index 819654e4537eeb7b64364249e52274b7197b9c8a..6df7cfb20f4b5f16cb770377d029ba70
  
  .xterm .xterm-viewport {
 diff --git a/src/browser/CoreBrowserTerminal.ts b/src/browser/CoreBrowserTerminal.ts
-index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f770e5276c1 100644
+index 38ad467a519939798c005e4cbf78c7660ed359a3..c44ab3049142d76363644a3dfec9661384696143 100644
 --- a/src/browser/CoreBrowserTerminal.ts
 +++ b/src/browser/CoreBrowserTerminal.ts
-@@ -111,6 +111,8 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -111,6 +111,13 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
     * screen readers will announce it.
     */
    private _keyPressHandled: boolean = false;
 +  /** A digit keydown was left to its keypress and input events (see _keyDown). */
 +  private _digitAwaitsKeyPress: boolean = false;
++  /**
++   * A keypress whose key is a whole string (an iOS keyboard committing dictation, #1488), held for
++   * the insertText that carries that string, with the one character the keypress itself names.
++   */
++  private _textKey: { text: string, key: string, event: KeyboardEvent } | undefined;
  
    /**
     * Records whether there has been a keydown event for a dead key without a corresponding keydown
-@@ -121,6 +123,7 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -121,6 +128,7 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
  
    private _compositionHelper: ICompositionHelper | undefined;
    private _accessibilityManager: MutableDisposable<AccessibilityManager> = this._register(new MutableDisposable());
@@ -34,7 +42,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
  
    private readonly _onCursorMove = this._register(new Emitter<void>());
    public readonly onCursorMove = this._onCursorMove.event;
-@@ -339,7 +342,10 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -339,7 +347,10 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
        }
        copyHandler(event, this._selectionService!);
      }));
@@ -46,20 +54,25 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
      this._register(addDisposableListener(this.textarea!, 'paste', pasteHandlerWrapper));
      this._register(addDisposableListener(this.element!, 'paste', pasteHandlerWrapper));
  
-@@ -381,6 +387,7 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -381,6 +392,11 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
      this._register(addDisposableListener(this.textarea!, 'compositionstart', () => this._compositionHelper!.compositionstart()));
      this._register(addDisposableListener(this.textarea!, 'compositionupdate', (e: CompositionEvent) => this._compositionHelper!.compositionupdate(e)));
      this._register(addDisposableListener(this.textarea!, 'compositionend', () => this._compositionHelper!.compositionend()));
-+    this._register(addDisposableListener(this.textarea!, 'beforeinput', (ev: InputEvent) => this._compositionHelper!.beforeinput(ev, this._keyDownSeen), true));
++    this._register(addDisposableListener(this.textarea!, 'beforeinput', (ev: InputEvent) => {
++      // the insertion of a whole-string key is text, sent whole by _inputEvent, not a preedit
++      if (ev.inputType === 'insertText' && ev.data === this._textKey?.text) return;
++      this._compositionHelper!.beforeinput(ev, this._keyDownSeen);
++    }, true));
      this._register(addDisposableListener(this.textarea!, 'input', (ev: InputEvent) => this._inputEvent(ev), true));
      this._register(this.onRender(() => this._compositionHelper!.updateCompositionElements()));
    }
-@@ -463,7 +470,11 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -463,7 +479,12 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
      this._instantiationService.setService(ICoreBrowserService, this._coreBrowserService);
  
      this._register(addDisposableListener(this.textarea, 'focus', (ev: FocusEvent) => this._handleTextAreaFocus(ev)));
 -    this._register(addDisposableListener(this.textarea, 'blur', () => this._handleTextAreaBlur()));
 +    this._register(addDisposableListener(this.textarea, 'blur', () => {
++      this._sendTextKey();
 +      this._digitAwaitsKeyPress = false;
 +      this._compositionHelper?.finishReplacement();
 +      this._handleTextAreaBlur();
@@ -67,7 +80,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
      this._helperContainer.appendChild(this.textarea);
  
      this._charSizeService = this._instantiationService.createInstance(CharSizeService, this._document, this._helperContainer);
-@@ -483,6 +494,7 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -483,6 +504,7 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
      this._compositionView = this._document.createElement('div');
      this._compositionView.classList.add('composition-view');
      this._compositionHelper = this._instantiationService.createInstance(CompositionHelper, this.textarea, this._compositionView);
@@ -75,7 +88,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
      this._helperContainer.appendChild(this._compositionView);
  
      this._mouseService = this._instantiationService.createInstance(MouseService);
-@@ -500,10 +512,12 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -500,10 +522,12 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
      if (!this._renderService.hasRenderer()) {
        this._renderService.setRenderer(this._createRenderer());
      }
@@ -88,7 +101,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
      }));
      this._register(this.onResize(() => this._renderService!.handleResize(this.cols, this.rows)));
      this._register(this.onBlur(() => this._renderService!.handleBlur()));
-@@ -907,7 +921,24 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -907,7 +931,24 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
      }
    }
  
@@ -113,8 +126,11 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
      paste(data, this.textarea!, this.coreService, this.optionsService);
    }
  
-@@ -1021,14 +1052,22 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1019,16 +1060,25 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+    * [KeyboardEvent]: https://developer.mozilla.org/en-US/docs/DOM/KeyboardEvent
+    */
    protected _keyDown(event: KeyboardEvent): boolean | undefined {
++    this._sendTextKey();
      this._keyDownHandled = false;
      this._keyDownSeen = true;
 +    this._digitAwaitsKeyPress = false;
@@ -136,7 +152,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
      if (!shouldIgnoreComposition && !this._compositionHelper!.keydown(event)) {
        if (this.options.scrollOnUserInput && this.buffer.ybase !== this.buffer.ydisp) {
          this.scrollToBottom(true);
-@@ -1075,6 +1114,14 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1075,6 +1125,14 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
        }
      }
  
@@ -151,7 +167,7 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
      if (this._unprocessedDeadKey) {
        this._unprocessedDeadKey = false;
        return true;
-@@ -1083,7 +1130,13 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1083,7 +1141,13 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
      // If ctrl+c or enter is being sent, clear out the textarea. This is done so that screen readers
      // will announce deleted characters. This will not work 100% of the time but it should cover
      // most scenarios.
@@ -166,18 +182,62 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
        this.textarea!.value = '';
      }
  
-@@ -1118,6 +1171,7 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1117,7 +1181,9 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+   }
  
    protected _keyUp(ev: KeyboardEvent): void {
++    this._sendTextKey();
      this._keyDownSeen = false;
 +    this._digitAwaitsKeyPress = false;
  
      if (this._customKeyEventHandler && this._customKeyEventHandler(ev) === false) {
        return;
-@@ -1190,10 +1244,11 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1140,6 +1206,8 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+   protected _keyPress(ev: KeyboardEvent): boolean {
+     let key;
+ 
++    this._sendTextKey();
++
+     this._keyPressHandled = false;
+ 
+     if (this._keyDownHandled) {
+@@ -1168,7 +1236,21 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+       return false;
+     }
+ 
+-    key = String.fromCharCode(key);
++    const charCode = key;
++    key = String.fromCharCode(charCode);
++
++    // An iOS keyboard that commits a whole string at once (dictation, a keyboard extension's
++    // insertText) names it as the key and its first character as the charCode, then inserts it.
++    // Hold that character: the insertion that follows sends the whole string instead (#1488). A key
++    // name is never such a string (Enter's charCode is 13, not E). WebKit's charCode is the first
++    // code point, which may lie outside the BMP (an emoji, or a CJK extension character).
++    if (this._keyDownSeen && ev.key && ev.key.length > 1 && ev.key.codePointAt(0) === charCode && !this.optionsService.rawOptions.screenReaderMode
++      && !this._compositionHelper?.isComposing) {
++      this._textKey = { text: ev.key, key: String.fromCodePoint(charCode), event: ev };
++      this._keyPressHandled = true;
++      this._unprocessedDeadKey = false;
++      return true;
++    }
+ 
+     this._onKey.fire({ key, domEvent: ev });
+     this._showCursor();
+@@ -1190,10 +1272,21 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
     * @param ev The input event to be handled.
     */
    protected _inputEvent(ev: InputEvent): boolean {
++    const textKey = this._textKey;
++    if (textKey && ev.inputType === 'insertText' && ev.data === textKey.text) {
++      this._textKey = undefined;
++      this._onKey.fire({ key: textKey.text, domEvent: textKey.event });
++      this._showCursor();
++      this.coreService.triggerDataEvent(textKey.text, true);
++      this.cancel(ev);
++      return true;
++    }
++    this._sendTextKey();
 +    if (this._compositionHelper!.input(ev, this._keyDownSeen)) return true;
      // Only support emoji IMEs when screen reader mode is disabled as the event must bubble up to
      // support reading out character input which can doubling up input characters
@@ -187,10 +247,28 @@ index 38ad467a519939798c005e4cbf78c7660ed359a3..7dd638f954b4e352f5890c0c8c013f77
        if (this._keyPressHandled) {
          return false;
        }
-@@ -1266,6 +1321,8 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+@@ -1212,6 +1305,16 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
+     return false;
+   }
+ 
++  /** No insertion carried the held whole-string key: send its keypress's character, as before. */
++  private _sendTextKey(): void {
++    const textKey = this._textKey;
++    if (!textKey) return;
++    this._textKey = undefined;
++    this._onKey.fire({ key: textKey.key, domEvent: textKey.event });
++    this._showCursor();
++    this.coreService.triggerDataEvent(textKey.key, true);
++  }
++
+   /**
+    * Resizes the terminal.
+    *
+@@ -1266,6 +1369,9 @@ export class CoreBrowserTerminal extends CoreTerminal implements ITerminal {
     * using DECSTR (soft reset, CSI ! p) or RIS instead (hard reset, ESC c).
     */
    public reset(): void {
++    this._textKey = undefined;
 +    this._digitAwaitsKeyPress = false;
 +    this._compositionHelper?.reset();
      /**
@@ -216,7 +294,7 @@ index 10e604114ae9fffc25c931497413800b0b6bd7bb..f99f000ed8b1b28d8ee35e22f1ebd609
    compositionstart(): void;
    compositionupdate(ev: CompositionEvent): void;
 diff --git a/src/browser/input/CompositionHelper.ts b/src/browser/input/CompositionHelper.ts
-index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf25472643e8d42b8 100644
+index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..ecfe12d0346d6e623130e3fab8ddef8b74bdbcac 100644
 --- a/src/browser/input/CompositionHelper.ts
 +++ b/src/browser/input/CompositionHelper.ts
 @@ -6,6 +6,19 @@
@@ -239,7 +317,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
  
  interface IPosition {
    start: number;
-@@ -30,11 +43,19 @@ export class CompositionHelper {
+@@ -30,17 +43,28 @@ export class CompositionHelper {
     */
    private _compositionPosition: IPosition;
  
@@ -264,7 +342,16 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
  
    /**
     * Data already sent due to keydown event.
-@@ -50,17 +71,158 @@ export class CompositionHelper {
+    */
+   private _dataAlreadySent: string;
+ 
++  /** The 229 fallback's deferred textarea diff, until it runs or a following key flushes it. */
++  private _pendingTextareaChange: (() => void) | undefined;
++
+   constructor(
+     private readonly _textarea: HTMLTextAreaElement,
+     private readonly _compositionView: HTMLElement,
+@@ -50,17 +74,166 @@ export class CompositionHelper {
      @IRenderService private readonly _renderService: IRenderService
    ) {
      this._isComposing = false;
@@ -281,6 +368,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
 +    this._editAwaitingKey = false;
 +    this._commitInsert = undefined;
 +    this._pendingSends.length = 0;
++    this._pendingTextareaChange = undefined;
 +    this._isComposing = false;
 +    this._sentUpTo = 0;
 +    this._dataAlreadySent = '';
@@ -339,7 +427,8 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
 +    // keydown() held back this key while the syllable was pending, so Terminal will treat
 +    // its insertion as already handled by keydown. Mark it to be forwarded once.
 +    const commitInsert = this._replacementComposition && keyDownSeen && ev.inputType === 'insertText' ? ev.data ?? undefined : undefined;
-+    this.finishReplacement();
++    // Not finishReplacement(): this event precedes the edit a pending 229 diff waits for.
++    this._finishReplacementComposition();
 +    this._commitInsert = commitInsert;
 +    // Only a Hangul preedit or a dictation hypothesis starts this path. Paste, emoji and browsers
 +    // emitting real composition events retain their existing input handling. iPadOS puts two
@@ -407,6 +496,12 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
 +
 +  /** Commit the corrected DOM range before a following key, paste, syllable or blur. */
 +  public finishReplacement(): void {
++    // A paste, blur or embedder key clears or extends the textarea: diff the 229 edit first.
++    this._pendingTextareaChange?.();
++    this._finishReplacementComposition();
++  }
++
++  private _finishReplacementComposition(): void {
 +    if (this._replacementComposition) {
 +      this._editAwaitingKey = false;
 +      this._finalizeComposition(false);
@@ -425,7 +520,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
      this._compositionView.textContent = '';
      this._dataAlreadySent = '';
      this._compositionView.classList.add('active');
-@@ -71,9 +233,12 @@ export class CompositionHelper {
+@@ -71,9 +244,12 @@ export class CompositionHelper {
     * @param ev The event.
     */
    public compositionupdate(ev: Pick<CompositionEvent, 'data'>): void {
@@ -438,7 +533,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
        this._compositionPosition.end = this._textarea.value.length;
      }, 0);
    }
-@@ -83,6 +248,7 @@ export class CompositionHelper {
+@@ -83,6 +259,7 @@ export class CompositionHelper {
     * the handler.
     */
    public compositionend(): void {
@@ -446,11 +541,13 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
      this._finalizeComposition(true);
    }
  
-@@ -92,7 +258,24 @@ export class CompositionHelper {
+@@ -92,7 +269,26 @@ export class CompositionHelper {
     * @returns Whether the Terminal should continue processing the keydown event.
     */
    public keydown(ev: KeyboardEvent): boolean {
 -    if (this._isComposing || this._isSendingComposition) {
++    // Enter, Ctrl+C and Backspace clear the textarea: send the earlier 229 edit before that.
++    this._pendingTextareaChange?.();
 +    const editBefore = this._editAwaitingKey;
 +    this._editAwaitingKey = false;
 +    this._commitInsert = undefined;
@@ -472,7 +569,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
        if (ev.keyCode === 20 || ev.keyCode === 229) {
          // 20 is CapsLock, 229 is Enter
          // Continue composing if the keyCode is the "composition character"
-@@ -126,57 +309,46 @@ export class CompositionHelper {
+@@ -126,57 +322,46 @@ export class CompositionHelper {
     *   the command is executed.
     */
    private _finalizeComposition(waitForPropagation: boolean): void {
@@ -558,17 +655,64 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
    /**
     * Apply any changes made to the textarea after the current event chain is allowed to complete.
     * This should be called when not currently composing but a keydown event with the "composition
-@@ -185,7 +357,9 @@ export class CompositionHelper {
+@@ -185,25 +370,39 @@ export class CompositionHelper {
     */
    private _handleAnyTextareaChanges(): void {
      const oldValue = this._textarea.value;
-+    const generation = this._generation;
-     setTimeout(() => {
-+      if (generation !== this._generation) return;
+-    setTimeout(() => {
++    const caret = this._textarea.selectionEnd ?? oldValue.length;
++    const change = (): void => {
++      if (this._pendingTextareaChange !== change) return;
++      this._pendingTextareaChange = undefined;
        // Ignore if a composition has started since the timeout
-       if (!this._isComposing) {
-         const newValue = this._textarea.value;
-@@ -218,25 +392,44 @@ export class CompositionHelper {
+-      if (!this._isComposing) {
+-        const newValue = this._textarea.value;
+-
+-        const diff = newValue.replace(oldValue, '');
+-
+-        this._dataAlreadySent = diff;
+-
+-        if (newValue.length > oldValue.length) {
+-          this._coreService.triggerDataEvent(diff, true);
+-        } else if (newValue.length < oldValue.length) {
+-          this._coreService.triggerDataEvent(`${C0.DEL}`, true);
+-        } else if ((newValue.length === oldValue.length) && (newValue !== oldValue)) {
+-          this._coreService.triggerDataEvent(newValue, true);
+-        }
+-
++      if (this._isComposing) return;
++      const newValue = this._textarea.value;
++      let input: string;
++      if (caret < oldValue.length) {
++        // An edit before the end of what was sent: the PTY cursor is not at the caret, so DEL
++        // would erase other text. Forward only a plain insertion at the caret.
++        const head = oldValue.substring(0, caret);
++        const tail = oldValue.substring(caret);
++        input = newValue.length > oldValue.length && newValue.startsWith(head) && newValue.endsWith(tail)
++          ? newValue.substring(caret, newValue.length - tail.length) : '';
++        this._dataAlreadySent = input;
++      } else {
++        // Gboard can replace a trailing space with ". ". The old value is then no
++        // longer a substring: replace(oldValue, '') would resend the whole line.
++        // Keep the shared prefix and replace only the edited suffix. Compare code
++        // points so an emoji is never split into two surrogate halves.
++        const before = Array.from(oldValue);
++        const after = Array.from(newValue);
++        let prefix = 0;
++        while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
++        const inserted = after.slice(prefix).join('');
++        this._dataAlreadySent = inserted;
++        input = C0.DEL.repeat(before.length - prefix) + inserted;
+       }
+-    }, 0);
++      if (input) this._coreService.triggerDataEvent(input, true);
++    };
++    this._pendingTextareaChange = change;
++    setTimeout(change, 0);
+   }
+ 
+   /**
+@@ -218,25 +417,44 @@ export class CompositionHelper {
      }
  
      if (this._bufferService.buffer.isCursorInViewport) {
@@ -779,7 +923,7 @@ index 2ed4acdcaf9fde4894f0615dc8ccda942a8bce97..0b26defe50bdf4597d8115eacf0b7f60
    end(success: boolean, promiseResult?: boolean): void | Promise<boolean>;
  }
 diff --git a/src/common/services/CoreMouseService.ts b/src/common/services/CoreMouseService.ts
-index a10ddafb1a1408c97b47dcac68efeff9f6d3c8a9..c26d277e4b3eb36405379d50cbb5f81de7f9e76c 100644
+index a10ddafb1a1408c97b47dcac68efeff9f6d3c8a9..603ce86eca1c9621e7557eea3ec662953f49e9f7 100644
 --- a/src/common/services/CoreMouseService.ts
 +++ b/src/common/services/CoreMouseService.ts
 @@ -253,11 +253,8 @@ export class CoreMouseService extends Disposable implements ICoreMouseService {
@@ -796,6 +940,18 @@ index a10ddafb1a1408c97b47dcac68efeff9f6d3c8a9..c26d277e4b3eb36405379d50cbb5f81d
  
        this._wheelPartialScroll += amount;
        amount = Math.floor(Math.abs(this._wheelPartialScroll)) * (this._wheelPartialScroll > 0 ? 1 : -1);
+@@ -269,8 +266,9 @@ export class CoreMouseService extends Disposable implements ICoreMouseService {
+   }
+ 
+   private _applyScrollModifier(amount: number, ev: WheelEvent): number {
+-    // Multiply the scroll speed when the modifier key is pressed
+-    if (ev.altKey || ev.ctrlKey || ev.shiftKey) {
++    // Multiply the scroll speed when the modifier key is pressed: Alt only, as xterm.js 5.5's
++    // default fastScrollModifier did: Ctrl sped up an application's trackpad wheel (#2336).
++    if (ev.altKey) {
+       return amount * this._optionsService.rawOptions.fastScrollSensitivity * this._optionsService.rawOptions.scrollSensitivity;
+     }
+     return amount * this._optionsService.rawOptions.scrollSensitivity;
 diff --git a/typings/xterm.d.ts b/typings/xterm.d.ts
 index 457f1612e12fe9d247c996267a5f224649a6808b..455c8aa9e43a6fa11ea0b39372e67a41aa9e4f9b 100644
 --- a/typings/xterm.d.ts

@@ -1,5 +1,5 @@
 import { useContext, useEffect, useId, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronDown, ChevronUp, FileText, Send } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronUp, FileText, Send } from "lucide-react";
 
 import "./PromptCard.css";
 
@@ -24,8 +24,14 @@ export interface PromptCardProps {
   paneId: string;
   prompt: InteractivePrompt;
   onPromptChanged(): void;
+  /** the user edited the card's own answer: its owner keeps the text if the question goes unanswered here */
+  onTextChange?(text: string, cardGone?: boolean): void;
+  /** what the user typed into this question's card before it was drawn again, and has not sent */
+  initialText?: string;
   /** the answer went out; `toMessageBox`: the keyboard's focus was in the card, which is about to go, nothing else has taken it since, and the press was a key or a mouse, not a tap */
   onAnswered(toMessageBox: boolean): void;
+  /** its answer went out: the card waits, as while sending, until the next read of the screen replaces it or takes it away */
+  answered?: boolean;
   /** an option picked by a typed message, sent only on Confirm */
   typedAnswer?: TypedAnswer | null;
   onTypedAnswerDone?(): void;
@@ -35,7 +41,7 @@ export interface PromptCardProps {
   screenWords?: string | null;
 }
 
-export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedAnswer = null, onTypedAnswerDone, stale = false, screenWords = null }: PromptCardProps) {
+export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, initialText, onAnswered, answered = false, typedAnswer = null, onTypedAnswerDone, stale = false, screenWords = null }: PromptCardProps) {
   const t = useT();
   const { answerPanePrompt } = useMachineApi();
   const [selected, setSelected] = useState<Set<number>>(() => {
@@ -47,8 +53,9 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
     }
     return new Set();
   });
-  const [custom, setCustom] = useState(() => prompt.default_custom_text ?? "");
-  const [pending, setPending] = useState(false);
+  const [custom, setCustom] = useState(() => initialText ?? prompt.default_custom_text ?? "");
+  const [sending, setPending] = useState(false);
+  const pending = sending || answered;
   const [error, setError] = useState<UserError | null>(null);
   // folded to its header, to read the transcript under it; the question still waits, so the card
   // stays. A typed answer to confirm opens it, and the next prompt's card starts open
@@ -105,6 +112,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
     const coarse = window.matchMedia?.("(pointer: coarse)").matches === true;
     setPending(true);
     setError(null);
+    // the typed text is on its way: a read that sees the question gone meanwhile keeps none of it
+    onTextChange?.("");
     try {
       await answerPanePrompt({ pane_id: paneId, prompt_id: prompt.id, ...choice });
       if (!shown.current) return false;
@@ -113,6 +122,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
       const active = document.activeElement;
       onAnswered(focusFollowsAnswer({ fromCard, origin, coarse, cardMounted: card !== null, inCard: card?.contains(active) === true, onPage: active === null || active === document.body }));
     } catch (cause) {
+      // not sent: the text is the user's again, also once this card is gone
+      onTextChange?.(custom, !shown.current);
       if (!shown.current) return false;
       // a card read before the question moved on: refused as changed (409), or as an answer it no longer fits (400).
       // The note stays until the card is replaced or answered again, so the button never looks dead
@@ -148,6 +159,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
   const openFile = useContext(OpenFileContext);
   const planFile = prompt.plan_file;
   const navigationBlocked = blocksStepNavigation(prompt, selected, custom);
+  // a typed answer waiting for Confirm is the card's alone: a step would drop it
+  const stepsHeld = navigationBlocked || typedAnswer?.option_index !== undefined;
 
   return (
     <section className={`prompt-card${folded ? " is-folded" : ""}`} ref={cardRef} role="region" aria-label={t("Agent is asking")}
@@ -162,7 +175,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
           <button
             type="button"
             className="btn btn-ghost prompt-card-back"
-            disabled={pending || navigationBlocked}
+            disabled={pending || stepsHeld}
             aria-label={t("Back")}
             title={t("Back")}
             onClick={(event) => void answer({ step_back: true, draft: { option_indices: [...selected], custom_text: custom } }, event)}
@@ -174,6 +187,20 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
         {/* read, not drawn: the title is the card's one red */}
         <span className="visually-hidden">{t("input needed")}</span>
         <h2>{words.title}</h2>
+        {/* on to the next question, this one left unanswered, as the agent's own key does (omo's Tab, Codex's →) */}
+        {prompt.can_step_next && (
+          <button
+            type="button"
+            className="btn btn-ghost prompt-card-next"
+            disabled={pending || navigationBlocked || typedAnswer?.option_index !== undefined}
+            aria-label={t("Next question")}
+            title={t("Next question")}
+            onClick={(event) => void answer({ step_next: true, draft: { option_indices: [...selected], custom_text: custom } }, event)}
+          >
+            <span>{t("Next")}</span>
+            <ArrowRight aria-hidden="true" />
+          </button>
+        )}
         {/* the card shows a plan in its short box; the file viewer draws the whole of it as Markdown */}
         {planFile && openFile && (
           <button type="button" className="btn btn-ghost prompt-card-plan-file" onClick={() => openFile(planFile)}>
@@ -189,7 +216,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
       {prompt.steps && (
         <ol className="prompt-card-steps" aria-label={t("Questions")}>
           {prompt.steps.map((step, index) => {
-            const isClickable = !step.current && (step.can_navigate || step.answered && prompt.can_step_back);
+            // a form that marks its own steps (`can_navigate`) is taken at its word; an older one goes back to its answered steps
+            const isClickable = !step.current && (step.can_navigate || step.answered && prompt.can_step_back && !prompt.steps!.some((other) => other.can_navigate));
             return (
               <li
                 key={index}
@@ -200,7 +228,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
                   <button
                     type="button"
                     className="prompt-card-step-button"
-                    disabled={pending || navigationBlocked}
+                    disabled={pending || stepsHeld}
                     aria-label={words.step(index)}
                     title={step.can_navigate ? words.step(index) : t("Back")}
                     onClick={(event) => void answer({ step_index: index, draft: { option_indices: [...selected], custom_text: custom } }, event)}
@@ -305,7 +333,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
         <div className="prompt-card-custom">
           {hasChoices && <span className="prompt-card-custom-label" id={customLabelId}>{sendsChecksWithText(prompt) ? t("Custom answer") : t("Or type your own answer")}</span>}
           <div className="prompt-card-custom-row">
-            <input className="input" value={custom} disabled={pending} placeholder={prompt.options[prompt.custom_option_index] !== undefined ? words.label(prompt.custom_option_index) : t("Type an answer")} aria-label={hasChoices ? undefined : t("Custom answer")} aria-labelledby={hasChoices ? customLabelId : undefined} onChange={(event) => setCustom(event.currentTarget.value)} onKeyDown={(event) => {
+            <input className="input" value={custom} disabled={pending} placeholder={prompt.options[prompt.custom_option_index] !== undefined ? words.label(prompt.custom_option_index) : t("Type an answer")} aria-label={hasChoices ? undefined : t("Custom answer")} aria-labelledby={hasChoices ? customLabelId : undefined} onChange={(event) => { setCustom(event.currentTarget.value); onTextChange?.(event.currentTarget.value); }} onKeyDown={(event) => {
               // an IME's Enter commits the candidate; WebKit can send it after compositionend, as key code 229
               if (event.key === "Enter" && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && custom.trim().length > 0) void answer({ custom_text: custom.trim() });
             }} />
@@ -333,7 +361,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, typedA
       )}
       {/* in the card from its first render, clipped while empty (never display: none): a live region that
           appears together with its words is not read; one that is there and gets them is */}
-      <p className={pending || stale ? "prompt-card-status" : "visually-hidden"} role="status">{pending ? t("Sending your answer…") : stale ? t("Not updated: the question on screen may have changed.") : null}</p>
+      <p className={pending || stale ? "prompt-card-status" : "visually-hidden"} role="status">{pending && t("Sending your answer…")}{pending && stale && <br />}{stale && t("Not updated: the question on screen may have changed.")}</p>
       {error !== null && <p className="prompt-card-error" role="alert">{error.message}{error.detail !== null && <><br /><code>{error.detail}</code></>}</p>}
     </section>
   );

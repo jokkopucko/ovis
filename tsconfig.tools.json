@@ -3,6 +3,7 @@
   "compilerOptions": {
     "noEmit": true
   },
+  "references": [{ "path": "./shared/vendor/paseo-e2ee" }],
   "files": [
     "integrations/gjc.ts",
     "integrations/gjc.test.ts",
@@ -43,8 +44,11 @@
     "scripts/grok-chat-browser-qa.ts",
     "scripts/claude-image-browser-qa.ts",
     "scripts/omp-codex-image-browser-qa.ts",
+    "scripts/grok-image-browser-qa.ts",
+    "scripts/copilot-image-browser-qa.ts",
     "scripts/gjc-status-browser-regression.ts",
     "scripts/sidebar-activity-demo-regression.ts",
+    "scripts/sidebar-selection-contrast-demo-regression.ts",
     "scripts/pane-mute-demo-regression.ts",
     "scripts/file-preview-text-browser-qa.ts",
     "scripts/file-preview-text-fixture.tsx",

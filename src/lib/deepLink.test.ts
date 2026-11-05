@@ -30,6 +30,12 @@ describe("deep links", () => {
     expect(linkSearch({ machine: "local", workspace: null, pane: null, view: null, settings: "about" })).toBe("?settings=about");
   });
 
+  it("lands a link to the pages Agents replaced on Agents, keeping the group it names", () => {
+    expect(readLink("?settings=usage&section=accounts-claude")).toMatchObject({ settings: "agents", section: "accounts-claude" });
+    expect(readLink("?settings=integrations&section=guide")).toMatchObject({ settings: "agents", section: "guide" });
+    expect(readLink("?settings=chat")).toMatchObject({ settings: "chat" });
+  });
+
   it("tells an address that names a place from the app's plain start", () => {
     expect(linksSomewhere("?pane=w1:p1")).toBe(true);
     expect(linksSomewhere("?settings=chat")).toBe(true);

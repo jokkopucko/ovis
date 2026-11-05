@@ -1,6 +1,6 @@
 import { afterAll, afterEach, expect, it, spyOn } from "bun:test";
 import { apiFetch } from "./api-request-id.ts";
-import { authenticate, cliProxyRequest, fetchSession, pairDevice, revokeDevice, signOut } from "./api.ts";
+import { authenticate, cliProxyRequest, fetchSession, pairDevice, revokeDevice, signOut, signOutOfPortal } from "./api.ts";
 
 const calls: { url: string; init?: RequestInit }[] = [];
 const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (url: URL | RequestInfo, init?: RequestInit) => {
@@ -61,4 +61,14 @@ it("covers JSON reads, writes, auth and pairing at their existing call sites", a
   const ids = calls.map((call) => new Headers(call.init?.headers).get("x-request-id"));
   expect(new Set(ids).size).toBe(6);
   for (const id of ids) expect(id).toMatch(/^[0-9a-f-]{36}$/);
+});
+
+it("ends a Portal sign-in with Portal's own POST, which is no call of this app's API", async () => {
+  // Given / When
+  await signOutOfPortal();
+  // Then: Portal's gateway answers a same-origin POST to this path; it takes no body and no correlation header
+  expect(calls).toEqual([{ url: "/_portal/auth/logout", init: { method: "POST" } }]);
+  // and a refusal is an error the caller can tell
+  fetchSpy.mockImplementationOnce(Object.assign(async () => Response.json({ error: { code: "forbidden", message: "logout requires a same-origin POST" } }, { status: 403 }), { preconnect: globalThis.fetch.preconnect }));
+  await expect(signOutOfPortal()).rejects.toMatchObject({ status: 403, detail: "logout requires a same-origin POST" });
 });
