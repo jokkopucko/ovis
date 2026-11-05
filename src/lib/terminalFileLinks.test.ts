@@ -35,11 +35,17 @@ describe("openWebLink", () => {
       blocked = true;
       createWebLinkOpener()("https://blocked.example", true);
       expect(clicked.at(-1)).toEqual({ href: "https://blocked.example", target: "_blank", rel: "noopener noreferrer" });
-      // an app hands the address to the system browser: it never keeps a window to reuse
+      // a tab the browser no longer lets this page steer still opens the address, in a new tab
       blocked = false;
+      const refusing = createWebLinkOpener();
+      refusing("https://five.example", true);
+      Object.defineProperty(opened.at(-1)!.location, "href", { set: () => { throw new Error("SecurityError"); } });
+      refusing("https://six.example", true);
+      expect(clicked.at(-1)).toEqual({ href: "https://six.example", target: "_blank", rel: "noopener noreferrer" });
+      // an app hands the address to the system browser: it never keeps a window to reuse
       (globalThis as { Capacitor?: unknown }).Capacitor = { isNativePlatform: () => true };
       createWebLinkOpener()("https://app.example", true);
-      expect(opened).toHaveLength(2);
+      expect(opened).toHaveLength(3);
       expect(clicked.at(-1)).toEqual({ href: "https://app.example", target: "_blank", rel: "noopener noreferrer" });
     } finally {
       Reflect.deleteProperty(globalThis, "Capacitor");

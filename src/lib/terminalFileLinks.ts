@@ -62,8 +62,14 @@ export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
       }
       reusable.opener = null;
     }
-    reusable.location.href = uri;
-    reusable.focus();
+    try {
+      reusable.location.href = uri;
+      reusable.focus();
+    } catch {
+      // the browser refused to steer that tab (it no longer counts this page as its opener): a click never does nothing
+      reusable = null;
+      newTab(uri);
+    }
   };
 }
 
