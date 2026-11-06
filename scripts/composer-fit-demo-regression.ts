@@ -707,6 +707,7 @@ try {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>(".composer-text")?.placeholder === "Review the changes");
         assert.equal(await page.locator(".composer-inline-suggestion").count(), 0);
+        assert.equal(await box.evaluate((node) => getComputedStyle(node, "::placeholder").color === "rgba(0, 0, 0, 0)"), false, "the placeholder itself shows the suggestion");
         const bounds = await box.boundingBox();
         assert.ok(bounds);
         await box.tap({ position: { x: 40, y: Math.min(bounds.height / 2, 20) } });
@@ -762,6 +763,22 @@ try {
         assert.equal(await page.evaluate(() => (window as unknown as { fitSubmitCount: number }).fitSubmitCount), 0, "accepting and editing never sends a message");
       });
       console.log("PASS touch suggestion acceptance and desktop Tab preserve focus, caret and editing without sending");
+
+      // the grey words sit in the textarea's row: an attachment strip above keeps its own taps
+      await withCard(browser, 390, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "Review the changes", suggestionChip: true }, async (page) => {
+        const box = page.getByRole("textbox", { name: "Message", exact: true });
+        await page.locator('.composer-controls-left input[type="file"]').setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("x") });
+        const attachment = page.locator(".composer-attachment").first();
+        await attachment.waitFor();
+        const words = await page.locator(".composer-inline-suggestion > span").boundingBox();
+        const input = await box.boundingBox();
+        const strip = await attachment.boundingBox();
+        assert.ok(words && input && strip);
+        assert.ok(words.y >= input.y && words.y + words.height <= input.y + input.height, "the words are drawn inside the message box");
+        assert.ok(words.y >= strip.y + strip.height, "the words do not cover the attachment strip");
+        assert.equal(await page.evaluate(([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest(".composer-inline-suggestion")), [strip.x + strip.width / 2, strip.y + strip.height / 2]), false, "a tap on the attachment reaches the attachment");
+      });
+      console.log("PASS the inline suggestion stays in the message row below an attachment");
 
       for (const key of ["Enter", " "]) await withCard(browser, 390, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "Review the changes", suggestionChip: true }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
