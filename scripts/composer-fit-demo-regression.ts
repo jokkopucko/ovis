@@ -1329,7 +1329,7 @@ try {
         const height = () => box.evaluate((node) => node.clientHeight);
         const chooseSize = async (size: number) => {
           await page.keyboard.press("ControlOrMeta+Shift+Comma");
-          await openSettingsPage(page, "Chat");
+          await openSettingsPage(page, "Appearance");
           const current = Number.parseInt(await page.locator('.settings-stepper[aria-label="Chat font size"] output').innerText(), 10);
           const button = page.getByRole("button", { name: size > current ? "Increase chat font size" : "Decrease chat font size", exact: true });
           for (let step = 0; step < Math.abs(size - current); step++) await button.click();

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
-import { ApiError, fetchRelay, requestRelay } from "./api.ts";
+import { ApiError, fetchRelay, requestRelay, requestRelayDirect } from "./api.ts";
 import { usePageVisible } from "./visibility.ts";
 
 /**
@@ -75,11 +75,11 @@ export function useRelay() {
     return () => { stopped = true; clearTimeout(timer); };
   }, [refresh, visible, unsupported]);
 
-  /** Start, stop or reset: the answer is the relay's state after it, or the failure's words. */
-  const request = useCallback(async (action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> => {
+  /** Start, stop, reset or the direct switch: the answer is the relay's state after it, or the failure's words. */
+  const request = useCallback(async (action: "start" | "stop" | "reset-identity" | { direct: boolean }): Promise<RelayStatus> => {
     setPending(true);
     try {
-      const next = await requestRelay(action);
+      const next = typeof action === "string" ? await requestRelay(action) : await requestRelayDirect(action.direct);
       if (mounted.current) {
         setStatus(next);
         // a start is still connecting: the next answers follow it closely

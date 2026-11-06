@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Send } from "lucide-react";
 import { ALERT_WEBHOOK_PRESETS, type AlertWebhookPreset, type AlertWebhookSave, type AlertWebhookView } from "../../shared/alert-webhook.ts";
 import type { AlertPrefs, DoneAlerts } from "../../shared/notify-policy.ts";
 import { ApiError, fetchAlertWebhook, removeAlertWebhook, saveAlertWebhook, testAlertWebhook } from "../lib/api.ts";
@@ -77,8 +78,9 @@ export function AlertWebhookGroup() {
   if (view === null) return null;
   const lastError = saved && view.last_error !== null && line === null ? t("Last post failed: {error}", { error: view.last_error }) : null;
   return (
-    <SettingsGroup title={t("Also send to")} section="alert-webhook" note={t("This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane. The pane goes by its terminal title, which an agent may take from your task.")}>
-      <SettingsRow label={t("Destination")} htmlFor="settings-alert-webhook" wide>
+    <SettingsGroup title={t("Also send to")} section="alert-webhook" keepNote note={t("This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane. The pane goes by its terminal title, which an agent may take from your task.")}>
+      {/* the group's caption is its row's name: a bare page shows no captions */}
+      <SettingsRow label={t("Also send to")} icon={Send} htmlFor="settings-alert-webhook" wide>
         <SettingsSelect id="settings-alert-webhook" value={preset} disabled={busy} onChange={(event) => pick(event.target.value as AlertWebhookPreset | "off")}>
           <option value="off">{t("Off")}</option>
           {ALERT_WEBHOOK_PRESETS.map((value) => <option key={value} value={value}>{value === "json" ? t("JSON to any URL") : PRESET_NAMES[value]}</option>)}

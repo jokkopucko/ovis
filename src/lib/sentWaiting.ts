@@ -21,6 +21,8 @@ export interface WaitingBaseline {
    * an older bridge, which says neither: the turns' times alone bound the skew.
    */
   pcFloor: number | null;
+  /** made from a send's stamp alone, before the chat's first read: no turns shown to tell an older one of the stamp's second apart */
+  unread?: true;
 }
 
 /** One confirmed send, independent of any other sends to the same pane. */
@@ -97,7 +99,14 @@ function newerThanSend(send: WaitingSend, at: number, key: string, answeredAt: n
   // The PC's own clock bounds it more tightly than its newest turn, read perhaps long after it was
   // written, and needs neither of this browser's wall clock times: an identical turn another device
   // or the terminal wrote just before the send is not this one, whatever either wall clock did since
-  if (after.pcFloor !== null) return at + coarse >= after.pcFloor;
+  if (after.pcFloor !== null) {
+    if (at >= after.pcFloor) return true;
+    // a whole-second turn may hold the floor in its second; one of an earlier second was written before it
+    if (at + coarse <= after.pcFloor) return false;
+    // stamped before the chat's first read, no turns were shown to rule out an older one of that
+    // second: the same guard as a send with no turns shown above
+    return after.unread !== true || last || answeredAt >= at + coarse;
+  }
   return after.latest === null || at + coarse + (after.takenAt - after.latest) > send.at;
 }
 
@@ -185,7 +194,8 @@ export function observeWaitingClock(key: string, serverTime: string | null | und
 export function stampedBaseline(after: WaitingBaseline | null, sendingAt: string | undefined, takenAt = Date.now()): WaitingBaseline | null {
   const stamped = sendingAt === undefined ? Number.NaN : Date.parse(sendingAt);
   if (!Number.isFinite(stamped)) return after;
-  return { keys: after?.keys ?? new Set(), latest: null, takenAt: after?.takenAt ?? takenAt, pcFloor: stamped };
+  if (after === null) return { keys: new Set(), latest: null, takenAt, pcFloor: stamped, unread: true };
+  return { keys: after.keys, latest: null, takenAt: after.takenAt, pcFloor: stamped };
 }
 
 export function rememberWaitingSend(key: string, text: string, at = Date.now(), after: WaitingBaseline | null = null): void {

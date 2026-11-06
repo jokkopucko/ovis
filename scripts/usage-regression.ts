@@ -67,7 +67,8 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     await page.goto(origin);
     const strip = page.locator(".usage-strip");
     const settingsButton = page.locator(".sidebar-footer-row .sidebar-footer-action");
-    const toggle = page.getByRole("switch", { name: "Show plan limits", exact: true });
+    // Plan limits is one row: Off, or on and counted as Used or Remaining
+    const limits = page.locator('.segmented[aria-label="Plan limits"]');
 
     // off until chosen: nothing is shown and no sign-in is sent anywhere
     await settingsButton.waitFor();
@@ -75,8 +76,9 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     assert.deepEqual(asked, [], "no usage request before the user turns it on");
     await settingsButton.click();
     await openSettingsPage(page, "Agents");
-    assert.equal(await toggle.getAttribute("aria-checked"), "false");
-    await toggle.click();
+    assert.equal(await limits.getByRole("button", { name: "Off", exact: true }).getAttribute("aria-pressed"), "true");
+    // on, counted as before: what is left
+    await limits.getByRole("button", { name: "Remaining", exact: true }).click();
     await page.keyboard.press("Escape");
     await strip.waitFor();
 
@@ -163,9 +165,9 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     const usageOffSaved = page.waitForResponse((response) => response.request().method() === "PUT"
       && new URL(response.url()).pathname === "/api/preferences" && response.ok()
       && response.request().postDataJSON()?.settings?.showUsage === false, { timeout: 10_000 });
-    await toggle.click();
+    await limits.getByRole("button", { name: "Off", exact: true }).click();
     await strip.waitFor({ state: "detached" });
-    assert.equal(await page.locator("[data-section='other-accounts'] .settings-note").count(), 1);
+    assert.equal(await page.locator("[data-section='other-accounts'] .settings-condition").count(), 1, "Other accounts says plan limits show them");
     assert.equal(await page.locator(".usage-provider").count(), 0, "disabled meters leave no provider placeholders");
     await usageOffSaved;
     // a request Settings made before the switch can still be on its way here, so the count is of

@@ -14,46 +14,46 @@ const MATRIX: readonly (readonly [Language, string, SettingsPageId, string])[] =
   ["en", "theme", "appearance", "-"],
   ["en", "palette", "appearance", "-"],
   ["en", "interface font size", "appearance", "typography"],
-  ["en", "chat font size", "chat", "-"],
+  ["en", "chat font size", "appearance", "typography"],
   ["en", "chat width", "chat", "-"],
   ["en", "Enter sends", "chat", "composer"],
   ["en", "quick replies", "chat", "quick-replies"],
-  ["en", "terminal font", "terminal", "-"],
+  ["en", "terminal font", "appearance", "typography"],
   ["en", "notifications", "alerts", "-"],
   ["en", "shortcuts", "shortcuts", "-"],
   ["en", "phone", "devices", "-"],
   ["en", "OpenAI API key", "chat", "openai-key"],
   ["en", "Return inserts a new line", "chat", "composer"],
   ["en", "Send queued messages automatically", "chat", "composer-more"],
-  ["en", "Suggestion chip", "agents", "-"],
+  ["en", "Suggestion chip", "chat", "composer"],
   ["en", "Show above the message box", "chat", "quick-replies"],
   ["en", "Dictation language", "chat", "voice-more"],
   ["ko", "받아쓰기 언어", "chat", "voice-more"],
   ["ko", "인터페이스 글자 크기", "appearance", "typography"],
-  ["ko", "채팅 글자 크기", "chat", "-"],
+  ["ko", "채팅 글자 크기", "appearance", "typography"],
   ["ko", "Enter로 보내기", "chat", "composer"],
   ["ko", "빠른 답장", "chat", "quick-replies"],
-  ["ko", "터미널 글자 크기", "terminal", "-"],
+  ["ko", "터미널 글자 크기", "appearance", "typography"],
   ["ko", "OpenAI API 키", "chat", "openai-key"],
   ["ko", "단축키", "shortcuts", "-"],
   ["ko", "알림", "alerts", "-"],
   ["ko", "대기 메시지 자동 전송", "chat", "composer-more"],
   ["ko", "입력창 위에 표시", "chat", "quick-replies"],
   ["ja", "インターフェースの文字サイズ", "appearance", "typography"],
-  ["ja", "チャットのフォントサイズ", "chat", "-"],
+  ["ja", "チャットのフォントサイズ", "appearance", "typography"],
   ["ja", "Enter で送信", "chat", "composer"],
   ["ja", "クイック返信", "chat", "quick-replies"],
-  ["ja", "ターミナルのフォントサイズ", "terminal", "-"],
+  ["ja", "ターミナルのフォントサイズ", "appearance", "typography"],
   ["ja", "OpenAI API キー", "chat", "openai-key"],
   ["ja", "ショートカット", "shortcuts", "-"],
   ["ja", "通知", "alerts", "-"],
   ["ja", "送信待ちメッセージを自動で送信", "chat", "composer-more"],
   ["ja", "入力欄の上に表示", "chat", "quick-replies"],
   ["zh", "界面字号", "appearance", "typography"],
-  ["zh", "聊天字号", "chat", "-"],
+  ["zh", "聊天字号", "appearance", "typography"],
   ["zh", "按 Enter 发送", "chat", "composer"],
   ["zh", "快捷回复", "chat", "quick-replies"],
-  ["zh", "终端字号", "terminal", "-"],
+  ["zh", "终端字号", "appearance", "typography"],
   ["zh", "OpenAI API 密钥", "chat", "openai-key"],
   ["zh", "快捷键", "shortcuts", "-"],
   ["zh", "提醒", "alerts", "-"],
@@ -93,8 +93,8 @@ describe("settings entries", () => {
     const pages = pagesIn(identity);
     expect(rankByTitle("theme", pages)).toEqual(["appearance"]);
     expect(rankByTitle("palette", pages)).toEqual(["appearance"]);
-    // the Typography group holds the interface font size, after the pages within its rank
-    expect(rankByTitle("font", pages)).toEqual(["chat", "terminal", "appearance#typography", "appearance#typography-more"]);
+    // every font row is in Appearance's Typography group: the Chat and Terminal pages no longer hold one
+    expect(rankByTitle("font", pages)).toEqual(["appearance#typography"]);
   });
 
   it("finds the fixed settings matrix in every supported language", () => {
@@ -113,7 +113,7 @@ describe("settings entries", () => {
     // a group's heading holds the word: it leads the page that has it only as an alias
     expect(rankByTitle("composer", pages)).toEqual(["chat#composer", "chat#composer-more", "chat"]);
     // a group found only by its setting's label comes after the page whose title holds the word
-    expect(rankByTitle("interface", pages)).toEqual(["appearance#typography", "appearance#typography-more"]);
+    expect(rankByTitle("interface", pages)).toEqual(["appearance#typography"]);
     expect(rankByTitle("chat", pages)[0]).toBe("chat");
     expect(rankByTitle("enter", pages)).toEqual(["chat", "chat#composer"]);
   });

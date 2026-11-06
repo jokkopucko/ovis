@@ -123,7 +123,7 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
     assert.ok(lasted > 3_500 && lasted < 6_000, `stayed ${lasted}ms`);
     console.log("PASS an in-app alert goes by itself");
 
-    // turned off in Settings: none
+    // Settings has no In the app switch any more: an older version's stored "off" is ignored
     await page.evaluate(() => {
       const settings = JSON.parse(localStorage.getItem("ovis:settings") ?? "{}");
       localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, alertInApp: false }));
@@ -132,9 +132,8 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
     await page.locator(".conn-live").waitFor();
     await report(openPane, "idle");
     await block(openPane);
-    await Bun.sleep(1_200);
-    assert.equal(await droplet.count(), 0, "no in-app alert when turned off");
-    console.log("PASS in-app alerts turned off stay off");
+    await card.waitFor({ state: "visible", timeout: 5_000 });
+    console.log("PASS an in-app alert drops in even where an older version stored In the app off");
     assert.deepEqual(errors, []);
   } finally {
     await context.close();

@@ -141,6 +141,8 @@ export function renderModule(css: string, blocks = parseThemeBlocks(css), amber 
       `    bgPanel: ${color("bg-panel")},`,
       // the page's own surface, which the boot script paints before the stylesheet arrives (src/theme-bootstrap.ts)
       `    bg: ${color("bg")},`,
+      // the few colours Settings' theme cards draw a theme with (SettingsDialog.tsx, ThemeCards)
+      `    preview: { elevated: ${color("bg-elevated")}, border: ${color("border")}, text: ${color("text")}, textDim: ${color("text-dim")}, accent: ${color("accent")}, primary: ${color("primary")} },`,
       "  },",
     ].join("\n");
   });

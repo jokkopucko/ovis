@@ -4,7 +4,7 @@
  * the open tab then offers no Close tab, and Unlock agent brings Unpin back. At 390 and 1280, light
  * and dark. No live session is read.
  *
- * The Agents list offers the lock only while Settings -> Appearance -> Lock pinned agents (experimental) is on.
+ * The Agents list offers the lock only while Settings -> Experimental -> Lock pinned agents is on.
  *
  * UI_EVIDENCE_DIR: agent-lock-<390|1280>-<light|dark>.png (the row's menu while locked) and
  * agent-lock-setting-<390|1280>-<light|dark>.png (the setting's row).
@@ -78,8 +78,8 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
 
   if (phone) await page.keyboard.press("Escape");
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
-  await openSettingsPage(page, "Appearance");
-  const toggle = page.locator(".settings-dialog").getByRole("switch", { name: "Lock pinned agents (experimental)", exact: true });
+  await openSettingsPage(page, "Experimental");
+  const toggle = page.locator(".settings-dialog").getByRole("switch", { name: "Lock pinned agents", exact: true });
   assert.equal(await toggle.getAttribute("aria-checked"), "true", `${tag}: the setting reads on`);
   const settingRow = toggle.locator("xpath=ancestor::*[contains(@class, 'settings-row')][1]");
   await settingRow.scrollIntoViewIfNeeded();

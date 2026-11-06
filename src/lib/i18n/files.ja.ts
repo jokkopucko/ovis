@@ -4,8 +4,7 @@
  * components/TextFileView.tsx, components/TextFileEditor.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
  * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
- * components/PullRequestPanel.tsx, lib/pullRequest.ts, components/MarkdownOutline.tsx,
- * components/MarkdownOutlineRow.tsx.
+ * components/PullRequestPanel.tsx, lib/pullRequest.ts, components/MarkdownOutline.tsx.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const FILES_JA: Record<string, string> = {
@@ -205,10 +204,6 @@ export const FILES_JA: Record<string, string> = {
   "Only a device that drives this PC can edit its files.": "この PC を操作できるデバイスだけがファイルを編集できます。",
   "The file could not be saved.": "ファイルを保存できませんでした。",
   "Text of {name}": "{name} の内容",
-  "Markdown outline": "Markdown の目次",
-  "A Markdown preview lists its headings beside the text and marks the one you are reading. On a narrow screen, the Outline button in the header opens the list.": "Markdown のプレビューの横に見出しの一覧を表示し、読んでいる見出しを示します。狭い画面では、ヘッダーの目次ボタンで一覧を開きます。",
-  "Documents in Files": "ファイルにドキュメントタブ",
-  "Files shows a Documents tab: the Markdown files under the pane's folder, newest first, with a filter. Each one opens in the file viewer to read.": "ファイルにドキュメントタブを表示します。ペインのフォルダ以下の Markdown ファイルを新しい順に並べ、名前で絞り込めます。ファイルはファイルビューアで開いて読めます。",
   "Documents": "ドキュメント",
   "Refresh documents": "ドキュメント一覧を更新",
   "Filter documents": "ドキュメントを絞り込む",

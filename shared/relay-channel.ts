@@ -6,7 +6,7 @@
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
-import { ACCOUNT_FEATURE, decodeFrame, FrameType, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
+import { ACCOUNT_FEATURE, decodeFrame, DIRECT_CARRIER, FrameType, isDirectCarrier, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
 import { hintedRelay } from "./relay-regions.ts";
 import { MuxEngine } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
@@ -107,6 +107,13 @@ export interface RelayChannelOptions {
   readonly accountKey?: { readonly private_key: CryptoKey; readonly public_spki: string };
   /** What a comparison asks for, shown in the approval prompt: this PC only, or the account; `pc` by default. */
   readonly intent?: "pc" | "account";
+  /**
+   * Open the channel on one of the PC's direct carriers (`ws://<private IPv4>:<port>`, docs/relay.md
+   * "Direct on the same network") instead of through the relay: signing in only, never a pairing.
+   */
+  readonly direct?: string;
+  /** Offer DIRECT_CARRIER, so the PC names its direct carriers in AUTH_OK: only a client that can open them. */
+  readonly offerDirect?: boolean;
 }
 export interface RelayChannel {
   readonly mux: MuxEngine;
@@ -121,7 +128,20 @@ export interface RelayChannel {
    * under the page waits for the relay's answer to its close, and a browser drops what is sent meanwhile.
    */
   readonly carrierOpen: boolean;
+  /** the PC's direct carriers as AUTH_OK named them, when this client offered DIRECT_CARRIER; else none */
+  readonly directCarriers?: readonly string[];
+  /** the direct carrier this channel came through, or undefined through the relay */
+  readonly direct?: string;
   close(): void;
+}
+
+/** A direct carrier was asked for where it cannot be used: not one, or a pairing (which happens through the relay only). */
+export class DirectCarrierUnusableError extends Error {
+  readonly code = "direct_unusable";
+  constructor() {
+    super("Direct connections only sign a paired device in");
+    this.name = "DirectCarrierUnusableError";
+  }
 }
 export interface RelayServerInfo {
   readonly version: string;
@@ -135,13 +155,19 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
   if (typeof offer.relay !== "string" || !isWssOrigin(offer.relay)) throw new UnsafeRelayDestinationError("relay");
   if (options.carrier !== undefined && !isWssOrigin(options.carrier)) throw new UnsafeRelayDestinationError("relay");
   if (typeof offer.server_id !== "string" || !SERVER_ID_PATTERN.test(offer.server_id)) throw new UnsafeRelayDestinationError("server_id");
-  const url = new URL("/v1/ws", options.carrier ?? offer.relay);
-  url.searchParams.set("server_id", offer.server_id);
-  url.searchParams.set("role", "client");
+  const direct = options.direct;
+  if (direct !== undefined && (!isDirectCarrier(direct) || offer.code !== undefined)) throw new DirectCarrierUnusableError();
+  const url = new URL("/v1/ws", direct ?? options.carrier ?? offer.relay);
+  // the PC behind a direct carrier is the one it is: nothing to route, and nothing for the network to read
+  if (direct === undefined) {
+    url.searchParams.set("server_id", offer.server_id);
+    url.searchParams.set("role", "client");
+  }
   url.searchParams.set("v", "1");
   options.signal?.throwIfAborted();
   const store = options.store;
   const device = await getDevice(offer, store, options.label, options.accountKey);
+  if (direct !== undefined && device.device_id === null) throw new DirectCarrierUnusableError();
   options.signal?.throwIfAborted();
   const socket = (options.socket ?? ((address) => new WebSocket(address)))(url.href);
   socket.binaryType = "arraybuffer";
@@ -153,6 +179,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     const offered: readonly string[] = comparing
       ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : PAIR_INTENT_PC]
       : [ACCOUNT_FEATURE];
+    // answered in AUTH_OK, never selected in WELCOME, like RELAY_HINTS
+    const hinted: readonly string[] = [RELAY_HINTS, ...options.offerDirect ? [DIRECT_CARRIER] : []];
     let phoneNonce: Uint8Array | undefined;
     let binding: Uint8Array | undefined;
     let challenge: Uint8Array | undefined;
@@ -294,7 +322,9 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         }
         // the PC's answer to the relay-hints this phone offered in HELLO, inside the Noise channel the
         // PC authenticated: the relay cannot have written these
-        return { ...kept, device_id: frame.payload.device_id, relay: hintedRelay(kept.relay, frame.payload.relays) };
+        return { ...kept, device_id: frame.payload.device_id, relay: hintedRelay(kept.relay, frame.payload.relays),
+          // the same channel: a PC that names none now (turned off, or no network) leaves none to try
+          ...(options.offerDirect ? { direct: frame.payload.direct ?? [] } : {}) };
       });
       if (options.signal?.aborted || !secure?.isOpen() || !mux || !welcome) return;
       // Defer setup accounting until admission: receive() automatically emits RECEIVED.
@@ -309,6 +339,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       phase = "ready";
       clearTimeout(deadline);
       resolve({ mux, device: admitted, connectionId, sessionId: frame.payload.session_id, role: frame.payload.role, server,
+        directCarriers: options.offerDirect ? frame.payload.direct ?? [] : [],
+        ...(direct === undefined ? {} : { direct }),
         get carrierOpen() { return phase === "ready" && socket.readyState === OPEN; },
         close: () => stop(new MuxProtocolError("internal_error", "Relay channel closed")) });
     };
@@ -378,8 +410,65 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         });
         mux.receiveLargeMessages();
         await send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
-          payload: { protocol: "ovis-mux", versions: [1], features: [RELAY_HINTS, LARGE_WS_MESSAGES, SERVER_TIME_HEADER, ...offered], required_features: [] } });
+          payload: { protocol: "ovis-mux", versions: [1], features: [...hinted, LARGE_WS_MESSAGES, SERVER_TIME_HEADER, ...offered], required_features: [] } });
       }).catch(failed);
+    };
+  });
+}
+
+/**
+ * Whether the PC answers on a direct carrier, proven and nothing more: the socket is opened, the PC
+ * assigns it, and the Noise handshake to the key the offer pins completes; then it is closed before
+ * HELLO, so the PC holds no session for it. False for anything else within `ms`, a host at the
+ * address that is not the PC included.
+ */
+export function probeDirect(offer: RelayOffer, direct: string, socketFor: (url: string) => RelaySocket, ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (!isDirectCarrier(direct) || signal?.aborted) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    const url = new URL("/v1/ws", direct);
+    url.searchParams.set("v", "1");
+    let socket: RelaySocket;
+    try { socket = socketFor(url.href); } catch { resolve(false); return; }
+    socket.binaryType = "arraybuffer";
+    let secure: SecureChannel | undefined;
+    let settled = false;
+    const settle = (answer: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", aborted);
+      secure?.close(4000, "probe done");
+      // a handshake that never finished keeps retrying until its carrier says it closed
+      transport.onclose?.(4000, "probe done");
+      socket.close(4000, "probe done");
+      resolve(answer);
+    };
+    const timer = setTimeout(() => settle(false), ms);
+    const aborted = (): void => settle(false);
+    signal?.addEventListener("abort", aborted, { once: true });
+    const transport: Transport = {
+      // a send that throws ends the probe from a later turn, once the handshake's retry exists to be stopped
+      send: (data) => {
+        if (socket.readyState !== OPEN) return;
+        try { socket.send(data); } catch { queueMicrotask(() => settle(false)); }
+      },
+      close: () => settle(false),
+      onmessage: null, onclose: null, onerror: null,
+    };
+    let assigned = false;
+    socket.onerror = () => settle(false);
+    socket.onclose = () => settle(false);
+    socket.onmessage = (event) => {
+      if (settled) return;
+      if (assigned) { transport.onmessage?.({ data: event.data, isBinary: typeof event.data !== "string" }); return; }
+      assigned = true;
+      let value: unknown;
+      try { value = typeof event.data === "string" ? JSON.parse(event.data) : null; } catch { value = null; }
+      if (typeof value !== "object" || value === null || !("type" in value) || value.type !== "assigned") { settle(false); return; }
+      void openClientSecureChannel(transport, {
+        daemonPublicKeyB64: offer.server_public_key,
+        events: { onopen: () => settle(true), onmessage: () => {}, onerror: () => settle(false), onclose: () => settle(false) },
+      }).then((channel) => { secure = channel; if (settled) channel.close(4000, "probe done"); }, () => settle(false));
     };
   });
 }

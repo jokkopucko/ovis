@@ -98,7 +98,7 @@ async function check(browser: Browser, origin: string, width: number, testCase: 
     await context.addInitScript(([settings, pane]) => {
       localStorage.setItem("ovis:settings", settings!);
       localStorage.setItem(`ovis:view:${pane}`, "chat");
-    }, [JSON.stringify({ language: "en", alertInApp: false, ...testCase.settings }), PANE]);
+    }, [JSON.stringify({ language: "en", alertsOn: false, ...testCase.settings }), PANE]);
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));

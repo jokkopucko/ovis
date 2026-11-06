@@ -35,6 +35,7 @@ import { setTransport } from "../transport.ts";
 import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { RelayUnreachableError } from "./channel.ts";
+import { nativeDirectSocket } from "./directSocket.ts";
 import { indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
 import type { RelayDeviceStore } from "./device.ts";
 import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry } from "./shellState.ts";
@@ -177,6 +178,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const setTypedJoin = (serverId: string | null): void => {
     try { if (serverId === null) sessionStorage.removeItem(TYPED_JOIN); else sessionStorage.setItem(TYPED_JOIN, serverId); } catch { /* no storage: the plain comparison stays */ }
   };
+  /** the phone apps' way to the PC's direct carriers; none in a browser, which reaches the PC through the relay only */
+  const directSocket = nativeDirectSocket();
   /** the offer a typed code found, until its ID is compared on screen */
   let codeOffer: RelayOffer | null = null;
   const findByCode = mount.findByCode ?? offerFromCode;
@@ -347,6 +350,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       opened = await open(attempt.offer, {
         store, label, signal: controller.signal,
         ...(accountKey ? { accountKey, intent } : {}),
+        ...(directSocket ? { directSocket } : {}),
         // a link without a code: the digits wait on screen until this phone says they match
         compare: (digits) => new Promise<void>((resolve) => {
           if (controller.signal.aborted) return;

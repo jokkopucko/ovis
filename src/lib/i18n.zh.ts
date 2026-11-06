@@ -17,6 +17,7 @@ import { GUIDE_ZH } from "./i18n/guide.zh.ts";
 import { UPDATES_ZH } from "./i18n/updates.zh.ts";
 import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
+import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
 
 /**
  * Simplified Chinese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than
@@ -32,6 +33,7 @@ import { RELAY_ZH } from "./i18n/relay.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "View only": "仅查看",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "未粘贴：文件路径中含有换行，终端会将其当作 Enter。",
   "Attach files": "附加文件",
   "Sign out": "退出登录",
@@ -168,7 +170,6 @@ const BASE: Record<string, string> = {
   "Command palette (⌘⇧K)": "命令面板 (⌘⇧K)",
   "Could not sign out. Try again.": "无法退出登录，请重试。",
   "Retry": "重试",
-  "Notify me when a pane needs input or finishes": "窗格需要输入或完成时通知我",
   "On, pushed to this device": "已开启，推送到此设备",
   "Alerts on, pushed to this device, even with the app closed. Tap to turn them off": "提醒已开启，推送到此设备。即使关闭应用也会收到。点按可关闭",
   "Off on this device": "此设备已关闭",
@@ -200,15 +201,13 @@ const BASE: Record<string, string> = {
   "local": "本地",
   "Via a loopback address: this PC, or a tunnel to it": "经由回环地址：本机，或通往它的隧道",
   "Via the Ovis relay": "经由 Ovis 中继",
+  "Directly on the same network, not through the relay": "在同一网络上直接连接，不经过中继",
   "Via the Portal relay": "经由 Portal 中继",
   "Via Tailscale": "经由 Tailscale",
   "Via Tailscale, or Funnel from the internet": "经由 Tailscale，或经由 Funnel 从互联网连接",
   "Via the local network": "经由局域网",
   "Straight to this address": "直接连接此地址",
-  "Sessions on this PC": "此 PC 上的会话",
-  "{count} working": "{count} 个工作中",
   "{count} waiting for you": "{count} 个等待你回应",
-  "{count} done": "{count} 个已完成",
   "Open the next session waiting for you": "打开下一个等待你回应的会话",
   "Tab {index} of {count}": "第 {index} 个标签页，共 {count} 个",
   "Tabs of {workspace}": "{workspace} 的标签页",
@@ -440,9 +439,6 @@ const BASE: Record<string, string> = {
   "No group": "无分组",
   "Context {percent}% left": "上下文剩余 {percent}%",
   "{used} of {window} tokens": "{used} / {window} Token",
-  "Suggestion chip": "建议标签",
-  "Artifacts chip": "Artifact 标签",
-  "Side conversations chip (experimental)": "旁支对话标签（实验性）",
   "Permission mode": "权限模式",
   "Model": "模型",
   "One model name, without spaces.": "填写一个不含空格的模型名称。",
@@ -457,6 +453,7 @@ const BASE: Record<string, string> = {
   "New terminal": "新建终端",
   "New terminal failed: {reason}": "新建终端失败：{reason}",
   "herdr prefix: press a key": "herdr 前缀键：请按一个键",
+  "Shell": "Shell",
   "Connect a device": "连接设备",
   "This device": "此设备",
   "Sign out of {provider}": "退出 {provider} 登录",
@@ -466,6 +463,9 @@ const BASE: Record<string, string> = {
   "Phones paired through the relay will need to scan a new code.": "通过中继配对的手机需要重新扫描新代码。",
   "Pairs this phone through the relay, so Ovis keeps working away from home.": "通过中继配对这部手机，离家在外也能使用 Ovis。",
   "This PC": "本机",
+  "Paste and send": "粘贴并发送",
+  "Conversation": "对话",
+  "Off": "关闭",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
@@ -486,6 +486,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   updates: UPDATES_ZH,
   palette: PALETTE_ZH,
   relay: RELAY_ZH,
+  "runtime-move": RUNTIME_MOVE_ZH,
 };
 
 export const ZH: Record<string, string> = Object.assign({}, ...Object.values(ZH_PARTS));

@@ -12,6 +12,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#181613", foreground: "#d8d0c3", cursor: "#f0a830", selectionBackground: "#4a3d26" },
     bgPanel: "#181613",
     bg: "#12100e",
+    preview: { elevated: "#211e1a", border: "#2d2924", text: "#d8d0c3", textDim: "#9b9183", accent: "#f0a830", primary: "#f0a830" },
   },
   {
     id: "amber",
@@ -20,6 +21,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#faf8f3", foreground: "#2a251f", cursor: "#8c5000", selectionBackground: "#f0d9ae", black: "#2a251f", red: "#a82323", green: "#2f6317", yellow: "#8c5000", blue: "#155a72", magenta: "#8a3f7a", cyan: "#0f6b6f", white: "#685e52", brightBlack: "#5a5045", brightRed: "#c42b2b", brightGreen: "#3b741c", brightYellow: "#9d5a00", brightBlue: "#1d6f8c", brightMagenta: "#a24b90", brightCyan: "#117676", brightWhite: "#16120d" },
     bgPanel: "#faf8f3",
     bg: "#eeeae2",
+    preview: { elevated: "#f2eee6", border: "#dcd4c6", text: "#2a251f", textDim: "#685e52", accent: "#8c5000", primary: "#c57d12" },
   },
   {
     id: "charcoal",
@@ -28,6 +30,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#fafaf9", foreground: "#242424", cursor: "#242424", selectionBackground: "#dedad3", black: "#242424", red: "#b3261e", green: "#22743a", yellow: "#8a5300", blue: "#0b6e8a", magenta: "#6f42c1", cyan: "#0f6f74", white: "#5f5b56", brightBlack: "#4e4b47", brightRed: "#c92d24", brightGreen: "#277d3f", brightYellow: "#9f6100", brightBlue: "#1a7391", brightMagenta: "#7f52d1", brightCyan: "#13767e", brightWhite: "#111111" },
     bgPanel: "#fafaf9",
     bg: "#f2f2f0",
+    preview: { elevated: "#efefed", border: "#dcdcd8", text: "#242424", textDim: "#5f5b56", accent: "#242424", primary: "#242424" },
   },
   {
     id: "charcoal",
@@ -36,6 +39,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#171717", foreground: "#cbc7c0", cursor: "#cbc7c0", selectionBackground: "#49443d" },
     bgPanel: "#171717",
     bg: "#0f0f0f",
+    preview: { elevated: "#1f1f1f", border: "#262626", text: "#cbc7c0", textDim: "#918c85", accent: "#e8e4dc", primary: "#e8e4dc" },
   },
   {
     id: "codex",
@@ -44,6 +48,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#ffffff", foreground: "#1a1c1f", cursor: "#1a1c1f", selectionBackground: "#cfe0fd", black: "#1a1c1f", red: "#b3261e", green: "#22743a", yellow: "#8a5300", blue: "#0b6e8a", magenta: "#6f42c1", cyan: "#0f6f74", white: "#5f5b56", brightBlack: "#4e4b47", brightRed: "#c92d24", brightGreen: "#277d3f", brightYellow: "#9f6100", brightBlue: "#1a7391", brightMagenta: "#7f52d1", brightCyan: "#13767e", brightWhite: "#0d0d0d" },
     bgPanel: "#f9f9f9",
     bg: "#ffffff",
+    preview: { elevated: "#f3f3f3", border: "#e5e5e5", text: "#1a1c1f", textDim: "#5d6067", accent: "#3a83f7", primary: "#1a1c1f" },
   },
   {
     id: "codex",
@@ -52,6 +57,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#181818", foreground: "#ececec", cursor: "#ffffff", selectionBackground: "#264f78" },
     bgPanel: "#1f1f1f",
     bg: "#181818",
+    preview: { elevated: "#262626", border: "#2e2e2e", text: "#ececec", textDim: "#a3a3a3", accent: "#3a83f7", primary: "#ffffff" },
   },
   {
     id: "catppuccin",
@@ -60,6 +66,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#1e1e2e", foreground: "#cdd6f4", cursor: "#f5e0dc", selectionBackground: "#3b3d4f" },
     bgPanel: "#181825",
     bg: "#1e1e2e",
+    preview: { elevated: "#181825", border: "#313244", text: "#cdd6f4", textDim: "#bac2de", accent: "#cba6f7", primary: "#cba6f7" },
   },
   {
     id: "catppuccin",
@@ -68,6 +75,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#eff1f5", foreground: "#4c4f69", cursor: "#dc8a78", selectionBackground: "#d2d4dc", black: "#4c4f69", red: "#ac0c2f", green: "#28651b", yellow: "#8a5710", blue: "#1750bf", magenta: "#712fc6", cyan: "#0e6b70", white: "#5c5f77", brightBlack: "#64677d", brightRed: "#c41545", brightGreen: "#2f7620", brightYellow: "#905c13", brightBlue: "#0b59f4", brightMagenta: "#8839ef", brightCyan: "#13737a", brightWhite: "#4c4f69" },
     bgPanel: "#e6e9ef",
     bg: "#eff1f5",
+    preview: { elevated: "#e6e9ef", border: "#ccd0da", text: "#4c4f69", textDim: "#5c5f77", accent: "#712fc6", primary: "#712fc6" },
   },
   {
     id: "catppuccin-latte",
@@ -76,6 +84,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#eff1f5", foreground: "#4c4f69", cursor: "#dc8a78", selectionBackground: "#d2d4dc", black: "#4c4f69", red: "#ac0c2f", green: "#28651b", yellow: "#8a5710", blue: "#1750bf", magenta: "#712fc6", cyan: "#0e6b70", white: "#5c5f77", brightBlack: "#64677d", brightRed: "#c41545", brightGreen: "#2f7620", brightYellow: "#905c13", brightBlue: "#0b59f4", brightMagenta: "#8839ef", brightCyan: "#13737a", brightWhite: "#4c4f69" },
     bgPanel: "#e6e9ef",
     bg: "#eff1f5",
+    preview: { elevated: "#e6e9ef", border: "#ccd0da", text: "#4c4f69", textDim: "#5c5f77", accent: "#712fc6", primary: "#712fc6" },
   },
   {
     id: "tokyo-night",
@@ -84,6 +93,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#1a1b26", foreground: "#c0caf5", cursor: "#c0caf5", selectionBackground: "#2d3650" },
     bgPanel: "#1a1b26",
     bg: "#1a1b26",
+    preview: { elevated: "#24283b", border: "#414868", text: "#c0caf5", textDim: "#a9b1d6", accent: "#7aa2f7", primary: "#7aa2f7" },
   },
   {
     id: "black",
@@ -92,6 +102,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#000000", foreground: "#c0caf5", cursor: "#c0caf5", selectionBackground: "#2d3650" },
     bgPanel: "#000000",
     bg: "#000000",
+    preview: { elevated: "#0a0a0a", border: "#59628c", text: "#c0caf5", textDim: "#a9b1d6", accent: "#7aa2f7", primary: "#7aa2f7" },
   },
   {
     id: "tokyo-night-day",
@@ -100,6 +111,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#e1e2e7", foreground: "#3760bf", cursor: "#3760bf", selectionBackground: "#b6cae7", black: "#3760bf", red: "#90001b", green: "#405b1f", yellow: "#6c4d1f", blue: "#004db6", magenta: "#7847bd", cyan: "#005f4a", white: "#41508a", brightBlack: "#41508a", brightRed: "#90001b", brightGreen: "#405b1f", brightYellow: "#6c4d1f", brightBlue: "#004db6", brightMagenta: "#7847bd", brightCyan: "#005f4a", brightWhite: "#3760bf" },
     bgPanel: "#e1e2e7",
     bg: "#e1e2e7",
+    preview: { elevated: "#c4c8da", border: "#a8aecb", text: "#274dab", textDim: "#41508a", accent: "#2e7de9", primary: "#1561ca" },
   },
   {
     id: "gruvbox",
@@ -108,6 +120,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#282828", foreground: "#ebdbb2", cursor: "#ebdbb2", selectionBackground: "#4b3f27" },
     bgPanel: "#282828",
     bg: "#282828",
+    preview: { elevated: "#3c3836", border: "#504945", text: "#ebdbb2", textDim: "#d5c4a1", accent: "#d79921", primary: "#d79921" },
   },
   {
     id: "gruvbox-light",
@@ -116,6 +129,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#fbf1c7", foreground: "#3c3836", cursor: "#3c3836", selectionBackground: "#ebdbb2", black: "#3c3836", red: "#9d0006", green: "#676200", yellow: "#8e5100", blue: "#076678", magenta: "#8f3f71", cyan: "#316b48", white: "#504945", brightBlack: "#504945", brightRed: "#9d0006", brightGreen: "#676200", brightYellow: "#8e5100", brightBlue: "#076678", brightMagenta: "#8f3f71", brightCyan: "#316b48", brightWhite: "#3c3836" },
     bgPanel: "#fbf1c7",
     bg: "#fbf1c7",
+    preview: { elevated: "#ebdbb2", border: "#d5c4a1", text: "#3c3836", textDim: "#504945", accent: "#076678", primary: "#076678" },
   },
   {
     id: "one-dark",
@@ -124,6 +138,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#282c34", foreground: "#abb2bf", cursor: "#abb2bf", selectionBackground: "#334659" },
     bgPanel: "#282c34",
     bg: "#282c34",
+    preview: { elevated: "#2c313a", border: "#3e4451", text: "#abb2bf", textDim: "#99a0ac", accent: "#61afef", primary: "#61afef" },
   },
   {
     id: "one-light",
@@ -132,6 +147,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#fafafa", foreground: "#383a42", cursor: "#383a42", selectionBackground: "#cddbf8", black: "#383a42", red: "#a51110", green: "#287c2a", yellow: "#995f00", blue: "#2f64dd", magenta: "#a626a4", cyan: "#0072a9", white: "#686b77", brightBlack: "#686b77", brightRed: "#a51110", brightGreen: "#287c2a", brightYellow: "#995f00", brightBlue: "#2f64dd", brightMagenta: "#a626a4", brightCyan: "#0072a9", brightWhite: "#383a42" },
     bgPanel: "#fafafa",
     bg: "#fafafa",
+    preview: { elevated: "#f0f0f1", border: "#e5e5e6", text: "#383a42", textDim: "#5c5e6a", accent: "#4078f2", primary: "#2d6af1" },
   },
   {
     id: "solarized",
@@ -140,6 +156,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#002b36", foreground: "#93a1a1", cursor: "#93a1a1", selectionBackground: "#083e55" },
     bgPanel: "#002b36",
     bg: "#002b36",
+    preview: { elevated: "#073642", border: "#164b57", text: "#a8b6b6", textDim: "#a5b7b9", accent: "#268bd2", primary: "#2f93d9" },
   },
   {
     id: "solarized-light",
@@ -148,6 +165,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#fdf6e3", foreground: "#657b83", cursor: "#657b83", selectionBackground: "#c9dcdf", black: "#556a72", red: "#b60006", green: "#5d6e00", yellow: "#8a5f00", blue: "#006baf", magenta: "#c12073", cyan: "#00746d", white: "#5a6a6c", brightBlack: "#586e75", brightRed: "#b60006", brightGreen: "#5d6e00", brightYellow: "#8a5f00", brightBlue: "#006baf", brightMagenta: "#c12073", brightCyan: "#00746d", brightWhite: "#556a72" },
     bgPanel: "#fdf6e3",
     bg: "#fdf6e3",
+    preview: { elevated: "#eee8d5", border: "#c9dcdf", text: "#556a72", textDim: "#5a6a6c", accent: "#268bd2", primary: "#2076b3" },
   },
   {
     id: "kanagawa",
@@ -156,6 +174,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#1f1f28", foreground: "#dcd7ba", cursor: "#dcd7ba", selectionBackground: "#32384b" },
     bgPanel: "#1f1f28",
     bg: "#1f1f28",
+    preview: { elevated: "#2a2a37", border: "#363646", text: "#dcd7ba", textDim: "#c8c3aa", accent: "#7e9cd8", primary: "#7e9cd8" },
   },
   {
     id: "kanagawa-lotus",
@@ -164,6 +183,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#f2ecbc", foreground: "#545464", cursor: "#545464", selectionBackground: "#dcd5ac", black: "#545464", red: "#95002b", green: "#4a6228", yellow: "#625b2a", blue: "#4d699b", magenta: "#624c83", cyan: "#216276", white: "#43436c", brightBlack: "#43436c", brightRed: "#95002b", brightGreen: "#4a6228", brightYellow: "#625b2a", brightBlue: "#4d699b", brightMagenta: "#624c83", brightCyan: "#216276", brightWhite: "#545464" },
     bgPanel: "#f2ecbc",
     bg: "#f2ecbc",
+    preview: { elevated: "#dcd5ac", border: "#c9cbd1", text: "#545464", textDim: "#43436c", accent: "#4d699b", primary: "#4d699b" },
   },
   {
     id: "rose-pine",
@@ -172,6 +192,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#191724", foreground: "#e0def4", cursor: "#e0def4", selectionBackground: "#3b344b" },
     bgPanel: "#191724",
     bg: "#191724",
+    preview: { elevated: "#1f1d2e", border: "#3b344b", text: "#e0def4", textDim: "#c8c5dc", accent: "#c4a7e7", primary: "#c4a7e7" },
   },
   {
     id: "rose-pine-dawn",
@@ -180,6 +201,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#faf4ed", foreground: "#464261", cursor: "#464261", selectionBackground: "#f2e9e1", black: "#464261", red: "#873a52", green: "#286983", yellow: "#9e5600", blue: "#286983", magenta: "#755f8d", cyan: "#33717c", white: "#605b78", brightBlack: "#605b78", brightRed: "#873a52", brightGreen: "#286983", brightYellow: "#9e5600", brightBlue: "#286983", brightMagenta: "#755f8d", brightCyan: "#33717c", brightWhite: "#464261" },
     bgPanel: "#faf4ed",
     bg: "#faf4ed",
+    preview: { elevated: "#f2e9e1", border: "#e3d9cf", text: "#464261", textDim: "#605b78", accent: "#907aa9", primary: "#7e659b" },
   },
   {
     id: "dracula",
@@ -188,6 +210,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#282a36", foreground: "#f8f8f2", cursor: "#f8f8f2", selectionBackground: "#463f5d" },
     bgPanel: "#282a36",
     bg: "#282a36",
+    preview: { elevated: "#44475a", border: "#6272a4", text: "#f8f8f2", textDim: "#d2d2dc", accent: "#bd93f9", primary: "#bd93f9" },
   },
   {
     id: "nord",
@@ -196,6 +219,7 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#2e3440", foreground: "#eceff4", cursor: "#eceff4", selectionBackground: "#40505d" },
     bgPanel: "#2e3440",
     bg: "#2e3440",
+    preview: { elevated: "#3b4252", border: "#4c566a", text: "#eceff4", textDim: "#d8dee9", accent: "#88c0d0", primary: "#88c0d0" },
   },
   {
     id: "vesper",
@@ -204,5 +228,6 @@ export const SUPPORTED_ENTRIES = [
     terminal: { background: "#101010", foreground: "#ffffff", cursor: "#ffffff", selectionBackground: "#232323" },
     bgPanel: "#1a1a1a",
     bg: "#101010",
+    preview: { elevated: "#232323", border: "#5c5c5c", text: "#ffffff", textDim: "#a0a0a0", accent: "#ffc799", primary: "#ffc799" },
   },
 ] as const;

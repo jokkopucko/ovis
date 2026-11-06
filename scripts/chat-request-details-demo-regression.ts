@@ -10,10 +10,9 @@ import { appFaces } from "./app-faces.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
-// Settings > Chat > Compaction and failed requests (#901), on the unmodified app over the demo's
-// fixture transport, at a phone's and a desktop's width, light and dark. Off (the default) the
-// chat is as before: each failed request is its error line and the compaction card names no
-// counts. On, the turn's three failed requests are one folded row that says another request
+// Compaction and failed requests (#901), always on, on the unmodified app over the demo's fixture
+// transport, at a phone's and a desktop's width, light and dark, also on a device that stored the
+// old switch off (its choice is ignored). The turn's three failed requests are one folded row that says another request
 // followed, opens to their three errors and fits the transcript's width, the answer after them
 // stays outside it, a search's pick of words in one of the errors opens the row again (#3082),
 // and the compaction card names the token counts its record stated. The omp
@@ -66,19 +65,19 @@ async function prepareDemo(): Promise<void> {
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${override}\n    <script type="module"`));
 }
 
-async function check(browser: Browser, origin: string, width: number, theme: "light" | "dark", on: boolean): Promise<void> {
+async function check(browser: Browser, origin: string, width: number, theme: "light" | "dark", storedOff: boolean): Promise<void> {
   const phone = width <= 480;
   const context = await browser.newContext(phone
     ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US", colorScheme: theme }
     : { viewport: { width, height: 900 }, locale: "en-US", colorScheme: theme });
-  const name = `${width}px ${theme} ${on ? "on" : "off"}`;
+  const name = `${width}px ${theme}${storedOff ? " with the old switch stored off" : ""}`;
   try {
     // the demo's other agents finish turns now and then: their in-app alerts stay off over the transcript
-    await context.addInitScript(([settings, pane, details]) => {
+    await context.addInitScript(([settings, pane, stored]) => {
       localStorage.setItem("ovis:settings", settings!);
       localStorage.setItem(`ovis:view:${pane}`, "chat");
-      if (details === "true") localStorage.setItem("ovis:chat-request-details", "true");
-    }, [JSON.stringify({ language: "en", alertInApp: false, theme }), PANE, String(on)]);
+      if (stored === "true") localStorage.setItem("ovis:chat-request-details", "false");
+    }, [JSON.stringify({ language: "en", alertsOn: false, theme }), PANE, String(storedOff)]);
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -91,11 +90,7 @@ async function check(browser: Browser, origin: string, width: number, theme: "li
 
     const compact = (await scope.locator(".chat-compact > summary").first().innerText()).replace(/\s+/g, " ");
     const rows = scope.locator(".chat-failed-requests");
-    if (!on) {
-      assert.equal(await rows.count(), 0, `${name}: no failed-requests row while off`);
-      for (const error of ERRORS) assert.equal(await scope.getByText(`Error: ${error}`, { exact: true }).count(), 1, `${name}: the error line "${error}" is drawn as before`);
-      assert.doesNotMatch(compact, /tokens/, `${name}: the compaction card names no counts while off`);
-    } else {
+    {
       assert.equal(await rows.count(), 1, `${name}: the three failed requests are one row`);
       const row = rows.first();
       assert.equal((await row.locator(".chat-skill-name").innerText()).trim(), "3 requests failed, then tried again", `${name}: the row says how many failed and that another request followed`);
@@ -136,7 +131,7 @@ async function check(browser: Browser, origin: string, width: number, theme: "li
     assert.deepEqual(errors, []);
     if (evidence !== null) {
       await scope.locator(".chat-compact").first().scrollIntoViewIfNeeded();
-      await page.screenshot({ path: join(evidence, `chat-request-details-${on ? "on" : "off"}-${width}-${theme}.png`) });
+      await page.screenshot({ path: join(evidence, `chat-request-details-${storedOff ? "stored-off" : "on"}-${width}-${theme}.png`) });
     }
     console.log(`PASS ${name}`);
   } finally { await context.close(); }
@@ -160,7 +155,7 @@ try {
     try {
       for (const width of [390, 1280]) {
         for (const theme of ["light", "dark"] as const) {
-          for (const on of [false, true]) await check(browser, `http://127.0.0.1:${server.port}`, width, theme, on);
+          for (const storedOff of [false, true]) await check(browser, `http://127.0.0.1:${server.port}`, width, theme, storedOff);
         }
       }
     } finally { await browser.close(); }

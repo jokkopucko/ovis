@@ -20,6 +20,10 @@ import { testShellEnv } from "./test-shell.ts";
 // resolved, so a fixture made under the unresolved path never matches the pane it is for
 process.env["TMPDIR"] = realpathSync(tmpdir());
 
+// the config folder this run started with: the live-herdr guard (server/herdr/client.ts) refuses its
+// herdr socket, in this process and the children tests spawn, whatever XDG_CONFIG_HOME a test sets later
+process.env["OVIS_TEST_USER_XDG_CONFIG_HOME"] ??= process.env["XDG_CONFIG_HOME"] ?? "";
+
 export const TEST_SESSION = process.env["HERDR_TEST_SESSION"] || "ovis-test";
 
 /**

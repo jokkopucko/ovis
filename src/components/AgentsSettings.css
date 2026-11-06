@@ -2,12 +2,8 @@
 .agents-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--space-3);
-}
-
-.agents-head > h3 {
-  margin: 0;
 }
 
 .agents-head .btn,
@@ -191,12 +187,17 @@
   gap: var(--space-2);
 }
 
-/* Install another agent: shut until asked, then the setup guide's tiles (AgentTile.css) */
+/* Install another agent: shut until asked, then the setup guide's tiles (AgentTile.css); its line is
+   drawn as a page's More settings line is (SettingsControls.css .settings-fold) */
 .agents-more > summary {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  padding: 0 calc(var(--space-4) + var(--hairline));
   color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   cursor: pointer;
   list-style: none;
 }
@@ -237,4 +238,28 @@
   .agents-row-action-label {
     display: none;
   }
+}
+
+/* what New tab starts the agent with, on its row */
+.agents-defaults {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* herdr's install command for a session resume, beside its Copy */
+.settings-integration-action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.settings-integration-action .settings-integration-command {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }

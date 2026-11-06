@@ -6,6 +6,7 @@ import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts"
 import type { SeenFinish } from "../shared/seen.ts";
 import { MachineManager } from "./machines.ts";
 import { TypedCodeError, type TypedCodeFailure } from "../shared/relay-code-offer.ts";
+import { TailnetPcError } from "./tailnet-pcs.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { crossSiteFileRead } from "./file-view.ts";
@@ -280,6 +281,24 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         if (!(error instanceof TypedCodeError)) throw error;
         const [message, status] = CODE_FAILURES[error.failure];
         return fail(`typed_code_${error.failure}`, message, status);
+      }
+    }
+    if (parts[0] === "tailnet" && parts.length === 1) {
+      setRequestRoute("/api/machines/tailnet");
+      // adding a PC is a driving device's; a watching one is not told which PCs are there either
+      if (readOnly) return fail("read_only", "this device can only watch", 403);
+      if (request.method === "GET") return jsonResponse({ pcs: await manager.listTailnet() }, 200, { "cache-control": "no-store" });
+      if (request.method !== "POST") return fail("method_not_allowed", "Use GET or POST", 405);
+      const body: unknown = await request.json().catch(() => null);
+      if (!isJsonObject(body)) return fail("invalid_body", "Expected the address of a PC found on Tailscale", 400);
+      try { return jsonResponse({ machine: await manager.addTailnet(body.url) }, 201); }
+      catch (error) {
+        if (error instanceof TypedCodeError) {
+          const [message, status] = CODE_FAILURES[error.failure];
+          return fail(`typed_code_${error.failure}`, message, status);
+        }
+        if (!(error instanceof TailnetPcError)) throw error;
+        return fail(`tailnet_${error.failure}`, error.message, error.failure === "not_found" ? 404 : error.failure === "unreachable" ? 502 : 409);
       }
     }
     if (parts[0] === "setup") {

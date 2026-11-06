@@ -45,6 +45,14 @@ import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { paneDrag } from "../lib/paneDrag.ts";
 import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
 
+/** a strip that held the focus went (TabStrip's handoff effect): its workspace, whether the window was
+ *  wide when it mounted, and when. Only that workspace's strip on the other side of the width the
+ *  header takes the tabs at (a resize, not a split or a workspace change) takes it, within
+ *  FOCUS_HANDOFF_MS and while nothing else has. */
+let focusHandoff: { workspaceId: string; wide: boolean; at: number } | null = null;
+const FOCUS_HANDOFF_MS = 500;
+const HEADER_TABS_QUERY = "(min-width: 769px)";
+
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
 
 export interface TabStripProps {
@@ -74,9 +82,13 @@ export interface TabStripProps {
   /** the header's title button while it has the tab list open; `onSheetClose` closes it */
   sheet?: HTMLElement | null;
   onSheetClose?: () => void;
+  /** the header's row (App, from 769px): browser tabs, each with its icon (a shell's glyph when no agent) and,
+   *  unless `closable` is false (a watching device), a close */
+  browserTabs?: boolean;
+  closable?: boolean;
 }
 
-export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = null, onRenameHandled, end, inHeader = false, sheet = null, onSheetClose }: TabStripProps) {
+export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = null, onRenameHandled, end, inHeader = false, sheet = null, onSheetClose, browserTabs = false, closable = true }: TabStripProps) {
   const t = useT();
   const { settings } = useSettings();
   const machineId = useMachineId();
@@ -193,6 +205,34 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const tab = stripTab();
     if (tab) tab.focus(); else focusWorkspaceListToggle();
   });
+  // The strip moves between the header (from 769px) and the pane as the window is resized, and a move is
+  // a new strip: the focus the old one held, on a tab or in the menu it had open, goes to the new one's
+  // open tab. The two need not be one commit (the layout settles over a render or two), so the old one's
+  // leaving is timed, and only a page whose focus fell to the body is handed on.
+  const menuOpen = useRef(false);
+  const menuClosedAt = useRef(-Infinity);
+  useLayoutEffect(() => {
+    if (menuOpen.current && picker === null) menuClosedAt.current = performance.now();
+    menuOpen.current = picker !== null;
+  }, [picker]);
+  const workspaceId = workspace.workspace_id;
+  useLayoutEffect(() => {
+    const row = strip.current;
+    const wide = window.matchMedia(HEADER_TABS_QUERY).matches;
+    const handoff = focusHandoff;
+    if (handoff && handoff.workspaceId === workspaceId && handoff.wide !== wide && performance.now() - handoff.at < FOCUS_HANDOFF_MS
+      && (!document.activeElement || document.activeElement === document.body)) {
+      focusHandoff = null;
+      row?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
+    }
+    return () => {
+      const dropped = !document.activeElement || document.activeElement === document.body;
+      // its menu may have closed a render before it went (a resize closes it), leaving the focus nowhere
+      if (row?.contains(document.activeElement) || menuOpen.current || (dropped && performance.now() - menuClosedAt.current < FOCUS_HANDOFF_MS)) {
+        focusHandoff = { workspaceId, wide, at: performance.now() };
+      }
+    };
+  }, [workspaceId]);
   // a name herdr never showed back (renamed again elsewhere) does not stay on the tab
   useEffect(() => {
     if (!sent) return;
@@ -535,12 +575,16 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                 >
                   {busyStatus(status) && statusMark(status)}
                   {/* named by the tab's own words alone: a screen reader hears the tab, not the agent's logo */}
-                  {agent && <span className="tab-strip-agent" aria-hidden="true"><AgentMark agent={agent} size={14} /></span>}
+                  {agent ? <span className="tab-strip-agent" aria-hidden="true"><AgentMark agent={agent} size={14} /></span>
+                    : browserTabs && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
                   <span className="tab-strip-label">{name}</span>
                 </button>
               )}
               {menuButton && active && editing?.tabId !== tab.tab_id && <button type="button" className="tab-strip-menu" aria-label={t("Actions for {tab}", { tab: name })} title={t("Actions for {tab}", { tab: name })} aria-haspopup="menu" aria-expanded={pickerOpen} onClick={(event) => openPicker(event, tab)}>
                 <Ellipsis aria-hidden="true" />
+              </button>}
+              {browserTabs && closable && editing?.tabId !== tab.tab_id && !tabLocked(tab) && <button type="button" className="tab-strip-close" tabIndex={-1} aria-label={t("Close {tab}", { tab: name })} title={t("Close {tab}", { tab: name })} onClick={() => requestClose(tab)}>
+                <X aria-hidden="true" />
               </button>}
             </div>
           );

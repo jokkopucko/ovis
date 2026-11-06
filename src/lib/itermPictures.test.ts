@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
-import { decodeTiff, itermPictures } from "./itermPictures.ts";
+import { Terminal } from "@xterm/xterm";
+import { decodeTiff, itermPictures, type OscStreamHandler } from "./itermPictures.ts";
+import { registerOscStream } from "./terminalImages.ts";
 
 const LIMITS = { sizeLimit: 20_000_000, pixelLimit: 4096 * 4096 };
 
@@ -8,7 +10,7 @@ const LIMITS = { sizeLimit: 20_000_000, pixelLimit: 4096 * 4096 };
 function handler(limits = LIMITS) {
   const fed: string[] = [];
   const pictures = itermPictures((payload) => { fed.push(payload); return true; }, () => limits);
-  return { fed, handle: pictures.handle, reset: pictures.reset };
+  return { fed, handle: pictures.handle, stream: pictures.stream, reset: pictures.reset };
 }
 
 /** an uncompressed RGBA TIFF laid out as chafa writes it for `chafa -f iterm`: pixels first, then the directory */
@@ -152,6 +154,61 @@ test("gives a placeholder where the PNG a TIFF turns into is past the addon's fi
   expect(bytes.length).toBeLessThanOrEqual(6000);
   expect(args).toBe(`inline=1;width=64px;height=64px;size=${bytes.length}`);
   expect([...readPng(bytes).rgba.subarray(0, 4)]).toEqual([0x60, 0x60, 0x60, 255]);
+});
+
+test("reads a picture past the 10,000,000 characters xterm holds for a string handler, from xterm's own parser", async () => {
+  const { fed, stream } = handler();
+  const term = new Terminal({ cols: 80, rows: 24, scrollback: 0, allowProposedApi: true });
+  // the handler before it: reached only where the pictures handler leaves a payload to the addon
+  const left: boolean[] = [];
+  const addon: OscStreamHandler = { start() {}, put() {}, end: (success) => { left.push(success); return true; } };
+  expect(registerOscStream(term, 1337, addon)).not.toBeNull();
+  expect(registerOscStream(term, 1337, stream)).not.toBeNull();
+  const write = (data: string) => new Promise<void>((resolve) => term.write(data, resolve));
+  // 2048 x 1280 RGBA: 10,485,760 bytes, about 14 million base64 characters
+  const pixels = Uint8Array.from({ length: 2048 * 1280 * 4 }, (_, i) => (i % 4 === 3 ? 255 : (i >> 13) % 256));
+  const base64 = Buffer.from(chafaTiff(2048, 1280, pixels)).toString("base64");
+  expect(base64.length).toBeGreaterThan(10_000_000);
+  await write(`\x1b]1337;File=inline=1:${base64}\x07`);
+  expect(fed.length).toBe(1);
+  const png = readPng(fedPicture(fed[0]!).bytes);
+  expect([png.width, png.height]).toEqual([2048, 1280]);
+  expect(png.rgba).toEqual(pixels);
+  // a picture with its size, of a kind the addon reads, is not held here: the addon reads it
+  await write(`\x1b]1337;File=inline=1;size=7500000:iVBORw0KGgo${"A".repeat(10_000_000)}\x07`);
+  expect(fed.length).toBe(1);
+  // the TIFF ended unread there (false), the PNG was read there (true)
+  expect(left).toEqual([false, true]);
+  term.dispose();
+});
+
+test("reads a payload fed in small pieces as the whole of it, long arguments and characters past U+FFFF too", async () => {
+  const { fed, stream } = handler();
+  const name = `${"n".repeat(5000)}\u{1003b}`;
+  const payload = `File=inline=1;name=${name}:${Buffer.from(chafaTiff(3, 2, PIXELS)).toString("base64")}`;
+  const points = Uint32Array.from([...payload].map((c) => c.codePointAt(0)!));
+  stream.start();
+  for (let i = 0; i < points.length; i += 7) stream.put(points, i, Math.min(points.length, i + 7));
+  expect(await stream.end(true)).toBe(true);
+  const { args, bytes } = fedPicture(fed[0]!);
+  expect(args).toBe(`inline=1;name=${name};size=${bytes.length}`);
+  expect(readPng(bytes).rgba).toEqual(PIXELS);
+});
+
+test("holds the cap to the base64 alone: long arguments do not push a picture at the cap past it", () => {
+  const { fed, stream } = handler({ sizeLimit: 30, pixelLimit: LIMITS.pixelLimit });
+  const feed = (payload: string) => {
+    const points = Uint32Array.from([...payload].map((c) => c.codePointAt(0)!));
+    stream.start();
+    for (let i = 0; i < points.length; i += 500) stream.put(points, i, Math.min(points.length, i + 500));
+    return stream.end(true);
+  };
+  const args = `inline=1;size=30${";width=1".repeat(1000)}`;
+  // a PNG of 30 bytes with its size: the addon's to read
+  expect(feed(`File=${args}:iVBORw0KGgo${"A".repeat(29)}`)).toBe(false);
+  // one past the cap: dropped here, as the addon drops it
+  expect(feed(`File=inline=1${";width=1".repeat(1000)}:${"A".repeat(44)}`)).toBe(true);
+  expect(fed).toEqual([]);
 });
 
 test("does not decode a TIFF larger than the pixel cap", () => {

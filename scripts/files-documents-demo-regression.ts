@@ -8,8 +8,8 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
 // Settings → Chat → Documents in Files (#1196) on the unmodified app over the demo's fixture
-// transport, at a desktop's and a phone's width, light and dark: off (the default) Files has no
-// Documents tab; on, the tab lists the pane folder's Markdown files newest first, its filter narrows
+// transport, at a desktop's and a phone's width, light and dark: Files always has the Documents tab
+// (a device that stored the old switch off too); the tab lists the pane folder's Markdown files newest first, its filter narrows
 // them and Escape clears it, and a row opens the file viewer on that file; beside the pane too.
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 // Screenshots go to UI_EVIDENCE_DIR when it is set.
@@ -92,19 +92,19 @@ async function exercise(page: Page, surface: string, theme: string): Promise<voi
 }
 
 async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void> {
-  // off, the default: Files has the three tabs it had
+  // a device that stored the old switch off still gets the tab: the choice is gone
   {
-    const { page, errors, close } = await open(browser, 1280, { theme });
+    const { page, errors, close } = await open(browser, 1280, { theme, filesDocuments: false });
     try {
       await page.locator(".header-files-button").click();
       await page.locator(".modal-scrim .files-dialog").waitFor();
-      assert.deepEqual(await page.locator(".files-dialog-tabs button").allInnerTexts(), ["Browse", "Changes", "Pull request"]);
+      assert.deepEqual(await page.locator(".files-dialog-tabs button").allInnerTexts(), ["Browse", "Changes", "Pull request", "Documents"]);
       assert.deepEqual(errors, []);
     } finally { await close(); }
   }
-  // on: the dialog
+  // the dialog
   {
-    const { page, errors, close } = await open(browser, 1280, { theme, filesDocuments: true });
+    const { page, errors, close } = await open(browser, 1280, { theme });
     try {
       await page.locator(".header-files-button").click();
       await page.locator(".modal-scrim .files-dialog").waitFor();
@@ -112,30 +112,19 @@ async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void>
       assert.deepEqual(errors, []);
     } finally { await close(); }
   }
-  // on, beside the pane at its narrowest: the same list, the tabs on a row of their own
-  const { page, errors, close } = await open(browser, 1280, { theme, filesDocuments: true, filesPanel: true, fileOpen: "panel", filePanelWidth: 320 });
+  // beside the pane at its narrowest: the same list, the tabs on a row of their own
+  const { page, errors, close } = await open(browser, 1280, { theme, filesPanel: true, fileOpen: "panel", filePanelWidth: 320 });
   try {
     await page.locator(".header-files-button").click();
     await page.locator("aside.files-panel").waitFor();
     await exercise(page, "panel-1280", theme);
     assert.deepEqual(errors, []);
-    console.log(`PASS 1280px ${theme}: no Documents tab by default; on, the list, its filter and a file opened, in the dialog and beside the pane`);
+    console.log(`PASS 1280px ${theme}: the Documents tab, also with the old switch stored off; the list, its filter and a file opened, in the dialog and beside the pane`);
   } finally { await close(); }
 }
 
 async function phone(browser: Browser, theme: "light" | "dark"): Promise<void> {
-  // the setting, on its Settings page
-  {
-    const { page, errors, close } = await open(browser, 390, { theme }, "&settings=chat&section=file-viewer-more");
-    try {
-      const toggle = page.getByRole("switch", { name: "Documents in Files" });
-      await toggle.scrollIntoViewIfNeeded();
-      assert.equal(await toggle.getAttribute("aria-checked"), "false", "off by default");
-      await shot(page, `files-documents-setting-390-${theme}`);
-      assert.deepEqual(errors, []);
-    } finally { await close(); }
-  }
-  const { page, errors, close } = await open(browser, 390, { theme, filesDocuments: true });
+  const { page, errors, close } = await open(browser, 390, { theme });
   try {
     const at = () => page.evaluate(() => (window as unknown as { navigation: { currentEntry: { index: number } } }).navigation.currentEntry.index);
     // the pane's own entry: a close that leaves a copy of the file's entry behind lands above it
@@ -160,7 +149,7 @@ async function phone(browser: Browser, theme: "light" | "dark"): Promise<void> {
     await page.getByRole("heading", { name: "HANDOFF.md" }).waitFor({ state: "detached" });
     assert.equal(await page.evaluate(() => window.history.state?.["ovis:file-preview"]), undefined, "no entry of the file is left under the pane");
     assert.deepEqual(errors, []);
-    console.log(`PASS 390px ${theme}: the setting is off by default; on, the four tabs fit and the list works on the sheet; closing a file after a reload under the palette goes back to the pane`);
+    console.log(`PASS 390px ${theme}: the four tabs fit and the list works on the sheet; closing a file after a reload under the palette goes back to the pane`);
   } finally { await close(); }
 }
 

@@ -60,7 +60,6 @@ export const CHAT_JA: Record<string, string> = {
   "Ran": "実行",
   "{s}s": "{s}秒",
   "{m}m {s}s": "{m}分 {s}秒",
-  "Conversation": "会話",
   "Image {n} from {tool}": "{tool} が読み込んだ画像 {n}",
   "failed": "失敗",
   "Error": "エラー",

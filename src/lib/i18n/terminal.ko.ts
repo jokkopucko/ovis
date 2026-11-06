@@ -61,7 +61,6 @@ export const TERMINAL_KO: Record<string, string> = {
   "Input held:": "보관한 입력:",
   "Send held input": "보관한 입력 보내기",
   "Discard held input": "보관한 입력 버리기",
-  "View only": "보기 전용",
   "Terminal text size {px} px": "터미널 글자 크기 {px}px",
   "{command} ran": "{command} 실행됨",
   "Back to Chat": "채팅으로 돌아가기",

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,12 +7,12 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp, buildDevelopmentDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
-import { openSettingsFolds, openSettingsPage, sheetRisen } from "./settings-page.ts";
+import { openSettingsFolds, openSettingsPage, sheetRisen, themeSide } from "./settings-page.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 import { JA } from "../src/lib/i18n.ja.ts";
 import { ZH } from "../src/lib/i18n.zh.ts";
-import { terminalTheme } from "../src/lib/settings.ts";
-import { THEME_IDS, type ThemeId } from "../src/lib/themes.ts";
+import { DEFAULT_SETTINGS, terminalTheme } from "../src/lib/settings.ts";
+import { rowFor, THEME_IDS, type ThemeId } from "../src/lib/themes.ts";
 import baseline from "../src/lib/themes.legacy-baseline.json";
 import { comboKey, LEGACY_COMBOS } from "./theme-baseline.ts";
 
@@ -20,7 +21,7 @@ import { comboKey, LEGACY_COMBOS } from "./theme-baseline.ts";
 // HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-demo-"));
 const devApp = mkdtempSync(join(tmpdir(), "herdr-settings-dev-"));
-const PAGES = ["Appearance", "Chat", "Terminal", "Alerts", "Agents", "Shortcuts", "Devices and PCs", "About"];
+const PAGES = ["Appearance", "Chat", "Terminal", "Alerts", "Agents", "Shortcuts", "Devices and PCs", "Experimental", "About"];
 const SETTINGS = { language: "en", showUsage: true, voiceInput: true, showQuickReplies: true, fileOpen: "panel" };
 
 const dialogOf = (page: Page) => page.getByRole("dialog", { name: "Settings", exact: true });
@@ -50,11 +51,13 @@ const historyHolds = async (page: Page, step: string, holds: () => boolean): Pro
 /** Controls and text that reach past their card, and cards past the page's box: a row wider than its card is cut there. */
 const cutOff = (page: Page): Promise<string[]> => page.locator(".settings-body:not([hidden]), .settings-key-bar-body").evaluate((body) => {
   const edge = body.getBoundingClientRect();
-  const out = [...body.querySelectorAll<HTMLElement>("button, input, select, a, .settings-card, .settings-row")]
+  const out = [...body.querySelectorAll<HTMLElement>("button, input, select, a, .settings-card, .settings-row, .theme-cards")]
     .filter((node) => {
       const box = node.getBoundingClientRect();
       // a control is held by its card, where it has one; a card by the page
       const card = node.classList.contains("settings-card") ? null : node.closest<HTMLElement>(".settings-card");
+      // a theme card is held by the row of cards that scrolls sideways on purpose; the row itself is checked against its card
+      if (!node.classList.contains("theme-cards") && node.closest(".theme-cards")) return false;
       const within = card ? card.getBoundingClientRect() : edge;
       return box.width > 0 && (box.right > within.right + 0.5 || box.left < within.left - 0.5);
     })
@@ -67,44 +70,44 @@ const MATRIX: readonly (readonly ["en" | "ko" | "ja" | "zh", string, string, str
   ["en", "theme", "appearance", "-"],
   ["en", "palette", "appearance", "-"],
   ["en", "interface font size", "appearance", "typography"],
-  ["en", "chat font size", "chat", "-"],
+  ["en", "chat font size", "appearance", "typography"],
   ["en", "chat width", "chat", "-"],
   ["en", "Enter sends", "chat", "composer"],
   ["en", "quick replies", "chat", "quick-replies"],
-  ["en", "terminal font", "terminal", "-"],
+  ["en", "terminal font", "appearance", "typography"],
   ["en", "notifications", "alerts", "-"],
   ["en", "shortcuts", "shortcuts", "-"],
   ["en", "phone", "devices", "-"],
   ["en", "OpenAI API key", "chat", "openai-key"],
   ["en", "Return inserts a new line", "chat", "composer"],
   ["en", "Send queued messages automatically", "chat", "composer-more"],
-  ["en", "Suggestion chip", "agents", "-"],
+  ["en", "Suggestion chip", "chat", "composer"],
   ["en", "Show above the message box", "chat", "quick-replies"],
   ["ko", "인터페이스 글자 크기", "appearance", "typography"],
-  ["ko", "채팅 글자 크기", "chat", "-"],
+  ["ko", "채팅 글자 크기", "appearance", "typography"],
   ["ko", "Enter로 보내기", "chat", "composer"],
   ["ko", "빠른 답장", "chat", "quick-replies"],
-  ["ko", "터미널 글자 크기", "terminal", "-"],
+  ["ko", "터미널 글자 크기", "appearance", "typography"],
   ["ko", "OpenAI API 키", "chat", "openai-key"],
   ["ko", "단축키", "shortcuts", "-"],
   ["ko", "알림", "alerts", "-"],
   ["ko", "대기 메시지 자동 전송", "chat", "composer-more"],
   ["ko", "입력창 위에 표시", "chat", "quick-replies"],
   ["ja", "インターフェースの文字サイズ", "appearance", "typography"],
-  ["ja", "チャットのフォントサイズ", "chat", "-"],
+  ["ja", "チャットのフォントサイズ", "appearance", "typography"],
   ["ja", "Enter で送信", "chat", "composer"],
   ["ja", "クイック返信", "chat", "quick-replies"],
-  ["ja", "ターミナルのフォントサイズ", "terminal", "-"],
+  ["ja", "ターミナルのフォントサイズ", "appearance", "typography"],
   ["ja", "OpenAI API キー", "chat", "openai-key"],
   ["ja", "ショートカット", "shortcuts", "-"],
   ["ja", "通知", "alerts", "-"],
   ["ja", "送信待ちメッセージを自動で送信", "chat", "composer-more"],
   ["ja", "入力欄の上に表示", "chat", "quick-replies"],
   ["zh", "界面字号", "appearance", "typography"],
-  ["zh", "聊天字号", "chat", "-"],
+  ["zh", "聊天字号", "appearance", "typography"],
   ["zh", "按 Enter 发送", "chat", "composer"],
   ["zh", "快捷回复", "chat", "quick-replies"],
-  ["zh", "终端字号", "terminal", "-"],
+  ["zh", "终端字号", "appearance", "typography"],
   ["zh", "OpenAI API 密钥", "chat", "openai-key"],
   ["zh", "快捷键", "shortcuts", "-"],
   ["zh", "提醒", "alerts", "-"],
@@ -481,8 +484,9 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
 
       await search.fill("Font SIZE");
       const found = await shown();
-      assert.deepEqual(found.map(([name]) => name), ["Appearance", "Chat", "Terminal"], `${width}px: "font size" finds settings on those pages only`);
-      for (const [name, label] of [["Appearance", "Interface font size"], ["Chat", "Chat font size"], ["Terminal", "Terminal font size"]] as const) {
+      // every font row is on Appearance: the terminal's and the chat's are found by their sizes' words
+      assert.deepEqual(found.map(([name]) => name), ["Appearance"], `${width}px: "font size" finds settings on Appearance only`);
+      for (const [name, label] of [["Appearance", "Interface font size"], ["Appearance", "Chat font"], ["Appearance", "Terminal font"]] as const) {
         assert.ok(found.find(([page]) => page === name)?.[1].includes(label), `${width}px: ${label} is found under ${name}`);
       }
       assert.equal(await dialog.getByRole("tablist").isVisible(), width !== 390, `${width}px: a phone's results take the list's place`);
@@ -586,6 +590,17 @@ async function foldedGroups(browser: import("playwright-core").Browser, url: str
       // an agent's own setting is found with its agent's row shut, in a group named after it
       await dialog.getByRole("searchbox", { name: "Search settings", exact: true }).fill("sandbox");
       await dialog.getByRole("region", { name: "Search results", exact: true }).getByLabel("Sandbox and approvals", { exact: true }).waitFor();
+      // Model and Effort are alike for every agent: each found group says whose it is
+      await dialog.getByRole("searchbox", { name: "Search settings", exact: true }).fill("effort");
+      const found = dialog.getByRole("region", { name: "Search results", exact: true });
+      await found.locator("[data-section='agent-codex']").waitFor();
+      assert.deepEqual(await found.locator("[data-section='agent-claude'] > h3, [data-section='agent-codex'] > h3").allTextContents(), ["Claude Code", "Codex"], `${width}px: a found agent's rows sit under its name`);
+      await closeSettings(page);
+
+      // an old link to the Chat page's folded Chat group lands on Conversation, where its row went
+      await page.goto(`${url}?settings=chat&section=chat-more`);
+      await page.getByRole("switch", { name: "Collapse work", exact: true }).waitFor();
+      assert.equal(await page.locator(".settings-body:not([hidden]) [data-section='conversation']").evaluate((group) => document.activeElement === group), true, `${width}px: chat-more lands on Conversation`);
       await closeSettings(page);
 
       // a link to a group inside a fold opens it on that group
@@ -611,6 +626,116 @@ async function foldedGroups(browser: import("playwright-core").Browser, url: str
  * row each with a hairline under it and a PC pill, after this PC; the Account group lists none of its own. The sign-in is a fixture in this page's IndexedDB and the account service a route
  * of this context: nothing reaches GitHub or account.ovis.sh.
  */
+/**
+ * About's first line names the runtime this PC serves with its version. With herdr's TUI and the
+ * Herdr app's core both installed (`?demo_runtime=both`) it is a choice between them, and picking
+ * the other asks before switching; with one installed it is a plain fact.
+ */
+async function runtimeInUse(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  for (const width of [390, 1280]) {
+    const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+    try {
+      await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto(`${url}?settings=about`);
+      const panel = dialogOf(page).getByRole("tabpanel", { name: "About", exact: true });
+      const row = panel.locator(".settings-row").filter({ hasText: "In use" });
+      await row.getByText("herdr 0.9.0", { exact: true }).waitFor();
+      assert.equal(await row.getByRole("group", { name: "In use" }).count(), 0, `${width}px: one runtime installed, no switch`);
+      await page.goto(`${url}?demo_runtime=both&settings=about`);
+      const choice = row.getByRole("group", { name: "In use" });
+      await choice.getByRole("button", { name: "herdr-core 0.1.17", exact: true }).waitFor();
+      assert.equal(await choice.getByRole("button", { name: "herdr 0.9.0", exact: true }).getAttribute("aria-pressed"), "true", `${width}px: the runtime served is the one pressed`);
+      await choice.getByRole("button", { name: "herdr-core 0.1.17", exact: true }).click();
+      const confirm = page.getByRole("alertdialog", { name: "Show the Herdr app's terminals?" });
+      await confirm.waitFor();
+      await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+      await confirm.waitFor({ state: "detached" });
+      assert.equal(await choice.getByRole("button", { name: "herdr 0.9.0", exact: true }).getAttribute("aria-pressed"), "true", `${width}px: cancelled, nothing switched`);
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  }
+  console.log("PASS About names the runtime in use, and offers the switch only with two installed, asking first");
+}
+
+/**
+ * About after an update: its compact Updates line keeps the notes of what the update brought (the
+ * header's "What's new" opens them), the section's name and the running version.
+ */
+async function installedNotes(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en" });
+  try {
+    await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
+    // the demo's transport answers /api in the page: these two answers go in over it. The running
+    // revision is the build's own, so the app reads no reload and the notes are this release's.
+    await context.addInitScript((revision) => {
+      const answers: Record<string, unknown> = {
+        "/api/updates": { managed: true, auto_update: false, phase: "idle", current_revision: revision, latest_revision: null, current_version: null, latest_version: null, available: false, checked_at: "2099-01-01T00:00:00Z", blocked_reason: null, error: null },
+        "/api/updates/installed": { revision, version: "99.0.0", previous_version: "98.0.0", installed_at: "2099-01-01T00:00:00Z", omitted: 0, releases: [{ version: "99.0.0", date: "2099-01-01", notes: "- A fixture release note." }] },
+      };
+      let inner = window.fetch;
+      const outer: typeof window.fetch = (input, init) => {
+        // the demo app is served under a path of its own: its requests end in the API's path
+        const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href).pathname;
+        const answer = Object.keys(answers).find((key) => path.endsWith(key));
+        return answer !== undefined ? Promise.resolve(new Response(JSON.stringify(answers[answer]), { headers: { "content-type": "application/json" } })) : inner(input, init);
+      };
+      // the transport's own assignment goes under these answers; a later wrapper (the file preview's)
+      // reads them as its fetch and replaces the property as a plain value
+      Object.defineProperty(window, "fetch", { configurable: true, get: () => outer, set: (next: typeof window.fetch) => {
+        inner = next;
+        Object.defineProperty(window, "fetch", { configurable: true, writable: true, value: outer });
+      } });
+    }, execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim());
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${url}?settings=about`);
+    const panel = dialogOf(page).getByRole("tabpanel", { name: "About", exact: true });
+    await panel.getByRole("region", { name: "What the last update brought", exact: true }).getByText("A fixture release note.").waitFor();
+    assert.equal(await panel.getByRole("heading", { name: "Updates", exact: true }).count(), 1, "the Updates section keeps its name");
+    await panel.getByText(/^Running v/).waitFor();
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+  console.log("PASS About's compact Updates line keeps what the last update brought, its name and the running version");
+}
+
+/**
+ * Alerts' one line of chips: Any turn finished lights Long turn finished too, and the row's ↺ puts
+ * back all five, the two kept in the alert filters' own store included.
+ */
+async function alertChipsReset(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en" });
+  try {
+    await context.addInitScript((settings) => {
+      localStorage.setItem("ovis:settings", settings);
+      localStorage.setItem("ovis:alert-filters", JSON.stringify({ permission: false, error: true, pcsOff: [] }));
+    }, JSON.stringify({ ...SETTINGS, alertDone: "always" }));
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${url}?settings=alerts`);
+    const chips = dialogOf(page).getByRole("group", { name: "Alert me when", exact: true });
+    const pressed = async () => Object.fromEntries(await Promise.all(["Needs input", "Needs permission", "Long turn finished", "Any turn finished", "Stopped on an error"]
+      .map(async (name) => [name, await chips.getByRole("button", { name, exact: true }).getAttribute("aria-pressed")])));
+    await chips.waitFor();
+    assert.deepEqual(await pressed(), { "Needs input": "true", "Needs permission": "false", "Long turn finished": "true", "Any turn finished": "true", "Stopped on an error": "true" }, "every turn lights the long turns too");
+    await dialogOf(page).getByRole("button", { name: "Restore defaults: Alert me when", exact: true }).click();
+    await dialogOf(page).getByRole("button", { name: "Restore defaults: Alert me when", exact: true }).waitFor({ state: "detached" });
+    assert.deepEqual(await pressed(), { "Needs input": "true", "Needs permission": "true", "Long turn finished": "true", "Any turn finished": "false", "Stopped on an error": "false" }, "↺ puts back all five");
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+  console.log("PASS Alerts' chips: every turn lights the long turns, and ↺ restores all five");
+}
+
 async function accountPcList(browser: import("playwright-core").Browser, url: string): Promise<void> {
   const service = "https://account.ovis.sh";
   for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) {
@@ -759,6 +884,82 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
   console.log("PASS Continue with Google shows under GitHub only while the service offers it, and the account lists its ways to sign in, at 390 and 1280px");
 }
 
+/**
+ * Appearance's ↺ beside a changed row, and its theme cards by keyboard: ↺ shows only off the default,
+ * puts back every key of its row (a font and its size; a theme and the palette it draws) and goes; the
+ * arrows pick along the row as a radio group's do; the cards follow the Theme mode until a side is chosen.
+ */
+async function rowResets(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  try {
+    await context.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify(SETTINGS));
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings")!) as Record<string, unknown>);
+    const reset = (row: string) => page.getByRole("button", { name: `Restore defaults: ${row}`, exact: true });
+    await page.goto(`${url}?settings=appearance`);
+    await page.locator(".conn-live").waitFor({ state: "attached" });
+    await page.locator(".theme-cards").waitFor();
+    // the cards follow the Theme mode while no side is chosen here
+    const mode = page.getByRole("group", { name: "Theme", exact: true });
+    await mode.getByRole("button", { name: "Light", exact: true }).click();
+    await page.getByRole("radiogroup", { name: "Light theme", exact: true }).waitFor();
+    await mode.getByRole("button", { name: "Dark", exact: true }).click();
+    await page.getByRole("radiogroup", { name: "Dark theme", exact: true }).waitFor();
+
+    assert.equal(await reset("Terminal font").count(), 0, "no ↺ while the terminal font and size are the defaults");
+    await page.getByRole("button", { name: "Increase terminal font size", exact: true }).click();
+    await reset("Terminal font").waitFor();
+    assert.equal((await saved())["terminalFontSize"], DEFAULT_SETTINGS.terminalFontSize + 1);
+    await reset("Terminal font").focus();
+    await page.keyboard.press("Enter");
+    await reset("Terminal font").waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => document.activeElement?.closest(".settings-row")?.querySelector(".settings-label")?.textContent), "Terminal font", "the row keeps the focus once its ↺ goes");
+    const fonts = await saved();
+    assert.deepEqual([fonts["terminalFontSize"], fonts["terminalFontFamily"] ?? DEFAULT_SETTINGS.terminalFontFamily], [DEFAULT_SETTINGS.terminalFontSize, DEFAULT_SETTINGS.terminalFontFamily], "↺ puts back the size and the font of its row");
+
+    // a custom interface font put back: the field closes and the typed list is not saved again as it goes
+    const uiFont = page.getByLabel("Interface font", { exact: true });
+    await uiFont.selectOption("custom");
+    const custom = page.getByRole("textbox", { name: "Custom interface font", exact: true });
+    await custom.fill('"Noto Sans JP"');
+    await custom.press("Enter");
+    await reset("Interface font").click();
+    await custom.waitFor({ state: "detached" });
+    assert.equal(await uiFont.inputValue(), "default", "the select shows Default once the font is put back");
+    // a reload closes Settings: open the page again from its address
+    await page.goto(`${url}?settings=appearance`);
+    await page.locator(".theme-cards").waitFor();
+    assert.equal(await page.getByLabel("Interface font", { exact: true }).inputValue(), "default", "the font put back stays put back after a reload");
+
+    const dark = themeSide(page, "dark");
+    await dark.selectOption("dracula");
+    await page.waitForFunction(() => document.documentElement.dataset.palette === "dracula");
+    await reset("Dark theme").click();
+    await page.waitForFunction((id) => document.documentElement.dataset.palette === id, DEFAULT_SETTINGS.darkTheme);
+    assert.deepEqual([(await saved())["darkTheme"], (await saved())["palette"]], [DEFAULT_SETTINGS.darkTheme, DEFAULT_SETTINGS.darkTheme], "↺ puts back the dark theme and the palette it draws");
+    assert.equal(await reset("Dark theme").count(), 0, "↺ goes once the theme is back");
+
+    // the arrows pick along the row, Home goes to its first card
+    const cards = page.getByRole("radiogroup", { name: "Dark theme", exact: true });
+    const listed = await dark.listed();
+    await cards.locator('[role="radio"][aria-checked="true"]').focus();
+    await page.keyboard.press("ArrowRight");
+    const next = listed[listed.indexOf(DEFAULT_SETTINGS.darkTheme) + 1]!;
+    await page.waitForFunction((id) => document.documentElement.dataset.palette === id, next);
+    assert.equal(await cards.locator('[role="radio"][aria-checked="true"]').getAttribute("data-theme-card"), next, "ArrowRight picks the next card");
+    assert.equal(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset["themeCard"]), next, "the picked card takes the focus");
+    await page.keyboard.press("Home");
+    await page.waitForFunction((id) => document.documentElement.dataset.palette === id, listed[0]!);
+
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+  console.log("PASS Appearance: ↺ shows only off the default and puts back its row's keys; theme cards pick by arrow and follow the Theme mode");
+}
+
 async function mergedRows(browser: import("playwright-core").Browser, url: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
   try {
@@ -877,7 +1078,8 @@ try {
               assert.equal(await body.locator("[role='alert']").count(), 0, "the Agents page shows no error");
               assert.deepEqual(await body.locator(".agents-item").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-agent"))), ["claude", "codex", "omp", "pi", "hermes"]);
               assert.deepEqual(await body.locator("[data-section='other-accounts'] .usage-provider-heading > span:not(.usage-account-count):not(.agent-mark)").allTextContents(), ["Cursor", "OpenCode"]);
-              assert.deepEqual(await body.locator("h3").allTextContents(), [label("On this PC"), label("Other agents herdr found"), label("Other accounts"), label("Plan limits")]);
+              // herdr-app's rows: no group captions on this page
+              assert.deepEqual(await body.locator("h3").allTextContents(), []);
               // an agent's own settings are in its row: Claude Code's permission mode for New tab
               await body.locator(".agents-item[data-agent='claude'] .agents-toggle").click();
               await body.locator(".agents-item[data-agent='claude']").getByLabel(label("Permission mode"), { exact: true }).waitFor();
@@ -944,13 +1146,14 @@ try {
               // The build minifies colors (rgba() to #rrggbbaa), so both sides are compared as the browser
               // computes them on a probe: a color, a box-shadow, or a border for `2px solid <color>`
               const themes = page.getByRole("group", { name: "Theme", exact: true });
-              const pickers = { dark: page.locator("#settings-theme-dark"), light: page.locator("#settings-theme-light") };
-              // both pickers offer every theme, grouped by kind with the side's own kind first (Q1: any theme on either side)
+              const pickers = { dark: themeSide(page, "dark"), light: themeSide(page, "light") };
+              // both sides' cards offer every theme, the side's own kind first (Q1: any theme on either side)
               for (const side of ["dark", "light"] as const) {
-                const listed = await pickers[side].locator("option").evaluateAll((nodes) => nodes.map((node) => (node as HTMLOptionElement).value));
-                assert.deepEqual([...listed].sort(), [...THEME_IDS].sort(), `the ${side} picker lists every theme once`);
-                assert.ok(listed.includes("dracula"), `the ${side} picker offers Dracula`);
-                assert.deepEqual(await pickers[side].locator("optgroup").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("label"))), side === "dark" ? ["Dark", "Light"] : ["Light", "Dark"]);
+                const listed = await pickers[side].listed();
+                assert.deepEqual([...listed].sort(), [...THEME_IDS].sort(), `the ${side} cards list every theme once`);
+                assert.ok(listed.includes("dracula"), `the ${side} cards offer Dracula`);
+                const kinds = listed.map((id) => rowFor(id, side).mode === side);
+                assert.deepEqual(kinds, [...kinds].sort((a, b) => Number(b) - Number(a)), `the ${side} cards list the side's own kind first`);
               }
               const drawn = (mode: string, id: string): Promise<unknown> => page.waitForFunction(([mode, id]) => document.documentElement.dataset.theme === mode && document.documentElement.dataset.palette === id && getComputedStyle(document.documentElement).colorScheme === mode, [mode, id]);
               /** The theme keys of the saved record and of the second key old code never touches. */
@@ -1279,11 +1482,12 @@ try {
         await openSettingsPage(page, "Appearance");
         await checkSelectArrows(page);
         if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "select-arrows-desktop.png"), animations: "disabled" });
-        const themePicker = page.getByLabel("Dark theme", { exact: true });
+        // a select on Appearance (the theme pickers are cards now): Interface font
+        const themePicker = page.getByLabel("Interface font", { exact: true });
         await themePicker.focus();
         await page.keyboard.press("ArrowDown");
-        assert.notEqual(await themePicker.inputValue(), "amber", "the native select keeps keyboard selection");
-        await themePicker.selectOption("amber");
+        assert.notEqual(await themePicker.inputValue(), "default", "the native select keeps keyboard selection");
+        await themePicker.selectOption("default");
         await page.emulateMedia({ forcedColors: "active" });
         assert.equal(await themePicker.evaluate((select) => getComputedStyle(select).appearance), "auto", "forced colors restores the native indicator");
         assert.equal(await themePicker.locator("..").locator("svg").evaluate((arrow) => getComputedStyle(arrow).display), "none");
@@ -1298,9 +1502,9 @@ try {
           await openSettings(page);
           await openSettingsPage(page, "Appearance");
           await page.getByRole("group", { name: "Theme", exact: true }).getByRole("button", { name: "Dark", exact: true }).click();
-          await page.locator("#settings-theme-dark").selectOption(id);
+          await themeSide(page, "dark").selectOption(id);
           await page.waitForFunction((id) => document.documentElement.dataset.palette === id && document.documentElement.dataset.theme === "dark", id);
-          assert.equal(await page.locator("#settings-theme-light").inputValue(), "amber", `${id} has no sibling pre-fill`);
+          assert.equal(await themeSide(page, "light").inputValue(), "amber", `${id} has no sibling pre-fill`);
           const surfaces = await page.evaluate(() => {
             const style = getComputedStyle(document.documentElement);
             return ["--border", "--bg-elevated", "--bg-input"].map((role) => style.getPropertyValue(role).trim());
@@ -1317,7 +1521,7 @@ try {
         }
         await openSettings(page);
         await openSettingsPage(page, "Appearance");
-        await page.locator("#settings-theme-light").selectOption("dracula");
+        await themeSide(page, "light").selectOption("dracula");
         await page.getByRole("group", { name: "Theme", exact: true }).getByRole("button", { name: "Light", exact: true }).click();
         await page.waitForFunction(() => document.documentElement.dataset.palette === "dracula" && document.documentElement.dataset.theme === "dark" && getComputedStyle(document.documentElement).colorScheme === "dark");
         assert.equal(await page.getByRole("group", { name: "Theme", exact: true }).getByRole("button", { name: "Light", exact: true }).getAttribute("aria-pressed"), "true");
@@ -1408,8 +1612,12 @@ try {
       await dialogSearch(browser, url);
       await foldedGroups(browser, url);
       await mergedRows(browser, url);
+      await rowResets(browser, url);
       await accountPcList(browser, url);
       await accountGoogle(browser, url);
+      await runtimeInUse(browser, url);
+      await alertChipsReset(browser, url);
+      await installedNotes(browser, url);
       await heldGroupLanding(browser, devUrl);
     } finally {
       await browser.close();

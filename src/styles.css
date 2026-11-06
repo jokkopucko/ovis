@@ -152,6 +152,9 @@
 
   /* sizes */
   --header-h: 52px;
+  /* the lines that divide the shell's regions (header, sidebar, status bar, the open tab): a step above
+     --border, which stays for lines inside a region */
+  --divider: var(--border-strong);
   /* the header from 769px, in either density: one line beside the sidebar's own top row */
   --header-h-wide: 46px;
   --sidebar-w: 320px;
@@ -1715,7 +1718,7 @@ button {
   flex: 0 0 var(--sidebar-shown-w);
   min-height: 0;
   background: var(--bg-panel);
-  border-right: var(--hairline) solid var(--border);
+  border-right: var(--hairline) solid var(--divider);
   padding-left: env(safe-area-inset-left, 0px);
 }
 
@@ -2073,32 +2076,6 @@ button {
   }
 }
 
-/* the switch keeps its size; the pane title (.context) is the header's one flexible item */
-.view-switch {
-  flex: 0 0 auto;
-}
-
-/* From 769px the lens switch is its two words and nothing around them: no track, no glyphs, the
-   chosen lens on the hover fill. Files follows it as an action of its own, after a hairline. */
-@media (min-width: 769px) {
-  .app-header .view-switch {
-    padding: 0;
-    background: transparent;
-    border-color: transparent;
-  }
-
-  .app-header .view-switch > button svg {
-    display: none;
-  }
-}
-
-.header-divider {
-  flex: 0 0 auto;
-  width: var(--hairline);
-  height: var(--chip-h);
-  background: var(--border);
-}
-
 /* the workspace-list toggle and the palette: in the bar below 769px and beside a collapsed
    sidebar, the sidebar's own top row otherwise (further down) */
 .header-side {
@@ -2112,6 +2089,357 @@ button {
   flex: 0 0 auto;
   margin-left: auto;
   font-size: var(--fs-xs);
+}
+
+/* the lens switch (App.tsx): both lenses, the open one on a thumb that slides between them, as
+   Apple's segmented control. The chat speaks in the rounded face beside its bubble, the terminal in
+   the mono face beside its prompt, so the two read as different places, not two words. */
+.view-switch {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 2px;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 2px;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.lens-thumb {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc(50% - 3px);
+  background: var(--bg-panel);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18), 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 10%, transparent);
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+.view-switch[data-view="terminal"] .lens-thumb {
+  transform: translateX(calc(100% + 2px));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lens-thumb {
+    transition: none;
+  }
+}
+
+.lens-option {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 10px;
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.lens-option[aria-pressed="true"] {
+  color: var(--text-strong);
+}
+
+.lens-option svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.lens-option[aria-pressed="true"] svg {
+  color: var(--accent);
+}
+
+.lens-option.is-chat .lens-label {
+  font-family: ui-rounded, "SF Pro Rounded", var(--font-ui);
+  font-weight: var(--fw-semibold);
+}
+
+.lens-option.is-terminal .lens-label {
+  font-family: var(--font-mono);
+  font-weight: var(--fw-medium);
+}
+
+.header-text-button.is-icon {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* a phone: the two glyphs in a bordered control as tall as the density's --control-h, so it keeps
+   clear of the bar's edges; each option is a thumb's width and reaches a thumb's height through an
+   invisible expander that stays inside the bar */
+@media (max-width: 768px) {
+  .view-switch {
+    height: var(--control-h);
+    box-shadow: inset 0 0 0 var(--hairline) var(--divider);
+  }
+
+  .view-switch .lens-label {
+    display: none;
+  }
+
+  .lens-option {
+    --lens-h: calc(var(--control-h) - 4px);
+    min-width: var(--touch-target-header);
+    padding: 0 var(--space-2);
+  }
+
+  .lens-option::before {
+    content: "";
+    position: absolute;
+    inset: calc((var(--lens-h) - var(--touch-target-header)) / 2) 0;
+  }
+}
+
+/* the Ovis wordmark at the head of the sidebar (App.tsx SidebarBrand), the theme's own pair */
+.sidebar-brand img {
+  display: block;
+  width: auto;
+  height: 24px;
+}
+
+/* the pane's tools at the end of the header's row: Chat/Terminal, Files (and More beside them) as
+   compact pills, as a browser keeps its actions apart from its tabs */
+.header-text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 var(--space-3);
+  background: var(--tool-pill-bg, transparent);
+  border: var(--hairline) solid var(--tool-pill-border, transparent);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.header-text-button svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.header-text-button:hover,
+.header-text-button:focus-visible,
+.header-text-button[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--text-strong);
+}
+
+/* From 769px with one pane in view the workspace's tabs are the header's row (App.tsx), drawn as a
+   browser's tab strip (Chrome; sizes after the Herdr app's tab bar, herdr-app defaults/mods/tabs,
+   Apache-2.0, THIRD_PARTY_NOTICES.md): the row is tinted with the accent, each tab is its agent's
+   mark (a shell's glyph) and its name, tabs at rest are parted by short rules and share the width
+   evenly, and the open tab takes the pane's own surface with rounded top corners, so it runs on into
+   the pane under it. + follows the last tab; the tools sit at the far end as pills. */
+.app-header.is-zoned.has-tab-row {
+  /* a dark theme keeps the row near the pane's own colour: only a breath of the accent */
+  --strip-tint: color-mix(in srgb, var(--accent) 5%, var(--bg-panel));
+  --tab-open-bg: var(--term-bg);
+  --tool-pill-bg: var(--bg-panel);
+  --tool-pill-border: var(--divider);
+  background: var(--strip-tint);
+  border-bottom: 0;
+}
+
+[data-theme="light"] .app-header.is-zoned.has-tab-row {
+  --strip-tint: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
+}
+
+.app-header.is-zoned.has-tab-row.is-chat {
+  --tab-open-bg: var(--bg);
+  background: var(--strip-tint);
+}
+
+.app-header.has-tab-row .header-more-button {
+  width: 28px;
+  height: 28px;
+  background: var(--tool-pill-bg);
+  border-color: var(--tool-pill-border);
+  border-radius: var(--radius-pill);
+}
+
+/* a note (herdr's prefix, a copied link) beside the row takes its own width; the tabs give way */
+.app-header.has-tab-row > .context {
+  flex: 0 1 auto;
+}
+
+.header-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 0;
+  padding-right: var(--space-4);
+}
+
+.header-tabs .tab-strip {
+  --strip-bg: var(--strip-tint);
+  align-items: flex-end;
+  gap: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border-bottom: 0;
+  background: var(--strip-bg);
+}
+
+.header-tabs .tab-strip-item {
+  position: relative;
+  align-items: center;
+  flex: 0 1 220px;
+  min-width: 44px;
+  height: 36px;
+  margin-bottom: 0;
+  border-radius: 10px 10px 0 0;
+}
+
+.header-tabs .tab-strip-item:hover {
+  background: color-mix(in srgb, var(--tab-open-bg) 45%, transparent);
+}
+
+.header-tabs .tab-strip-item.is-active {
+  min-width: 120px;
+  background: var(--tab-open-bg);
+  box-shadow: none;
+}
+
+.header-tabs .tab-strip-tab {
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--space-2) 0 10px;
+  overflow: hidden;
+  font-size: var(--fs-xs);
+}
+
+.header-tabs .tab-strip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-tabs .tab-strip-agent.is-shell svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-dim);
+}
+
+/* the agent's state sits on its mark: a working one's ring turns round it, a waiting or finished one
+   is a dot at its corner */
+.header-tabs .tab-strip-tab {
+  position: relative;
+}
+
+.header-tabs .tab-strip-tab > .tab-strip-dot {
+  position: absolute;
+  left: 20px;
+  top: calc(50% - 10px);
+}
+
+.header-tabs .tab-strip-tab > .tab-strip-dot:not(.tab-strip-glyph)[data-status="working"] {
+  left: 7px;
+  width: 20px;
+  height: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .header-tabs .tab-strip-tab > .tab-strip-dot:not(.tab-strip-glyph)[data-status="working"] {
+    left: 20px;
+    width: var(--dot-size);
+    height: var(--dot-size);
+  }
+}
+
+.header-tabs .tab-strip-menu {
+  width: 22px;
+  height: 22px;
+}
+
+.tab-strip-close {
+  display: none;
+}
+
+.header-tabs .tab-strip-item:is(.is-active, :hover) .tab-strip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-right: var(--space-2);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.header-tabs .tab-strip-close svg {
+  width: 12px;
+  height: 12px;
+}
+
+.header-tabs .tab-strip-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-strong);
+}
+
+.header-tabs .tab-strip-add {
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  margin-left: var(--space-1);
+  border-radius: var(--radius-pill);
+  box-shadow: none;
+}
+
+/* a touch screen wide enough for the header's row (a tablet): each tab is a finger tall, and its menu,
+   its close and the + a finger's size */
+@media (pointer: coarse) {
+  .header-tabs .tab-strip-item {
+    height: 44px;
+  }
+
+  .header-tabs .tab-strip-menu,
+  .header-tabs .tab-strip-item:is(.is-active, :hover) .tab-strip-close,
+  .header-tabs .tab-strip-add {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  .header-tabs .tab-strip-item.is-active {
+    min-width: 160px;
+  }
+}
+
+/* a tab at rest is set off from the next by a short rule; none beside the open tab or one hovered */
+.header-tabs .tab-strip-item:not(.is-active, :hover) + .tab-strip-item:not(.is-active, :hover)::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: var(--hairline);
+  background: var(--divider);
 }
 
 /* how this device reaches Ovis (components/ConnectionRouteMark.tsx): a quiet glyph and a short word,
@@ -2129,21 +2457,6 @@ button {
   flex: 0 0 auto;
   width: 14px;
   height: 14px;
-}
-
-/* a phone gives the pane title the room: the glyph alone says the route there, except the relay,
-   whose word is the one most asked for; below 360px the relay's word goes too. The sentence stays
-   as the mark's title and accessible text. */
-@media (max-width: 480px) {
-  .conn-route:not([data-route="relay"], [data-route="portal"]) .conn-route-word {
-    display: none;
-  }
-}
-
-@media (max-width: 359px) {
-  .conn-route .conn-route-word {
-    display: none;
-  }
 }
 
 /* the selected tab's place in its workspace's strip (App.tsx): after the title, quieter than it, and
@@ -2204,109 +2517,6 @@ button {
 
 .context-tabs[aria-expanded="true"] {
   color: var(--text-strong);
-}
-
-/* the PC's sessions by state (components/HeaderSessions.tsx): a figure per state that has any, in the
-   sidebar's status colours, tabular so a count that changes moves nothing. They stay whole: the pane
-   title is the header's one item that shortens */
-.header-sessions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex: 0 0 auto;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-.header-session-count {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  height: var(--chip-h);
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-semibold);
-  color: var(--text-dim);
-}
-
-.header-session-dot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-}
-
-.header-session-count.is-working .header-session-dot {
-  background: var(--status-working);
-}
-
-.header-session-count.is-done .header-session-dot {
-  background: var(--status-done);
-}
-
-.header-session-mark {
-  font-weight: var(--fw-bold);
-  color: var(--status-blocked);
-}
-
-/* the waiting figure opens the next session that waits: drawn as a figure, with the state's tint
-   behind it so it reads as the one to press */
-button.header-session-count {
-  position: relative;
-  padding: 0 var(--space-2);
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--status-blocked) 14%, transparent);
-  color: var(--text-strong);
-  font-family: inherit;
-  cursor: pointer;
-}
-
-/* with no other session waiting it stays a button for the keyboard's sake, but nothing to press */
-button.header-session-count[aria-disabled="true"] {
-  cursor: default;
-}
-
-@media (hover: hover) {
-  button.header-session-count:not([aria-disabled="true"]):hover {
-    background: color-mix(in srgb, var(--status-blocked) 24%, transparent);
-  }
-}
-
-/* a phone reaches the header's thumb target through an invisible expander, as the lens buttons do */
-@media (max-width: 768px) {
-  button.header-session-count::before {
-    content: "";
-    position: absolute;
-    top: calc((var(--chip-h) - var(--touch-target-header)) / 2);
-    bottom: calc((var(--chip-h) - var(--touch-target-header)) / 2);
-    left: 50%;
-    width: max(100%, var(--touch-target-header));
-    transform: translateX(-50%);
-  }
-}
-
-/* a phone's header line is the title's (App.tsx): the sessions' one pill sits at the end of the tab
-   row under it, tinted with its state like the waiting button, and the tab's place, which that row
-   shows, leaves the header below 420px */
-.tab-strip-sessions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex: 1 0 auto;
-  padding: 0 var(--space-3);
-}
-
-.header-sessions.is-compact .header-session-count {
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-pill);
-}
-
-.header-sessions.is-compact .header-session-count.is-working {
-  background: color-mix(in srgb, var(--status-working) 14%, transparent);
-}
-
-.header-sessions.is-compact .header-session-count.is-done {
-  background: color-mix(in srgb, var(--status-done) 14%, transparent);
 }
 
 @media (max-width: 419px) {
@@ -2374,14 +2584,15 @@ button.header-session-count[aria-disabled="true"] {
   white-space: nowrap;
 }
 
-/* A narrow window: the chip keeps its pulsing dot and gives its word's room to the pane title.
-   The word stays for a screen reader and in the chip's title. */
+/* A narrow window: the chip keeps its pulsing dot and gives its word's room to the pane title, which
+   says the connection itself. The word stays for a screen reader and in the chip's title. A header
+   whose row is the tabs has no title to say it, so its chip keeps the word. */
 @media (max-width: 900px) {
-  .conn-reconnecting {
+  .app-header:not(.has-tab-row) .conn-reconnecting {
     gap: 0;
   }
 
-  .conn-reconnecting .conn-text {
+  .app-header:not(.has-tab-row) .conn-reconnecting .conn-text {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -2473,8 +2684,12 @@ button.header-session-count[aria-disabled="true"] {
     justify-content: space-between;
     margin: calc(-1 * env(safe-area-inset-top, 0px)) var(--space-2) calc(-1 * var(--hairline)) 0;
     padding: env(safe-area-inset-top, 0px) var(--space-3) 0 calc(var(--space-3) + env(safe-area-inset-left, 0px));
-    border-right: var(--hairline) solid var(--border);
+    border-right: var(--hairline) solid var(--divider);
     background: var(--bg-panel);
+  }
+
+  .app:not(.sidebar-collapsed) .header-side .brand {
+    margin-right: auto;
   }
 }
 
@@ -3214,10 +3429,6 @@ button.header-session-count[aria-disabled="true"] {
   }
 }
 
-/* just above phone width the lens labels would squeeze the pane title to a glyph: icons only */
-@media (max-width: 560px) {
-  .view-switch .header-desktop-only { display: none; }
-}
 
 /* phones: every header control is a full thumb target. The lens track draws smaller than the bar,
    so it never meets the header's rule, and its buttons reach the target's height through an
@@ -3228,20 +3439,10 @@ button.header-session-count[aria-disabled="true"] {
     height: var(--touch-target-header);
   }
 
-  .app-header .view-switch > button {
-    position: relative;
-    /* the drawn height: the density's segmented option (--control-h less the track's inset), so
-       the track keeps clear of the bar in the compact density's 46px header as in the 52px one;
-       the expander below grows it to the tap height */
-    --lens-h: calc(var(--control-h) - var(--segmented-inset));
+  .app-header .header-text-button {
+    justify-content: center;
     min-width: var(--touch-target-header);
-    height: var(--lens-h);
-  }
-
-  .app-header .view-switch > button::before {
-    content: "";
-    position: absolute;
-    inset: calc((var(--lens-h) - var(--touch-target-header)) / 2) 0;
+    height: var(--touch-target-header);
   }
 }
 

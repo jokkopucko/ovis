@@ -29,6 +29,12 @@ describe("pending target identity", () => {
     expect(samePendingIdentity(identity, { ...identity, agent: null })).toBe(false);
   });
 
+  it("refuses a known start of the same PID that can no longer be read, and keeps every other unknown part permitted", () => {
+    expect(samePendingIdentity(identity, { ...identity, processBirth: null })).toBe(false);
+    expect(samePendingIdentity(identity, { ...identity, processPid: null, processBirth: null })).toBe(true);
+    expect(samePendingIdentity({ ...identity, processBirth: null }, identity)).toBe(true);
+  });
+
   it("tolerates only the existing macOS birth precision (control #540)", () => {
     expect(samePendingIdentity(identity, { ...identity, processBirth: 101_000 }, "darwin")).toBe(true);
     expect(samePendingIdentity(identity, { ...identity, processBirth: 101_001 }, "darwin")).toBe(false);

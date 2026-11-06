@@ -19,3 +19,8 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# OvisDirectPlugin reads these two private fields to know that only the main frame can call it
+# (it refuses every call when it cannot): keep them through any shrinking.
+-keepclassmembers class com.getcapacitor.Bridge { *** msgHandler; }
+-keepclassmembers class com.getcapacitor.MessageHandler { *** javaScriptReplyProxy; }

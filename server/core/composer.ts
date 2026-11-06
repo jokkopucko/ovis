@@ -6,7 +6,7 @@
  */
 import { stripVTControlCharacters } from "node:util";
 import type { HerdrPane } from "../../shared/protocol.ts";
-import { secretPrompt } from "../../shared/secret-prompt.ts";
+import { displayWidth, secretPrompt } from "../../shared/secret-prompt.ts";
 import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { agentPrompt, HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "../herdr/client.ts";
 import { mirrorInput } from "../mirror-input.ts";
@@ -298,6 +298,19 @@ export async function freeClaudeBox(paneId: string, working: boolean, authorize:
   if (claudeInputDraft(...await claudeBoxReads(paneId))) throw new HerdrError("input_draft", CLAUDE_INPUT_DRAFT_MESSAGE);
 }
 
+/**
+ * A masked prompt on `screen` at any width it could be wrapped at. A send need not be attached, and an attachment's width
+ * can change during the read, so the widths tried are every one at which the row above the last reaches the right edge
+ * (secretPrompt joins only such a row): fail closed rather than trust a width the screen was not drawn at.
+ */
+function maskedPromptAtAnyWidth(screen: string): boolean {
+  const rows = screen.split(/\r?\n/u);
+  while (rows.length > 0 && !rows.at(-1)!.trim()) rows.pop();
+  // in terminal columns, as secretPrompt measures it: a wide character fills two
+  const above = displayWidth(rows.at(-2)?.trimEnd() ?? "");
+  return [Infinity, ...(above > 0 ? [above, above + 1] : [])].some((columns) => secretPrompt(screen, columns) !== null);
+}
+
 export function createSubmitText({ options, lastTyped, attachments, terminalAttach, SUBMIT_DEADLINE_MS, TYPED_SETTLE_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS, SUBMIT_DELAY_MS }: {
   options: { submitDeadlineMs?: number; submitDelayMs?: number; ompReportPollMs?: number; ompStartupMs?: number; openCodeStateDir?: string };
   lastTyped: Map<string, number>;
@@ -536,6 +549,14 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
         if (pane && command && skills.length > 0 && !agentOnly) {
           const expected = pendingIdentity(pane);
           let current = pane;
+          // as the queued path does (pending.ts): no key goes into a masked prompt that came up on the live screen
+          const noMaskedPrompt = async (screen?: string): Promise<void> => {
+            if ((screen !== undefined && maskedPromptAtAnyWidth(stripVTControlCharacters(screen)))
+              || maskedPromptAtAnyWidth((await paneRead({ paneId, source: "detection", format: "text" })).text)) {
+              throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
+            }
+            inTime();
+          };
           // the lookup awaited the service: the pane, its session and its state are read again before every key
           const revalidate = async (): Promise<void> => {
             current = await paneGet(paneId);
@@ -546,10 +567,11 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             }
             // as agent.prompt refuses it; an unknown state is typed into, as its fallback below does
             if (current.agent_status === "blocked") throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
+            await noMaskedPrompt();
           };
           // followed from before the first key: the send's own message can be announced before Enter returns
           const watch = startOpenCodeWatch(pane, command, options.openCodeStateDir);
-          await revalidate();
+          await revalidate().catch((error: unknown) => { watch?.cancel(); throw error; });
           let typed = false;
           const allowed = (): boolean => {
             try { inTime(); return true; } catch (error) { refused = error; return false; }
@@ -562,7 +584,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             sendKeys: (keys, guard) => io.sendKeys(keys, () => guard() && (typed = true)),
           };
           try {
-            const typing = typeWithSkills(text, skills, allowed, writes, revalidate);
+            // the skill-accept key: the screen it was decided on (a scrolled viewport, maybe), then the live screen
+            const typing = typeWithSkills(text, skills, allowed, writes, revalidate, noMaskedPrompt);
             bindCommandProcess(paneId, command, seen, pane);
             const { attached, missed, prompt } = await typing;
             // fixed wait: a TUI busy with the typing takes an Enter in the same chunk for a newline (SUBMIT_DELAY_MS)

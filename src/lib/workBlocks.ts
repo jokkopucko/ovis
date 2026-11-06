@@ -87,8 +87,8 @@ export function runNames(runs: readonly WorkSegment[], at: ReadonlyMap<Conversat
 export type AnswerItem = { kind: "text"; part: TextPart } | { kind: "failed"; parts: TextPart[] };
 
 /**
- * With Compaction and failed requests on (Settings → Chat, #901), consecutive requests the agent
- * recorded as failed read as one row; off, each stays the error line it always was.
+ * Consecutive requests the agent recorded as failed read as one row (#901); with `requestDetails`
+ * off (a caller that wants them plain), each stays its error line.
  */
 export function answerItems(parts: readonly TextPart[], requestDetails: boolean): AnswerItem[] {
   const items: AnswerItem[] = [];

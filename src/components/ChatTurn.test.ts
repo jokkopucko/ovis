@@ -104,7 +104,7 @@ describe("the folds Settings → Chat starts a turn with", () => {
   });
 });
 
-describe("Compaction and failed requests (Settings → Chat, #901)", () => {
+describe("Compaction and failed requests (#901)", () => {
   const failed = (error: string): ConversationPart => ({ kind: "text", text: `Error: ${error}`, failed: true });
   const rows = (html: string) => [...html.matchAll(/class="chat-skill is-error chat-failed-requests"><summary>.*?<span class="chat-skill-name">([^<]*)</g)].map((match) => match[1]);
 

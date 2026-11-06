@@ -121,7 +121,7 @@ async function open(browser: Browser, server: number, prefix: string, kind: "cor
   await context.addInitScript(([storedOff, images]) => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
     if (storedOff) localStorage.setItem("ovis:terminal-ghostty", "false");
-    localStorage.setItem("ovis:terminal-images", JSON.stringify(images));
+    localStorage.setItem("ovis:terminal-pictures", JSON.stringify(images));
   }, [storedOff, images] as const);
   if (noModule) await context.route(/\.wasm$/, (route) => route.abort());
   const page = await context.newPage();

@@ -192,7 +192,7 @@ try {
         // with a size chosen the source keeps it through a later chat size, and through a later interface size (#2984):
         // its rows stay as they were and the long file's height with them
         {
-          const { page, errors, close } = await open(browser, width, { fileFontSize: 24, fileFontBase: { size: 24, chat: 14, ui: 14 } }, "&file=long.log&settings=chat");
+          const { page, errors, close } = await open(browser, width, { fileFontSize: 24, fileFontBase: { size: 24, chat: 14, ui: 14 } }, "&file=long.log&settings=appearance&section=typography");
           try {
             const lineOf = (): Promise<number> => page.evaluate(() => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight));
             await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);

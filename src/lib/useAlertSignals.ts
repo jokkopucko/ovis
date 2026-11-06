@@ -37,16 +37,15 @@ export interface AlertSignalsParams {
   statusRef: RefObject<Map<string, AgentStatus>>;
   turnStartRef: RefObject<Map<string, number>>;
   lastTurnRef: RefObject<Map<string, number>>;
-  alertInAppRef: RefObject<boolean>;
   alertSoundRef: RefObject<boolean>;
 }
 
 /** The in-app alert and the alert sound, and what the event stream does with a status change. */
-export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRef, splitShownRef, machinesRef, alertsRef, alertsOnRef, pushOnRef, statusRef, turnStartRef, lastTurnRef, alertInAppRef, alertSoundRef }: AlertSignalsParams) {
+export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRef, splitShownRef, machinesRef, alertsRef, alertsOnRef, pushOnRef, statusRef, turnStartRef, lastTurnRef, alertSoundRef }: AlertSignalsParams) {
   // In-app alerts (components/Droplet.tsx): only while the app is on screen - a hidden app has
   // its system notifications - and never for the pane already open in front of the user.
   const dropIn = useCallback((machine: Machine, pane: HerdrPane, kind: DropletKind) => {
-    if (!alertsOnRef.current || !alertInAppRef.current || document.visibilityState !== "visible") return;
+    if (!alertsOnRef.current || document.visibilityState !== "visible") return;
     const open = selectionRef.current;
     if (open.machineId === machine.id && open.paneId === pane.pane_id && !drawerOpenRef.current) return;
     if (splitShownRef.current && splitShows(splitRef.current, { machineId: machine.id, paneId: pane.pane_id }) && !drawerOpenRef.current) return;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { activateSlot, besideSide, closeSlots, dockPane, draggedPane, dropSide, dropZone, MAX_SPLIT_SLOTS, paneDragData, pickInSlot, resizeSplit, sideZone, slotRects, slotSide, slotsOf, splitDividers, splitShows, storedSplit, storeSplit, withoutSlots, zoneRect, asHalves, type SplitChange, type SplitState } from "./split.ts";
+import { activateSlot, besideSide, closeSlots, dockPane, draggedPane, dropSide, dropZone, MAX_SPLIT_SLOTS, paneDragData, pickInSlot, resizeSplit, sideZone, slotRects, slotSide, slotsOf, splitDividers, splitShows, storedSplit, storeSplit, withoutSlots, zoneRect, type SplitChange, type SplitState } from "./split.ts";
 
 const A = { machineId: "local", paneId: "w1:p1" };
 const B = { machineId: "local", paneId: "w1:p2" };
@@ -74,15 +74,6 @@ describe("split view", () => {
     const three = dockPane(split, B, C, { slot: "b", edge: "bottom" })!.split!;
     expect(sideZone(resizeSplit(three, "", 0.3), "c", "left")).toEqual({ slot: "a", edge: null });
     expect(sideZone(resizeSplit(three, "", 0.8), "c", "right")).toEqual({ slot: "a", edge: null });
-  });
-
-  it("draws a grid as two halves without rows and columns, keeping the active slot and the first other", () => {
-    const split = halves(A, "right", "b");
-    expect(asHalves(split)).toBe(split);
-    expect(asHalves(resizeSplit(split, "", 0.7))).toEqual(split);
-    const three = dockPane(split, B, C, { slot: "b", edge: "bottom" })!.split!;
-    // c active below b: a and c stay, in reading order
-    expect(asHalves(three)).toEqual({ root: { dir: "row", ratio: 0.5, first: { slot: "a" }, second: { slot: "c" } }, panes: { a: A }, active: "c" });
   });
 
   it("tells the half by the middle of the area, and reads only a pane's drag data", () => {

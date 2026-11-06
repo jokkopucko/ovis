@@ -105,7 +105,7 @@ const groups = (page: Page): Promise<Group[]> => page.evaluate(() => [...documen
 }));
 
 // the demo's own turn ends a few seconds in and would drop its alert over the captures
-const settings = (theme: string, language: string) => JSON.stringify({ language, theme, alertInApp: false });
+const settings = (theme: string, language: string) => JSON.stringify({ language, theme, alertsOn: false });
 
 async function open(context: BrowserContext, base: string, pane: string): Promise<Page> {
   const page = await context.newPage();

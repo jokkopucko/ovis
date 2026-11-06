@@ -25,6 +25,7 @@ describe("saved theme migration", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: {
       getItem: (key: string) => records.get(key) ?? null,
       setItem: (key: string, value: string) => records.set(key, value),
+      removeItem: (key: string) => records.delete(key),
     } } });
   });
   afterEach(() => {
@@ -187,7 +188,7 @@ describe("saved theme migration", () => {
   });
 
   it("keeps Pictures in the terminal in its own key, out of an old tab's whole-record save", () => {
-    expect(loadSettings().terminalImages).toBe(false);
+    expect(loadSettings().terminalImages).toBe(null);
     saveSettings(sanitizeSettings({ terminalImages: true }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalImages");
     oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
@@ -195,8 +196,24 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalFontSize).toBe(18);
     saveSettings({ ...loadSettings(), terminalImages: false });
     expect(loadSettings().terminalImages).toBe(false);
-    records.set("ovis:terminal-images", "\"true\"");
+    records.set("ovis:terminal-pictures", "\"true\"");
+    expect(loadSettings().terminalImages).toBe(null);
+  });
+
+  it("reads an earlier version's pictures key as a choice only when it says on", () => {
+    records.set("ovis:terminal-images", "false");
+    expect(loadSettings().terminalImages).toBe(null);
+    records.set("ovis:terminal-images", "true");
+    expect(loadSettings().terminalImages).toBe(true);
+    records.set("ovis:terminal-pictures", "false");
     expect(loadSettings().terminalImages).toBe(false);
+  });
+
+  it("keeps a reset of pictures after an earlier version's on", () => {
+    records.set("ovis:terminal-images", "true");
+    expect(loadSettings().terminalImages).toBe(true);
+    saveSettings({ ...loadSettings(), terminalImages: null });
+    expect(loadSettings().terminalImages).toBe(null);
   });
 
   it("keeps the terminal's Attach files button in its own key, out of an old tab's whole-record save", () => {
@@ -221,18 +238,6 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalFoldKeyBar).toBe(false);
     records.set("ovis:terminal-fold-key-bar", "\"true\"");
     expect(loadSettings().terminalFoldKeyBar).toBe(false);
-  });
-
-  it("keeps Markdown outline in its own key, out of an old tab's whole-record save", () => {
-    expect(loadSettings().markdownOutline).toBe(false);
-    saveSettings(sanitizeSettings({ markdownOutline: true }));
-    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("markdownOutline");
-    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
-    expect(loadSettings().markdownOutline).toBe(true);
-    saveSettings({ ...loadSettings(), markdownOutline: false });
-    expect(loadSettings().markdownOutline).toBe(false);
-    records.set("ovis:markdown-outline", "\"true\"");
-    expect(loadSettings().markdownOutline).toBe(false);
   });
 
   it("keeps Keyboard only from the key bar in its own key, out of an old tab's whole-record save", () => {
@@ -272,7 +277,7 @@ describe("saved theme migration", () => {
   });
 
   it("keeps Expand thinking, Collapse work and Files beside the pane in keys of their own, out of an old tab's whole-record save", () => {
-    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"], ["chatRequestDetails", "ovis:chat-request-details"], ["filesPanel", "ovis:files-panel"], ["filesDocuments", "ovis:files-documents"]] as const) {
+    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"], ["filesPanel", "ovis:files-panel"]] as const) {
       expect(loadSettings()[key]).toBe(false);
       saveSettings(sanitizeSettings({ [key]: true }));
       expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty(key);
@@ -439,13 +444,8 @@ it("leaves herdr's focus alone until this device asks to follow it, and keeps th
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("followHerdrFocus");
 });
 
-it("keeps the split view to two halves until this device turns on rows and columns, and keeps that choice its own", () => {
-  expect(DEFAULT_SETTINGS.splitGrid).toBe(false);
-  expect(sanitizeSettings({}).splitGrid).toBe(false);
-  expect(sanitizeSettings({ splitGrid: true }).splitGrid).toBe(true);
-  expect(sanitizeSettings({ splitGrid: "true" }).splitGrid).toBe(false);
-  expect(SETTING_SCOPE.splitGrid).toBe("device");
-  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("splitGrid");
+it("drops the rows-and-columns choice an older version stored: the split view always takes rows and columns", () => {
+  expect(sanitizeSettings({ splitGrid: false })).not.toHaveProperty("splitGrid");
 });
 
 it("keeps a Codex pane's drag Ovis's until this device hands it to Codex, and keeps that choice its own", () => {
@@ -483,9 +483,11 @@ it("keeps background workspaces in place until this device turns their part on, 
 });
 
 it("ignores what was saved for the rows Settings no longer has", () => {
-  const settings = sanitizeSettings({ historyPrompts: 50, composerNewTabButton: true, markdownWidth: "full" });
-  for (const key of ["historyPrompts", "composerNewTabButton", "markdownWidth"]) expect(settings).not.toHaveProperty(key);
+  const settings = sanitizeSettings({ historyPrompts: 50, composerNewTabButton: true, markdownWidth: "full", alertInApp: false });
+  for (const key of ["historyPrompts", "composerNewTabButton", "markdownWidth", "alertInApp"]) expect(settings).not.toHaveProperty(key);
   expect(telemetrySettingsSnapshot(settings).markdownWidth).toBe("readable");
+  // in-app alerts always drop in now: an older version's stored "off" is not reported either
+  expect(telemetrySettingsSnapshot(settings).alertInApp).toBe(true);
 });
 
 it("shows each PC's load while two or more PCs are connected, until this device chooses", () => {
@@ -518,7 +520,7 @@ it("keeps the composer's Paste and send button off until this device turns it on
 });
 
 it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {
-  for (const key of ["expandThinking", "foldWork", "chatRequestDetails"] as const) {
+  for (const key of ["expandThinking", "foldWork"] as const) {
     expect(sanitizeSettings({})[key]).toBe(false);
     expect(sanitizeSettings({ [key]: true })[key]).toBe(true);
     expect(sanitizeSettings({ [key]: "true" })[key]).toBe(false);
@@ -751,10 +753,11 @@ describe("clipboard from a pane", () => {
   });
 });
 
-it("draws no terminal pictures until this device turns them on", () => {
-  expect(sanitizeSettings({}).terminalImages).toBe(false);
-  expect(sanitizeSettings({ terminalImages: "true" }).terminalImages).toBe(false);
+it("leaves terminal pictures to the server until this device chooses, and keeps either choice", () => {
+  expect(sanitizeSettings({}).terminalImages).toBe(null);
+  expect(sanitizeSettings({ terminalImages: "true" }).terminalImages).toBe(null);
   expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalImages: true })))).terminalImages).toBe(true);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalImages: false })))).terminalImages).toBe(false);
   expect(SETTING_SCOPE.terminalImages).toBe("device");
 });
 
@@ -765,11 +768,9 @@ it("raises the terminal's keyboard on every tap until this device asks for it on
   expect(SETTING_SCOPE.terminalKeyboardOnRequest).toBe("device");
 });
 
-it("draws no Markdown outline until this device turns it on", () => {
-  expect(sanitizeSettings({}).markdownOutline).toBe(false);
-  expect(sanitizeSettings({ markdownOutline: "true" }).markdownOutline).toBe(false);
-  expect(sanitizeSettings({ markdownOutline: true }).markdownOutline).toBe(true);
-  expect(SETTING_SCOPE.markdownOutline).toBe("device");
+it("drops a stored choice for the switches that are always on now: compaction details, Markdown outline, Files' Documents tab", () => {
+  const stored = sanitizeSettings({ chatRequestDetails: false, markdownOutline: false, filesDocuments: false });
+  for (const key of ["chatRequestDetails", "markdownOutline", "filesDocuments"]) expect(stored).not.toHaveProperty(key);
 });
 
 it("keeps the key bar under the input line until this device folds it", () => {
@@ -1400,10 +1401,6 @@ it("keeps where web links open to a tab or the panel, a tab by default", () => {
   expect(DEFAULT_SETTINGS.filesPanel).toBe(false);
   expect(sanitizeSettings({ filesPanel: true }).filesPanel).toBe(true);
   for (const bad of ["true", 1, null]) expect(sanitizeSettings({ filesPanel: bad }).filesPanel).toBe(false);
-  // so is Files' Documents tab
-  expect(DEFAULT_SETTINGS.filesDocuments).toBe(false);
-  expect(sanitizeSettings({ filesDocuments: true }).filesDocuments).toBe(true);
-  for (const bad of ["true", 1, null]) expect(sanitizeSettings({ filesDocuments: bad }).filesDocuments).toBe(false);
   expect(sanitizeSettings({ fileOpen: "panel" }).fileOpen).toBe("panel");
   for (const bad of ["tab", "", null, true]) expect(sanitizeSettings({ fileOpen: bad }).fileOpen).toBe("popup");
   expect(sanitizeSettings({ webLinks: "panel" }).webLinks).toBe("panel");

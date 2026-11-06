@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { useContext, useEffect, useState } from "react";
+import { Download, Info, X } from "lucide-react";
 import { CHECKOUT_CHANGED_REASON, DESKTOP_APP_UPDATES, SUMMARY_GROUPS, type SummaryGroup, type UpdateNotes, type UpdateStatus } from "../../shared/update.ts";
 import { useHerdrUpdate } from "../lib/herdrUpdate.ts";
 import { runningAppVersion, runningHerdrVersion, staleClientVersion, versionLabel } from "../lib/runningVersion.ts";
@@ -10,6 +10,7 @@ import type { UpdatesModel } from "../lib/updates.ts";
 import { lazyChunkFailed, onLazyChunkFailure } from "../lib/lazyChunk.ts";
 import { Markdown } from "./Markdown.tsx";
 import { RenderBoundary } from "./RenderBoundary.tsx";
+import { SettingsBare, SettingsRow } from "./SettingsControls.tsx";
 import "./Machines.css";
 import "./UpdateControls.css";
 import { useLocale, useT } from "../lib/i18n.ts";
@@ -88,6 +89,28 @@ export function UpdateControls({ updates, bridgesFollow = false }: { updates: Up
   // the restart line says what the check's own "checkout changed" reason says; other blockers stay
   const reason = status?.blocked_reason === DESKTOP_APP_UPDATES ? t("This server is part of the Ovis app, which updates them together: updates come with the app, not from here.") : status?.blocked_reason ?? null;
   const blocked = restart && status?.blocked_reason === CHECKOUT_CHANGED_REASON ? null : reason;
+  const bare = useContext(SettingsBare);
+  // bare (herdr-app's About): one line, the version and its state with the buttons beside it, while
+  // nothing needs a sentence; an install, a failure or a reload falls back to the full section below
+  if (bare && !installing && !needsReload && failure === null && !error && !status?.error && !blocked && !tabVersion) {
+    const state = busy ? t("Checking for updates…") : status?.available ? t("Version {version} is available.", { version: versionLabel(status.latest_version, status.latest_revision) ?? "" }) : status?.checked_at ? t("Up to date.") : null;
+    return <section className="settings-section settings-updates" data-section="updates" tabIndex={-1} aria-labelledby="settings-updates-title">
+      {/* the section keeps its name for a link and a screen reader, out of sight like a bare page's captions */}
+      <h3 id="settings-updates-title" className="visually-hidden">{t("Updates")}</h3>
+      <div className="settings-card">
+        <SettingsRow label="Ovis" icon={Info}>
+          <span className="settings-fact">{t("Running {version}", { version: runningAppVersion(status, __APP_VERSION__) })}</span>
+          {state && <span className="settings-hint" role="status">{state}</span>}
+          {status?.managed && (status.available
+            ? <button type="button" className="btn btn-primary" disabled={busy || offered === null} onClick={() => { if (offered) void request({ command: "install", expected_revision: offered }); }}>{t("Update and restart")}</button>
+            : <button type="button" className="btn" disabled={busy} onClick={() => void request({ command: "check" })}>{t("Check for updates")}</button>)}
+        </SettingsRow>
+        {notes && <div className="settings-item"><ReleaseNotes notes={notes} label={t("What's new")} /></div>}
+        {/* what the header's "What's new" opens: kept in the compact line too */}
+        {installed && installed.releases.length > 0 && <div className="settings-item"><ReleaseNotes notes={installed} label={t("What the last update brought")} /></div>}
+      </div>
+    </section>;
+  }
   // focusable from code only: a button that points here (the header line's) lands on it
   return <section className="settings-section settings-updates" data-section="updates" tabIndex={-1} aria-labelledby="settings-updates-title">
     <h3 id="settings-updates-title">{t("Updates")}</h3>
@@ -123,10 +146,23 @@ export function UpdateControls({ updates, bridgesFollow = false }: { updates: Up
  * herdr itself. `herdr update` typed into a pane is refused by herdr, and every terminal here is
  * a pane: the server runs it instead and moves the running panes onto the new version.
  */
-export function HerdrUpdateControls({ enabled, herdrVersion }: { enabled: boolean; herdrVersion: string | null }) {
+/** `showVersion`: on a bare page, name herdr's version here too, where no runtime line above names it */
+export function HerdrUpdateControls({ enabled, herdrVersion, showVersion = false }: { enabled: boolean; herdrVersion: string | null; showVersion?: boolean }) {
   const t = useT();
   const { status, error, busy, request } = useHerdrUpdate(enabled);
   const version = runningHerdrVersion(status, herdrVersion);
+  const bare = useContext(SettingsBare);
+  // bare: About's first line already names herdr's version; here only its Update button, while nothing needs a sentence
+  if (bare && !(status?.supported && ((status.stale && !!status.binary_version && !!status.server_version) || error || busy || status.output))) {
+    return status?.supported || (showVersion && version) ? <section className="settings-section settings-herdr-update">
+      <div className="settings-card">
+        <SettingsRow label="herdr" icon={Download}>
+          {showVersion && version && <span className="settings-fact">{version}</span>}
+          {status?.supported && <button type="button" className="btn" onClick={() => void request()}>{t("Update herdr")}</button>}
+        </SettingsRow>
+      </div>
+    </section> : null;
+  }
   // Windows, an older server, a herdr that does not answer: nothing to offer, and the version
   // the health check reported is still read here, since the sidebar no longer carries it
   if (!status?.supported) {

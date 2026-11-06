@@ -21,7 +21,7 @@ type Load = { status: "pending" } | { status: "done"; listing: PaneDocuments } |
 const folded = (text: string): string => text.normalize("NFC").toLowerCase();
 
 /**
- * Files → Documents (Settings: Documents in Files, #1196): the Markdown files under the pane's
+ * Files → Documents (#1196): the Markdown files under the pane's
  * folder, newest first, with a filter over their paths. Read only: a row opens the file viewer.
  * Read once when shown and again on Refresh; nothing polls.
  */

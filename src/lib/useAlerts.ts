@@ -17,7 +17,7 @@ export function useAlertPrefs({ settings }: { settings: Settings }) {
   return { alerts, alertsRef, alertsOn, alertsOnRef };
 }
 
-/** The per-pane turn bookkeeping and the in-app alert and sound switches, as refs. */
+/** The per-pane turn bookkeeping and the alert sound switch, as refs. */
 export function useAlertRefs({ settings }: { settings: Settings }) {
   // last-seen agent status per pane: the baseline that decides whether a push is news
   const statusRef = useRef<Map<string, AgentStatus>>(new Map());
@@ -25,9 +25,7 @@ export function useAlertRefs({ settings }: { settings: Settings }) {
   const turnStartRef = useRef<Map<string, number>>(new Map());
   // how long each pane's last finished turn took: a pane that ends is told by it too
   const lastTurnRef = useRef<Map<string, number>>(new Map());
-  const alertInAppRef = useRef(settings.alertInApp);
-  alertInAppRef.current = settings.alertInApp;
   const alertSoundRef = useRef(settings.alertSound);
   alertSoundRef.current = settings.alertSound;
-  return { statusRef, turnStartRef, lastTurnRef, alertInAppRef, alertSoundRef };
+  return { statusRef, turnStartRef, lastTurnRef, alertSoundRef };
 }

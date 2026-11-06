@@ -52,13 +52,17 @@ export function sameSocket(path: string): string {
  * a script whose scripts/test-herdr.ts import Bun dropped (its binding unused) would otherwise create,
  * type into and close panes there. Both homes count (HOME may be changed for a fixture after the
  * socket was chosen), and every spelling of the same socket.
+ * The XDG_CONFIG_HOME that counts is the one the test run started with (scripts/test-herdr.ts records
+ * it in OVIS_TEST_USER_XDG_CONFIG_HOME, and children inherit it), not one a test gave a child of its
+ * own: refusing that would refuse the test's own herdr. Without the record, this process's own counts.
  */
 function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefined> = process.env): void {
   if (!liveSessionsRefused(env)) return;
   const homes = [...new Set([env["HOME"], homedir()].filter((home): home is string => Boolean(home)))];
+  const config = env["OVIS_TEST_USER_XDG_CONFIG_HOME"] ?? env["XDG_CONFIG_HOME"];
   const defaults = [
     ...homes.map((home) => join(home, ".config", "herdr", "herdr.sock")),
-    ...(env["XDG_CONFIG_HOME"] ? [join(env["XDG_CONFIG_HOME"], "herdr", "herdr.sock")] : []),
+    ...(config ? [join(config, "herdr", "herdr.sock")] : []),
     ...(process.platform === "win32" && env["APPDATA"] ? [`${env["APPDATA"]}\\herdr\\herdr.sock`] : []),
   ].map(sameSocket);
   if (defaults.includes(sameSocket(socketPath))) {
@@ -519,12 +523,12 @@ export interface WorkspaceCreateResult {
 }
 
 export async function workspaceCreate(
-  options: { cwd?: string; label?: string; env?: Record<string, string> },
+  options: { cwd?: string; label?: string; env?: Record<string, string>; move?: string },
   socketPath?: string,
 ): Promise<WorkspaceCreateResult> {
   return herdrRpc(
     "workspace.create",
-    { ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.label === undefined ? {} : { label: options.label }), ...(options.env === undefined ? {} : { env: options.env }), focus: false },
+    { ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.label === undefined ? {} : { label: options.label }), ...(options.env === undefined ? {} : { env: options.env }), ...moveParam(options.move), focus: false },
     socketPath,
   );
 }
@@ -537,12 +541,12 @@ export interface TabCreateResult {
 
 /** Another tab in an existing workspace. Without `cwd` herdr uses the workspace's folder. */
 export async function tabCreate(
-  options: { workspaceId: string; cwd?: string; label?: string; env?: Record<string, string> },
+  options: { workspaceId: string; cwd?: string; label?: string; env?: Record<string, string>; move?: string },
   socketPath?: string,
 ): Promise<TabCreateResult> {
   return herdrRpc(
     "tab.create",
-    { workspace_id: options.workspaceId, ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.label === undefined ? {} : { label: options.label }), ...(options.env === undefined ? {} : { env: options.env }), focus: false },
+    { workspace_id: options.workspaceId, ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.label === undefined ? {} : { label: options.label }), ...(options.env === undefined ? {} : { env: options.env }), ...moveParam(options.move), focus: false },
     socketPath,
   );
 }
@@ -862,6 +866,18 @@ export async function paneFocus(paneId: string, socketPath?: string): Promise<vo
  * A new pane beside `paneId` (herdr's prefix+v / prefix+-), answered as herdr's snapshot lists it.
  * herdr's focus stays where it is unless `focus` asks for the new pane, as its --focus does.
  */
+/**
+ * `move`: the id of a move from herdr (runtime-move-run.ts), which only Ovis's herdr-core adapter
+ * reads: it labels the terminal it starts with it. herdr itself is never asked with one.
+ */
+const moveParam = (move: string | undefined): Record<string, string> => move === undefined ? {} : { move };
+
+/** A split on Ovis's herdr-core adapter, its new side started in `cwd` and labeled with the move (adapter.ts pane.split). */
+export async function paneSplitForMove(paneId: string, direction: SplitPaneDirection, options: { cwd?: string; move: string }, socketPath: string): Promise<PaneInfo> {
+  const result = await herdrRpc<{ pane: PaneInfo }>("pane.split", { target_pane_id: paneId, direction, focus: false, ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...moveParam(options.move) }, socketPath);
+  return result.pane;
+}
+
 export async function paneSplit(paneId: string, direction: SplitPaneDirection, focus: boolean, socketPath?: string): Promise<PaneInfo> {
   const result = await queueHerdrFocus(socketPath, (socket) => herdrRpc<{ pane: PaneInfo }>("pane.split", { target_pane_id: paneId, direction, focus }, socket));
   return result.pane;

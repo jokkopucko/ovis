@@ -61,8 +61,8 @@ export async function checkDefaultView(browser: Browser, origin: string): Promis
     await page.locator(`.pane-frame.is-current[data-layout-pane="${shell}"]`).waitFor();
     await page.waitForFunction(() => document.querySelector(".view-switch button[aria-pressed='true']")?.getAttribute("title")?.startsWith("Live terminal") === true);
     await herdrRpc("pane.report_agent", { pane_id: shell, source: "manual", agent: "claude", state: "working" });
-    // the header names the pane's agent once the app has seen it start
-    await page.locator(".context-title .agent-mark.claude").waitFor({ timeout: 10_000 });
+    // the header's open tab names the pane's agent once the app has seen it start
+    await page.locator('.app-header .tab-strip-tab[aria-selected="true"] .agent-mark.claude').waitFor({ timeout: 10_000 });
     assert.match((await lens()) ?? "", /^Live terminal/, "an agent starting in the open shell leaves it on its terminal");
     assert.deepEqual(errors, []);
     console.log("PASS a shell in use keeps its terminal when an agent starts in it");

@@ -34,9 +34,10 @@ export async function checkFollowHerdrFocus(page: Page, fixture: FollowFocusFixt
     // Settings may still be open when a check that stopped partway turns the setting back off
     if (!(await page.locator(".settings-dialog").isVisible())) await page.keyboard.press("ControlOrMeta+Shift+Comma");
     await openSettingsPage(page, "Terminal");
-    const toggle = page.getByRole("switch", { name: "Follow herdr's focus", exact: true });
-    if ((await toggle.getAttribute("aria-checked")) !== String(on)) await toggle.click();
-    assert.equal(await toggle.getAttribute("aria-checked"), String(on));
+    // "herdr window": Follow its focus, or Separate to leave herdr's focus alone
+    const choice = page.getByRole("group", { name: "herdr window", exact: true }).getByRole("button", { name: on ? "Follow its focus" : "Separate", exact: true });
+    if ((await choice.getAttribute("aria-pressed")) !== "true") await choice.click();
+    assert.equal(await choice.getAttribute("aria-pressed"), "true");
     await page.getByRole("button", { name: "Close settings", exact: true }).click();
   };
   // `herdr tab create --focus`: herdr opens the tab and moves its own focus there, past this app

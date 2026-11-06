@@ -6,7 +6,7 @@
  * integrations: every control of those two pages is here.
  */
 import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronRight, ChevronUp, Eye, EyeOff, KeyRound, Network, Plus, RotateCw } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronRight, ChevronUp, Compass, Cpu, Eye, EyeOff, Gauge, History, KeyRound, Network, Plus, RotateCw, Shield, ShieldCheck, SquareTerminal, Users, Zap } from "lucide-react";
 
 import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
 import type { AgentIntegration, CLIProxyStatus, ProviderUsage, UsageProviderId } from "../../shared/protocol.ts";
@@ -28,8 +28,7 @@ import { userErrorMessage, type UserError } from "../lib/userError.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { AgentTile } from "./AgentTile.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
-import { Segmented, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Toggle } from "./SettingsControls.tsx";
-import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { Segmented, SettingsBare, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Toggle } from "./SettingsControls.tsx";
 import { UsageAccountDialog } from "./UsageAccountDialog.tsx";
 import { UsageSignInAgain } from "./UsageLocalLogin.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -73,8 +72,9 @@ function LaunchDefaultRows({ agent, model, effort, efforts, onModel, onEffort }:
   const modelId = `settings-${agent}-launch-model`;
   const effortId = `settings-${agent}-launch-effort`;
   return <>
-    <SettingsRow label={t("Model")} htmlFor={modelId} wide
-      description={invalid ? <span id={`${modelId}-error`} className="settings-condition" role="alert">{t("One model name, without spaces.")}</span> : t("New workspace and New tab fill it in, still changeable there; New worktree starts the agent on it. Empty: the agent's own model.")}>
+    <SettingsRow icon={Cpu} label={t("Model")} htmlFor={modelId} wide reset={agent === "claude" ? ["claudeLaunchModel"] : ["codexLaunchModel"]} resetAlso={{ changed: false, restore: () => setDraft("") }}
+      description={t("New workspace and New tab fill it in, still changeable there; New worktree starts the agent on it. Empty: the agent's own model.")}
+      condition={invalid ? <span id={`${modelId}-error`} className="settings-condition" role="alert">{t("One model name, without spaces.")}</span> : undefined}>
       <input id={modelId} className="input settings-font-input" value={draft} placeholder={t("Agent default")}
         list={suggestions.length > 0 ? `${modelId}-list` : undefined} aria-invalid={invalid || undefined} aria-describedby={invalid ? `${modelId}-error` : undefined}
         spellCheck={false} autoCapitalize="off" autoCorrect="off" autoComplete="off"
@@ -85,7 +85,7 @@ function LaunchDefaultRows({ agent, model, effort, efforts, onModel, onEffort }:
         }} />
       {suggestions.length > 0 && <datalist id={`${modelId}-list`}>{suggestions.map((alias) => <option key={alias} value={alias} />)}</datalist>}
     </SettingsRow>
-    <SettingsRow label={t("Effort")} htmlFor={effortId} description={t("Filled in the same way. Agent default adds no flag; the levels a model takes depend on the model.")}>
+    <SettingsRow icon={Zap} label={t("Effort")} htmlFor={effortId} reset={agent === "claude" ? ["claudeLaunchEffort"] : ["codexLaunchEffort"]} description={t("Filled in the same way. Agent default adds no flag; the levels a model takes depend on the model.")}>
       <SettingsSelect id={effortId} value={effort} onChange={(event) => onEffort(event.target.value)}>
         <option value="">{t("Agent default")}</option>
         {efforts.map((level) => <option key={level} value={level}>{level}</option>)}
@@ -103,27 +103,19 @@ function LaunchDefaultRows({ agent, model, effort, efforts, onModel, onEffort }:
 function AgentOwnRows({ agentId }: { agentId: string }) {
   const { settings, update } = useSettings();
   const t = useT();
-  // the suggestion chip is drawn on a touch screen only (Composer.tsx); a keyboard's Tab does the same
-  const touch = useMediaQuery("(pointer: coarse)");
   const launch = t("Applies to agents started from New workspace, New tab and New worktree. Agent default adds no flag, so the agent's own configuration decides.");
   switch (agentId) {
     case "claude": return <>
-      <SettingsRow label={t("Permission mode")} description={launch} htmlFor="settings-claude-launch-mode">
+      <SettingsRow icon={ShieldCheck} label={t("Permission mode")} description={launch} htmlFor="settings-claude-launch-mode" reset={["claudeLaunchMode"]}>
         <SettingsSelect id="settings-claude-launch-mode" value={settings.claudeLaunchMode} onChange={(event) => update({ claudeLaunchMode: event.target.value as ClaudeLaunchMode })}>
           {CLAUDE_LAUNCH_MODES.map((mode) => <option key={mode} value={mode}>{claudeModeName(mode, t)}</option>)}
         </SettingsSelect>
       </SettingsRow>
       <LaunchDefaultRows agent="claude" model={settings.claudeLaunchModel} effort={settings.claudeLaunchEffort} efforts={CLAUDE_EFFORTS}
         onModel={(claudeLaunchModel) => update({ claudeLaunchModel })} onEffort={(effort) => update({ claudeLaunchEffort: CLAUDE_EFFORTS.find((level) => level === effort) ?? "" })} />
-      <SettingsRow label={t("Artifacts chip")} description={t("A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.")}>
-        <Toggle label={t("Artifacts chip")} checked={settings.composerArtifacts} onChange={(composerArtifacts) => update({ composerArtifacts })} />
-      </SettingsRow>
-      {touch && <SettingsRow label={t("Suggestion chip")} description={t("A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.")}>
-        <Toggle label={t("Suggestion chip")} checked={settings.suggestionChip} onChange={(suggestionChip) => update({ suggestionChip })} />
-      </SettingsRow>}
     </>;
     case "codex": return <>
-      <SettingsRow label={t("Sandbox and approvals")} description={launch} htmlFor="settings-codex-launch-mode">
+      <SettingsRow icon={Shield} label={t("Sandbox and approvals")} description={launch} htmlFor="settings-codex-launch-mode" reset={["codexLaunchMode"]}>
         <SettingsSelect id="settings-codex-launch-mode" value={settings.codexLaunchMode} onChange={(event) => update({ codexLaunchMode: event.target.value as CodexLaunchMode })}>
           {CODEX_LAUNCH_MODES.map((mode) => <option key={mode} value={mode}>{codexModeName(mode, t)}</option>)}
         </SettingsSelect>
@@ -131,17 +123,12 @@ function AgentOwnRows({ agentId }: { agentId: string }) {
       <LaunchDefaultRows agent="codex" model={settings.codexLaunchModel} effort={settings.codexLaunchEffort} efforts={CODEX_EFFORTS}
         onModel={(codexLaunchModel) => update({ codexLaunchModel })} onEffort={(effort) => update({ codexLaunchEffort: CODEX_EFFORTS.find((level) => level === effort) ?? "" })} />
     </>;
-    case "omp": return (
-      <SettingsRow label={t("Side conversations chip (experimental)")} description={t("A chip in an OMP pane's message box lists the side conversations its session saved with /btw.")}>
-        <Toggle label={t("Side conversations chip (experimental)")} checked={settings.composerBtw} onChange={(composerBtw) => update({ composerBtw })} />
-      </SettingsRow>
-    );
     default: return null;
   }
 }
 
 /** The agents that have settings of their own, and their names where the PC has no row for them. */
-const OWN_NAMES: Readonly<Record<string, string>> = { claude: "Claude Code", codex: "Codex", omp: "Oh My Pi" };
+const OWN_NAMES: Readonly<Record<string, string>> = { claude: "Claude Code", codex: "Codex" };
 const OWN_ROWS = new Set(Object.keys(OWN_NAMES));
 
 /**
@@ -158,7 +145,7 @@ function IntegrationRow({ integration, label }: { integration: AgentIntegration;
   const name = integration.label;
   if (integration.state === "current") {
     return (
-      <SettingsRow label={label} description={t("Installed")}>
+      <SettingsRow icon={History} label={label} description={t("Installed")}>
         <Check className="settings-integration-check" aria-hidden="true" />
       </SettingsRow>
     );
@@ -173,8 +160,12 @@ function IntegrationRow({ integration, label }: { integration: AgentIntegration;
   };
   const state = integration.state === "outdated" ? t("Installed, but older than this herdr: run this to update it") : t("Not installed");
   return (
-    <SettingsRow label={label} description={<>{state}<code ref={commandRef} className="settings-integration-command">{command}</code></>}>
-      <button type="button" className="btn" aria-label={t("Copy the command for {name}", { name })} onClick={() => void copy()}>{t(copied ? "Copied" : "Copy")}</button>
+    <SettingsRow icon={History} label={label} keywords={state} wide condition={<span className="settings-condition">{state}</span>}>
+      {/* the command stays in sight on a page without sentences: it is what Copy copies */}
+      <span className="settings-integration-action">
+        <code ref={commandRef} className="settings-integration-command">{command}</code>
+        <button type="button" className="btn" aria-label={t("Copy the command for {name}", { name })} onClick={() => void copy()}>{t(copied ? "Copied" : "Copy")}</button>
+      </span>
     </SettingsRow>
   );
 }
@@ -272,6 +263,10 @@ function AgentItem({ entry, open, onToggle, allProviders, removed, read, limitsO
       : accounts.length === 0 ? <button type="button" className="btn agents-row-action" aria-label={t("Sign in to {agent}", { agent: agent.name })} onClick={() => provider === "claude" || provider === "codex" ? onFollow({ provider, default: true }) : onAddAccount(provider)}><KeyRound aria-hidden="true" /><span className="agents-row-action-label">{t("Sign in")}</span></button>
         : null;
   const signIn = agent.sign_in;
+  const { settings } = useSettings();
+  // T3 Code's provider row: what New tab starts it with, on the row itself
+  const launch = agent.id === "claude" ? [settings.claudeLaunchModel, settings.claudeLaunchEffort] : agent.id === "codex" ? [settings.codexLaunchModel, settings.codexLaunchEffort] : null;
+  const defaults = launch === null ? null : launch.some((value) => value !== "") ? launch.map((value) => value || t("Agent default")).join(" · ") : t("Agent default");
   return (
     <li className="agents-item" data-agent={agent.id} data-section={provider === null ? undefined : `accounts-${provider}`} tabIndex={provider === null ? undefined : -1}>
       <div className="agents-summary" onClick={(event) => { if (!(event.target as Element).closest(".agents-row-action, .usage-sign-in-again, .agents-toggle")) onToggle(); }}>
@@ -282,6 +277,7 @@ function AgentItem({ entry, open, onToggle, allProviders, removed, read, limitsO
             <span className={`agents-state is-${line.tone}`}>{line.text}</span>
           </span>
         </button>
+        {defaults !== null && <span className="agents-defaults">{defaults}</span>}
         {action}
         <ChevronDown className="agents-chevron" aria-hidden="true" />
       </div>
@@ -313,19 +309,18 @@ function PlanLimits({ watching }: { watching: boolean }) {
   const { settings, update } = useSettings();
   const t = useT();
   const statusline = useStatuslineSwitch(settings.showUsage);
+  // one row: off, or on and counted one way
   return (
-    <SettingsGroup title={t("Plan limits")} section="plan-limits" className="agents-limits">
-      <SettingsRow label={t("Show plan limits")} description={t("Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.")}>
-        <Toggle label={t("Show plan limits")} checked={settings.showUsage} onChange={(showUsage) => update({ showUsage })} />
+    <SettingsGroup section="plan-limits" className="agents-limits">
+      <SettingsRow icon={Gauge} label={t("Plan limits")}
+        condition={<span className="settings-condition">{t("Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.")}</span>} keywords={`${t("Show plan limits")} ${t("Meters show")} ${t("Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.")}`} wide reset={settings.showUsage ? ["showUsage", "usageCount"] : ["showUsage"]}>
+        <Segmented label={t("Plan limits")} value={settings.showUsage ? settings.usageCount : "off"} onChange={(shown) => update(shown === "off" ? { showUsage: false } : { showUsage: true, usageCount: shown })} options={[{ value: "off", label: t("Off") }, { value: "used", label: t("Used") }, { value: "left", label: t("Remaining") }] as const} />
       </SettingsRow>
       {settings.showUsage && <>
-        <SettingsRow label={t("Meters show")} description={t("Session is the 5-hour limit. Without it, the closest limit is shown.")} wide>
-          <span className="agents-limits-controls">
-            <Segmented label={t("Meters show")} value={settings.usageCount} onChange={(usageCount) => update({ usageCount })} options={[{ value: "used", label: t("Used") }, { value: "left", label: t("Remaining") }]} />
-            <Segmented label={t("Limit shown")} value={settings.usageGlance} onChange={(usageGlance) => update({ usageGlance })} options={[{ value: "week", label: t("Weekly") }, { value: "session", label: t("Session") }]} />
-          </span>
+        <SettingsRow icon={CalendarClock} label={t("Limit shown")} description={t("Session is the 5-hour limit. Without it, the closest limit is shown.")} wide reset={["usageGlance"]}>
+          <Segmented label={t("Limit shown")} value={settings.usageGlance} onChange={(usageGlance) => update({ usageGlance })} options={[{ value: "week", label: t("Weekly") }, { value: "session", label: t("Session") }]} />
         </SettingsRow>
-        {statusline.state?.supported && <SettingsRow label={t("Read Claude's limits from its status line")}
+        {statusline.state?.supported && <SettingsRow icon={SquareTerminal} label={t("Read Claude's limits from its status line")}
           description={t("For networks where Claude's usage API is refused. Wraps Claude Code's status line on this PC and keeps only the limits; turning it off puts Claude's settings back.")}>
           <Toggle label={t("Read Claude's limits from its status line")} checked={statusline.state.installed} disabled={statusline.busy || watching}
             onChange={(enabled) => void statusline.set(enabled)} />
@@ -336,8 +331,9 @@ function PlanLimits({ watching }: { watching: boolean }) {
   );
 }
 
-function SectionHead({ id, title, children }: { id: string; title: string; children?: ReactNode }) {
-  return <div className="agents-head"><h3 id={id}>{title}</h3>{children}</div>;
+/** A section's actions, at its top right: the page has no group captions (SettingsBare). */
+function SectionHead({ children }: { children?: ReactNode }) {
+  return <div className="agents-head">{children}</div>;
 }
 
 export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide }: AgentsSettingsProps) {
@@ -418,22 +414,22 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
   const otherProviders = [...new Set([...(page?.otherProviders ?? providers.map((entry) => entry.id)),
     ...removed.map((entry) => entry.id).filter((id) => !page?.rows.some((row) => row.provider === id))])];
   const failed = Object.values(failures);
-  const installNote = t("Install runs the maker's own installer in a terminal tab on this PC, where you can watch it.");
   const integrationNote = integrationOutcome === null ? null
     : integrationOutcome.kind === "unsupported" ? <p className="settings-hint agents-note" role="status">{t("This PC's bridge does not offer agent integrations yet. It will after its next runtime update.")}</p>
       : integrationOutcome.kind === "error" ? <p className="settings-hint agents-note" role="alert">{integrationOutcome.message}</p> : null;
 
+  const otherIntegrations = page?.otherIntegrations ?? [];
   return (
-    <>
+    <SettingsBare.Provider value={true}>
       {/* the first-run guide again (lib/setupGuide.ts): it sets up this PC, and a watching device is never shown it */}
       {!watching && local && <SettingsGroup section="guide">
-        <SettingsRow label={t("Setup guide")}>
+        <SettingsRow icon={Compass} label={t("Setup guide")}>
           <button type="button" className="btn" onClick={() => { onOpenGuide(); openSetupGuide(); }}>{t("Open setup guide")}</button>
         </SettingsRow>
       </SettingsGroup>}
 
-      <section className="settings-section" data-section="agents-installed" tabIndex={-1} aria-labelledby="settings-agents-here">
-        <SectionHead id="settings-agents-here" title={t("On this PC")}>
+      <section className="settings-section" data-section="agents-installed" tabIndex={-1} aria-label={t("On this PC")}>
+        <SectionHead>
           <button type="button" ref={checkAgain} className="btn btn-ghost" onClick={() => setReads((count) => count + 1)}><RotateCw aria-hidden="true" />{t("Check again")}</button>
         </SectionHead>
         {/* a failed read, the first or a Check again: the rows the last good one gave stay, with the error beside them */}
@@ -451,25 +447,30 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
 
       {/* the settings live on this device and start the agent on any PC: one the PC shown has no row for (not
           installed, or its catalog unread) keeps its own group, and a search finds every one in a group */}
-      {ownGroups.map((id) => <SettingsGroup key={id} title={OWN_NAMES[id]!} section={`agent-${id}`}>
-        <AgentOwnRows agentId={id} />
-      </SettingsGroup>)}
+      {/* outside an agent's row, its rows need its name over them: Model and Effort are alike for every agent */}
+      <SettingsBare.Provider value="rows">
+        {ownGroups.map((id) => <SettingsGroup key={id} title={OWN_NAMES[id]!} section={`agent-${id}`}>
+          <AgentOwnRows agentId={id} />
+        </SettingsGroup>)}
+      </SettingsBare.Provider>
 
-      {page !== null && [
-        { title: t("Other agents herdr found"), section: "integrations", rows: page.otherIntegrations.filter((integration) => integration.available) },
-        { title: t("Not found on this PC"), section: "integrations-missing", rows: page.otherIntegrations.filter((integration) => !integration.available) },
-      ].filter((group) => group.rows.length > 0).map((group, index) => <SettingsGroup key={group.section} title={group.title} section={group.section}
-        note={index === 0 ? t("herdr's integrations let it resume each agent's session after a restart. This page only reads them: run a command in a terminal on the PC herdr runs on, then reopen this page.") : undefined}>
-        {group.rows.map((integration) => <IntegrationRow key={integration.target} integration={integration} label={integration.label} />)}
-      </SettingsGroup>)}
+      {/* herdr's integrations for agents without a row above, read only: found ones first, then the ones this PC lacks (each a link's section) */}
+      {otherIntegrations.length > 0 && <details className="settings-section agents-more" data-section="integrations" tabIndex={-1} open={searching || undefined}>
+        <summary className="agents-more-toggle"><ChevronRight className="agents-more-chevron" aria-hidden="true" />{t("Other agents herdr knows ({count})", { count: otherIntegrations.length })}</summary>
+        {[otherIntegrations.filter((integration) => integration.available), otherIntegrations.filter((integration) => !integration.available)].map((rows, index) => rows.length > 0 &&
+          <div key={index} className="settings-card agents-integrations" data-section={index === 1 ? "integrations-missing" : undefined} tabIndex={index === 1 ? -1 : undefined}>
+            {rows.map((integration) => <IntegrationRow key={integration.target} integration={integration} label={integration.label} />)}
+          </div>)}
+      </details>}
 
-      <section className="settings-section" data-section="other-accounts" tabIndex={-1} aria-labelledby="settings-other-accounts">
-        <SectionHead id="settings-other-accounts" title={t("Other accounts")}>
-          {!watching && <button ref={addButton} className="btn btn-ghost" type="button" onClick={() => setDialog({ kind: "add", provider: null })}><Plus aria-hidden="true" />{t("Add account")}</button>}
-        </SectionHead>
-        {!settings.showUsage ? <p className="settings-description settings-note">{t("Turn on plan limits to see accounts.")}</p>
-          : !local ? <p className="settings-description settings-note">{t("Accounts are read on the PC Ovis runs on.")}</p> : null}
-        {otherProviders.map((id) => <SettingsGroup key={id} className="usage-accounts usage-provider" section={page === null ? undefined : `accounts-${id}`}>
+      <section className="settings-section" data-section="other-accounts" tabIndex={-1} aria-label={t("Other accounts")}>
+        <SettingsGroup>
+          <SettingsRow icon={Users} label={t("Other accounts")}
+            condition={!settings.showUsage ? <span className="settings-condition">{t("Turn on plan limits to see accounts.")}</span> : !local ? <span className="settings-condition">{t("Accounts are read on the PC Ovis runs on.")}</span> : undefined}>
+            {!watching ? <button ref={addButton} className="btn btn-ghost" type="button" onClick={() => setDialog({ kind: "add", provider: null })}><Plus aria-hidden="true" />{t("Add account")}</button> : <span />}
+          </SettingsRow>
+        </SettingsGroup>
+        {settings.showUsage && otherProviders.map((id) => <SettingsGroup key={id} className="usage-accounts usage-provider" section={page === null ? undefined : `accounts-${id}`}>
           <div className="settings-item usage-provider-heading">
             <AgentMark agent={PROVIDER_MARK[id]} size={20} /><span>{PROVIDER_NAME[id]}</span>
             <span className="usage-account-count">{providers.filter((entry) => entry.id === id).length}</span>
@@ -492,7 +493,6 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
 
       {!watching && page !== null && page.installable.length > 0 && <details className="settings-section agents-more" data-section="install">
         <summary className="agents-more-toggle"><ChevronRight className="agents-more-chevron" aria-hidden="true" />{t("Install another agent ({count})", { count: page.installable.length })}</summary>
-        <p className="settings-description settings-note">{installNote}</p>
         <ul className="setup-found settings-agent-tiles">
           {page.installable.map((agent) => (
             <AgentTile key={`${machineId}:${agent.id}`} agent={agent} has={false} machineId={machineId}
@@ -518,6 +518,6 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
         }} />}
       {signingIn && <UsageSignInDialog request={signingIn} onOpenTerminal={(paneId) => { setSigningIn(null); onLocalLogin(paneId); }} onSignedIn={usage.refresh} onClose={() => setSigningIn(null)} />}
       {dialog && <UsageAccountDialog editHub={dialog.kind === "hub"} provider={dialog.kind === "add" ? dialog.provider : null} hub={hub} onHubChanged={setHub} onAccountsChanged={usage.refresh} onLocalLogin={onLocalLogin} onClose={() => setDialog(null)} />}
-    </>
+    </SettingsBare.Provider>
   );
 }

@@ -1803,7 +1803,9 @@ try {
   await strip.waitFor();
   assert.deepEqual(await strip.getByRole("tab").allTextContents(), ["Tab 1", "second"]);
   assert.equal(await strip.getByRole("tab", { selected: true }).textContent(), "second");
-  assert.equal(await strip.locator(".tab-strip-close, .tab-strip-panes").count(), 0, "tab close buttons and chevrons are removed");
+  assert.equal(await strip.locator(".tab-strip-panes").count(), 0, "tab chevrons are removed");
+  // the header's row is a browser's tab strip: the open tab carries its close, a tab at rest only while hovered
+  assert.equal(await strip.locator(".tab-strip-close:visible").count(), 1, "only the open tab shows its close at rest");
   assert.equal(await strip.locator(".tab-strip-menu:visible").count(), 0, "desktop tabs show no menu button at rest");
   // the selected tab's actions button waits hidden in its place: the pointer over the strip or the
   // tab's keyboard focus brings it into view, and no other tab draws one
@@ -2188,7 +2190,7 @@ try {
     await page.mouse.move(box.x + box.width * 0.8, box.y + box.height / 2);
     await page.waitForFunction(() => {
       const guide = document.querySelector(".split-drop");
-      return guide?.classList.contains("is-visible") === true && guide.getAttribute("data-side") === "right";
+      return guide?.classList.contains("is-visible") === true && guide.getAttribute("data-edge") === "right";
     });
     await page.mouse.up();
     await until(async () => await page.locator(".pane-slot").count() === 2, "two halves after the drop");
@@ -2320,12 +2322,11 @@ try {
   await until(async () => await mobileComposer.getAttribute("placeholder") === "run the tests", "a phone shows the suggestion as the placeholder");
   assert.equal(await mobilePage.locator(".voice-mic").count(), 0, "a phone's chat has no mic until Settings asks for it");
   assert.equal(await mobilePage.getByTitle("Use the suggestion", { exact: true }).count(), 0, "a phone shows no suggestion chip by default");
-  // the switch is Claude Code's own (#3108): in its row on Agents when this PC has Claude, else in a group of its own there
-  await mobilePage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}&settings=agents`);
-  const claudeRow = mobilePage.locator(".agents-item[data-agent='claude']");
-  await mobilePage.locator(".agents-item[data-agent='claude'], [data-section='agent-claude']").first().waitFor();
-  if (await claudeRow.count() > 0) await claudeRow.locator(".agents-toggle").click();
-  await mobilePage.getByRole("switch", { name: "Suggestion chip", exact: true }).setChecked(true);
+  // the chip is one of Chat → Composer buttons, a chip each, pressed when on
+  await mobilePage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}&settings=chat`);
+  const suggestion = mobilePage.getByRole("button", { name: "Suggestion (Claude Code)", exact: true });
+  await suggestion.click();
+  await until(async () => await suggestion.getAttribute("aria-pressed") === "true", "the Suggestion chip is pressed");
   await mobilePage.getByRole("button", { name: "Close settings", exact: true }).click();
   await mobileComposer.fill("");
   await mobilePage.getByTitle("Use the suggestion", { exact: true }).click();

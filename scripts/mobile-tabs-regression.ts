@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Browser, Page } from "playwright-core";
+import type { Browser, Locator, Page } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
 import { herdrRpc, paneSplit, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
@@ -45,6 +45,19 @@ async function openTabs(page: Page) {
   const sheet = page.getByRole("dialog", { name: "Tabs of ovis-test-mobile-tabs", exact: true });
   await sheet.waitFor();
   return sheet;
+}
+
+/**
+ * A sheet closed by its Cancel, and its history entry left: a phone sheet steps back off its entry a
+ * task after it closes (src/lib/sheetHistory.ts), and that traversal aborts a page.goto it overtakes.
+ */
+async function cancelSheet(page: Page, sheet: Locator): Promise<void> {
+  await sheet.getByRole("button", { name: "Cancel", exact: true }).tap();
+  await sheet.waitFor({ state: "detached" });
+  await page.waitForFunction(() => {
+    const state: unknown = window.history.state;
+    return state === null || typeof state !== "object" || !("ovis:sheet" in state);
+  }, null, { timeout: 5_000 });
 }
 
 /** A tab opened from the header's list. */
@@ -145,8 +158,7 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
     await page.keyboard.press("ArrowDown");
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Close Tab 1", "the arrows reach each tab's Close after it");
     await screenshot("tabs");
-    await tabs.getByRole("button", { name: "Cancel", exact: true }).tap();
-    await tabs.waitFor({ state: "detached" });
+    await cancelSheet(page, tabs);
     assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("context-tabs")), true, "the focus goes back to the title");
 
     // More carries the open pane's and tab's actions where no row is drawn: a split tab's panes first, over its pane's actions
@@ -158,8 +170,7 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
     assert.ok(rename >= 2 && ids[rename - 1]!.startsWith("pane:") && ids[rename - 2]!.startsWith("pane:"), `a split tab's two panes come before its pane's actions (${ids.join(", ")})`);
     assert.ok(ids.includes("close"), "the open pane's actions are in More on a phone");
     assert.deepEqual(ids.slice(-2), ["rename-tab", "close-tab"], "the open tab is renamed and closed from More, with no second way to a new tab");
-    await more.getByRole("button", { name: "Cancel", exact: true }).tap();
-    await more.waitFor({ state: "detached" });
+    await cancelSheet(page, more);
 
     await page.goto(`${origin}/?pane=${encodeURIComponent(last)}`);
     await page.locator(".conn-live").waitFor();

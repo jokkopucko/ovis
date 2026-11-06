@@ -20,6 +20,19 @@ async function relaySignature(key: CryptoKey, nonce: Uint8Array, serverId = "ser
     Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from(serverId)]))).toString("base64url");
 }
 
+describe("ending a pairing", () => {
+  it("leaves no six-digit code to redeem and ends a typed code bound to it", () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "pair-end-")));
+    const { code } = store.startPairing();
+    let ended = 0;
+    store.onPairingStarted(() => { ended++; });
+    store.endPairing();
+    expect(ended).toBe(1);
+    expect(store.activePairing()).toBeNull();
+    expect(store.pair(code, "Too late", "drive")).toBeNull();
+  });
+});
+
 describe("relay device", () => {
   it("loads as kind ok and closes an ungated store with one durable write before announcing", async () => {
     const root = mkdtempSync(join(dir, "relay-first-"));

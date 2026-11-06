@@ -21,6 +21,7 @@ import { QrCode } from "./QrCode.tsx";
 import { failureText, openOwnOffer, RelayPairing, statusText } from "./RelayPanel.tsx";
 import { SettingsQuery, Toggle } from "./SettingsControls.tsx";
 import { AddRelayPc } from "./AddRelayPc.tsx";
+import { TailnetPcs } from "./TailnetPcs.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { usePortal } from "../lib/portal.ts";
 import { CompactPair } from "./CompactPair.tsx";
@@ -194,6 +195,7 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
               {open === "typed" && <div className="settings-card connect-typed"><AddRelayPc /></div>}
             </div>
           )}
+          {!readOnly && !inRelayShell() && <TailnetPcs />}
           <details className="settings-details connect-other" open={open !== null && open !== "typed" ? true : undefined}>
             <summary><span className="settings-details-toggle">{t("Other ways to connect")}</span></summary>
             <div className="connect-ways">

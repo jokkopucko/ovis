@@ -39,6 +39,11 @@ export interface HealthAuth {
 export interface LanExposure {
   /** the address the server is bound to, so the warning can name where it is reachable */
   readonly host: string;
+  /**
+   * The relay's direct carrier listens on this PC's network (docs/relay.md, "Direct on the same network"),
+   * and that is all: only devices paired through the relay sign in there. `host` is then its first address.
+   */
+  readonly direct?: true;
 }
 
 /** The configured bind address, read from its literal (`bindScope` in server/access.ts): never a DNS lookup or the request's Host. */

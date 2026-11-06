@@ -164,7 +164,6 @@ export const COMPOSER_JA: Record<string, string> = {
   "Not pasted: the line has no room for the file's path. Shorten it, then paste again.": "未貼り付け: 入力行にファイルのパスが入る余地がありません。行を短くしてから、もう一度貼り付けてください。",
   "Pasted up to the line's limit: {n} characters were left out.": "入力行の上限まで貼り付けました: {n} 文字が省かれました。",
   "The clipboard could not be read. Use the keyboard's own paste in the input line.": "クリップボードを読み取れませんでした。入力行でキーボードの貼り付けを使ってください。",
-  "Paste and send": "貼り付けて送信",
   "Paste is not available here. Use the keyboard's own paste in the message box.": "ここでは貼り付けを使えません。入力欄でキーボードの貼り付けを使ってください。",
   "The clipboard could not be read. Use the keyboard's own paste in the message box.": "クリップボードを読み取れませんでした。入力欄でキーボードの貼り付けを使ってください。",
   "The clipboard holds more than a message's {max} characters. Nothing was sent.": "クリップボードのテキストがメッセージの上限 {max} 文字を超えています。何も送信していません。",

@@ -10,7 +10,7 @@ import { NOTICE_VERSION, type TelemetryActive, type TelemetryChange, type Teleme
 import { createServer } from "../server/index.ts";
 import { Telemetry } from "../server/telemetry.ts";
 import { UsageService } from "../server/usage.ts";
-import { openSettingsPage } from "./settings-page.ts";
+import { openSettingsPage, themeSide } from "./settings-page.ts";
 
 const SEND_GRACE_MS = 24 * 60 * 60 * 1_000;
 
@@ -159,7 +159,7 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
 
     await openSettingsPage(page, "Appearance");
     // the fixture's mode is dark, so the dark side carries its palette and the legacy mirror follows a pick there
-    const palette = page.locator("#settings-theme-dark");
+    const palette = themeSide(page, "dark");
     assert.equal(await palette.inputValue(), "catppuccin");
     await palette.selectOption("charcoal");
     await until(async () => {

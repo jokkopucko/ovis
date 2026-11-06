@@ -61,7 +61,6 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Input held:": "保留的输入：",
   "Send held input": "发送保留的输入",
   "Discard held input": "丢弃保留的输入",
-  "View only": "仅查看",
   "Terminal text size {px} px": "终端文字大小 {px} px",
   "{command} ran": "{command} 已运行",
   "Back to Chat": "返回聊天",

@@ -143,6 +143,28 @@
   gap: var(--space-2);
 }
 
+/* PCs on your Tailscale: one row each, its name, then Add */
+.tailnet-pcs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.tailnet-pc {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.tailnet-pc-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* the fold's toggle stands alone here, with no sentence before it to hang its dot on */
 .connect-other .settings-details-toggle::before {
   content: none;

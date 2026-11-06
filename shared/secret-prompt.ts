@@ -1,3 +1,19 @@
+// A character cluster holding an East Asian Wide or Fullwidth character (Hangul, CJK, kana,
+// fullwidth forms) or an emoji shown as emoji takes two terminal columns; one of only combining
+// marks and zero-width characters takes none.
+const WIDE = /[\u1100-\u115f\u2329\u232a\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{20000}-\u{2fffd}\u{30000}-\u{3fffd}\p{Emoji_Presentation}]/u;
+const ZERO_WIDTH = /^[\p{Mn}\p{Me}\u200b-\u200f\ufe00-\ufe0f]+$/u;
+let graphemes: Intl.Segmenter | undefined;
+
+/** Terminal columns a row of text fills: per grapheme, or per code point without Intl.Segmenter (Safari 14). */
+export function displayWidth(text: string): number {
+  if (typeof Intl.Segmenter === "function") graphemes ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  const clusters = graphemes ? Array.from(graphemes.segment(text), ({ segment }) => segment) : Array.from(text);
+  let width = 0;
+  for (const cluster of clusters) width += ZERO_WIDTH.test(cluster) ? 0 : WIDE.test(cluster) ? 2 : 1;
+  return width;
+}
+
 /** Deliberately narrow: prose mentioning passwords must not become an input prompt. */
 export function secretPrompt(screen: string, columns = Infinity): string | null {
   const lines = screen.split(/\r?\n/);
@@ -10,8 +26,14 @@ export function secretPrompt(screen: string, columns = Infinity): string | null 
     // herdr's screen-diff stream does not preserve xterm's soft-wrap flags. Only
     // continue a row that reached the right edge (a final space can be trimmed).
     const previous = lines.pop()?.trimEnd();
-    if (!previous || previous.length < columns - 1 || previous.length > columns) return null;
-    line = (previous.padEnd(columns) + line).trimStart();
+    // Rows are measured in columns, as the terminal fills them.
+    const width = previous ? displayWidth(previous) : 0;
+    if (!previous || width < columns - 1 || width > columns) return null;
+    // Pad to the edge as xterm reads a wrapped row (an empty last cell, as a wide character that
+    // did not fit leaves, reads as a space), so the browser and the server agree on the prompt. No
+    // trim of the joined text: a wrapped row's leading space is part of the prompt (the candidate
+    // is trimmed).
+    line = previous + " ".repeat(columns - width) + line;
   }
 }
 

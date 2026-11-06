@@ -993,7 +993,7 @@ interface TurnProps {
   /** Settings: the reasoning shown starts open (Expand thinking), the work blocks folded (Collapse work) */
   expandThinking?: boolean;
   foldWork?: boolean;
-  /** Settings: a compaction names its recorded token counts, and failed requests read as one row (Compaction and failed requests) */
+  /** a compaction names its recorded token counts, and failed requests read as one row (#901) */
   requestDetails?: boolean;
   /** the pane's skill names: an answer's text chips them */
   skills?: SkillMatcher | null;
@@ -2613,10 +2613,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const index = pickedTurn(timelineRows.map((row) => row.turn), pick.match);
     if (typeof index !== "number") { pick.done("missing"); return; }
     placeRow(list, node, index, 0);
-    // a match folded in a row of failed requests (Compaction and failed requests on) opens it: a row
+    // a match folded in a row of failed requests opens it: a row
     // drawn later reads its memory, one drawn already is opened in place (#3082)
     const { turn, key } = timelineRows[index]!;
-    const folded = settings.chatRequestDetails && turn !== null ? foldedRequestsMatch(turn, pick.match.match) : null;
+    const folded = turn !== null ? foldedRequestsMatch(turn, pick.match.match) : null;
     if (folded !== null) {
       chatRowMemory(rowMemories, key).toggles.set(`failed:${folded}`, true);
       const row = node.querySelector<HTMLDetailsElement>(`[data-chat-row="${CSS.escape(key)}"] details[data-failed-requests="${folded}"]`);
@@ -2710,9 +2710,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const live = isLiveWorkTurn(turn, row.index === shownTurns.length - 1, workStatus, finishedBeforeSend);
     return <RenderBoundary resetKey={turnRevision(turn, true)} fallback={() => <p className="chat-inline-state chat-inline-error" data-pane-content-error>{t("This message can't be shown here. The terminal has it.")}</p>}>
       <Turn paneId={paneId} turn={turn} rowKey={row.key} live={live} waiting={isWaitingWorkTurn(live, agentStatus)} showThinking={settings.showThinking}
-        expandThinking={settings.expandThinking} foldWork={settings.foldWork} requestDetails={settings.chatRequestDetails} skills={skillMatcher} userSkills={skillMatcher} outcome={row.outcome} outcomeActions={outcomeActions} />
+        expandThinking={settings.expandThinking} foldWork={settings.foldWork} requestDetails skills={skillMatcher} userSkills={skillMatcher} outcome={row.outcome} outcomeActions={outcomeActions} />
     </RenderBoundary>;
-  }, [shownTurns.length, workStatus, finishedBeforeSend, t, paneId, agentStatus, settings.showThinking, settings.expandThinking, settings.foldWork, settings.chatRequestDetails, skillMatcher, outcomeActions]);
+  }, [shownTurns.length, workStatus, finishedBeforeSend, t, paneId, agentStatus, settings.showThinking, settings.expandThinking, settings.foldWork, skillMatcher, outcomeActions]);
   // displayPaneTitle falls back to the pane id for a pane with nothing else to call it
   const shownTitle = title?.trim() ?? "";
   const logLabel = shownTitle !== "" && shownTitle !== paneId ? t("conversation of {pane}", { pane: shownTitle }) : t("Conversation");

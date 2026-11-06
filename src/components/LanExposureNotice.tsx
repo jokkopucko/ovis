@@ -11,11 +11,13 @@ import "./LanExposureNotice.css";
  * Not dismissible. This is the server's state rather than an event, so it leaves when the
  * state does — and a dismissed warning would not come back when the state returned.
  */
-export function LanExposureNotice({ host, onOpen }: { host: string; onOpen: () => void }) {
+export function LanExposureNotice({ host, direct = false, onOpen }: { host: string; direct?: boolean; onOpen: () => void }) {
   const t = useT();
   return (
-    <div className="update-notice is-exposed" role="status" data-testid="lan-exposure-notice">
-      <span>{t("Anyone who can reach {host} on your network can type into every pane: no access token is set and no device is paired yet.", { host })}</span>
+    <div className={direct ? "update-notice" : "update-notice is-exposed"} role="status" data-testid="lan-exposure-notice">
+      <span>{direct
+        ? t("This PC takes connections at {host} on your home network. Only devices paired through the relay can sign in there; nothing new pairs.", { host })
+        : t("Anyone who can reach {host} on your network can type into every pane: no access token is set and no device is paired yet.", { host })}</span>
       <button type="button" className="btn" onClick={onOpen}>{t("Devices and PCs")}</button>
     </div>
   );

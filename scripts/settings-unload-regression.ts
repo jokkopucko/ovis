@@ -46,17 +46,19 @@ export async function checkSettingSurvivesReload(browser: Browser, origin: strin
     await page.locator(".conn-live").waitFor();
     await page.keyboard.press("ControlOrMeta+Shift+Comma");
     await openSettingsPage(page, "Agents");
-    const toggle = page.getByRole("switch", { name: "Show plan limits", exact: true });
+    // Plan limits is one row (#settings-chat-agents): Off, or on and counted as Used or Remaining
+    const limits = page.locator('.segmented[aria-label="Plan limits"]');
+    const choose = (on: boolean) => limits.getByRole("button", { name: on ? "Used" : "Off", exact: true }).click();
 
     // whatever an earlier check left: one value saved and let land, then the other and a reload at once
-    const first = await toggle.getAttribute("aria-checked") !== "true";
+    const first = await limits.getByRole("button", { name: "Off", exact: true }).getAttribute("aria-pressed") === "true";
     const onSaved = page.waitForResponse((response) => response.request().method() === "PUT" && new URL(response.url()).pathname === "/api/preferences"
       && response.ok() && response.request().postDataJSON()?.settings?.showUsage === first);
-    await toggle.click();
+    await choose(first);
     await onSaved;
     assert.equal(await served(), first, "the server holds the first value");
 
-    await toggle.click();
+    await choose(!first);
     await page.waitForFunction((last) => (JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as { showUsage?: boolean }).showUsage === last, !first);
     await page.reload();
     await page.locator(".conn-live").waitFor();

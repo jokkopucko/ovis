@@ -32,7 +32,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await openSettingsPage(page, "Alerts");
   const group = page.locator('[data-section="alert-webhook"]');
   await group.waitFor();
-  const destination = group.getByLabel("Destination");
+  const destination = group.getByLabel("Also send to");
   assert.equal(await destination.inputValue(), "off", `${tag}: off until chosen`);
   assert.equal(await group.getByLabel("Webhook URL").count(), 0, `${tag}: no field while off`);
 

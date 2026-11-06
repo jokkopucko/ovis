@@ -130,6 +130,8 @@ export interface RuntimeService {
   facts: () => HerdrRuntimeFacts;
   /** saves `target` as the choice and asks the launcher to start the server again on it */
   request: (target: unknown) => SwitchAnswer;
+  /** a switch was asked for and the server restarts for it, or the launcher has not taken this server yet */
+  switching?: () => boolean;
 }
 
 export interface RuntimeServiceOptions {
@@ -168,6 +170,7 @@ export function runtimeService(options: RuntimeServiceOptions): RuntimeService {
   let requested = false;
   return {
     facts,
+    switching: () => requested || options.accepted?.() === false,
     request: (target) => {
       if (target !== "herdr" && target !== "herdr-core") return { ok: false, status: 400, code: "invalid_runtime", message: "runtime must be herdr or herdr-core" };
       const now = facts();

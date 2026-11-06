@@ -148,8 +148,11 @@ it("switches only to a runtime the PC has, saves it with the one it replaces, an
   expect(service.request("herdr")).toMatchObject({ ok: false, code: "runtime_unavailable" });
   expect(readSavedRuntime(state, 7)).toBeNull();
   expect(restarts).toEqual([]);
+  expect(service.switching?.()).toBe(false);
   expect(service.request("herdr-core")).toEqual({ ok: true });
   expect(restarts).toHaveLength(1);
+  // a move asked for now is refused: the server is restarting
+  expect(service.switching?.()).toBe(true);
   // the launcher is told which saved choice to put back if the start on it fails
   expect(readSavedRuntime(state, 7)).toEqual({ runtime: "herdr-core", previous: "herdr", id: restarts[0], previous_detected: true });
   // the restart is under way: a second switch waits for the server that comes next

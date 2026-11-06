@@ -31,3 +31,27 @@ export async function openSettingsFolds(page: Page): Promise<void> {
   const closed = page.locator(".settings-body:not([hidden]) details.settings-fold:not([open]) > summary");
   while (await closed.count() > 0) await closed.first().click();
 }
+
+/**
+ * One side of Appearance's theme cards (ThemePicker in SettingsDialog.tsx), used as the select each
+ * side once was: the side is switched to first, then its cards are read or one is picked. English labels.
+ */
+export function themeSide(page: Page, side: "dark" | "light") {
+  const switchTo = () => page.getByRole("group", { name: "Dark theme · Light theme", exact: true }).getByRole("button", { name: side === "dark" ? "Show dark themes" : "Show light themes", exact: true }).click();
+  const cards = page.getByRole("radiogroup", { name: side === "dark" ? "Dark theme" : "Light theme", exact: true });
+  return {
+    async selectOption(id: string): Promise<void> {
+      await switchTo();
+      await cards.locator(`[data-theme-card="${id}"]`).click();
+      await cards.locator(`[data-theme-card="${id}"][aria-checked="true"]`).waitFor();
+    },
+    async inputValue(): Promise<string> {
+      await switchTo();
+      return (await cards.locator('[role="radio"][aria-checked="true"]').getAttribute("data-theme-card")) ?? "";
+    },
+    async listed(): Promise<string[]> {
+      await switchTo();
+      return cards.locator("[data-theme-card]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-theme-card") ?? ""));
+    },
+  };
+}

@@ -31,8 +31,6 @@ async function run(browser: Browser, origin: string, port: number, width: number
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US", colorScheme: theme });
   await context.addInitScript((settings) => {
     localStorage.setItem("ovis:settings", settings);
-    // Documents in Files is kept in a key of its own (lib/settings.ts): a file to dock from the demo
-    localStorage.setItem("ovis:files-documents", "true");
   }, JSON.stringify({ language: "en", theme, webLinks: "panel", fileOpen: "panel" }));
   const page = await context.newPage();
   const errors: string[] = [];

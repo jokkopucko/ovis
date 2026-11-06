@@ -12,16 +12,24 @@ export interface PendingIdentity {
   claudeSession?: string | null;
 }
 
-/** An identity learned after enqueue is not a replacement; only mutually known parts disagree. */
+/** Whether two reads of a process's start name the same process. macOS allows a second: its birth was once read from
+ * `ps`'s whole elapsed seconds, now from the kernel exactly. */
+export function sameProcessBirth(before: number, after: number, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "darwin" ? Math.abs(before - after) <= 1000 : before === after;
+}
+
+/**
+ * An identity learned after enqueue is not a replacement; only mutually known parts disagree. A known start of the same
+ * PID that can no longer be read is no match either: the process may have ended and another taken its PID.
+ */
 export function samePendingIdentity(before: PendingIdentity, after: PendingIdentity, platform: NodeJS.Platform = process.platform): boolean {
   const changed = <T>(a: T | null | undefined, b: T | null | undefined) => a != null && b != null && a !== b;
   return before.agent === after.agent && before.terminalId === after.terminalId
     && !changed(before.session, after.session) && !changed(before.omoSession, after.omoSession)
     && !changed(before.claudeSession, after.claudeSession)
     && !changed(before.processPid, after.processPid)
-    // macOS allows a second: its birth was once read from `ps`'s whole elapsed seconds, now from the kernel exactly.
-    && (before.processBirth == null || after.processBirth == null
-      || (platform === "darwin" ? Math.abs(before.processBirth - after.processBirth) <= 1000 : before.processBirth === after.processBirth));
+    && (before.processBirth == null
+      || (after.processBirth == null ? before.processPid == null || before.processPid !== after.processPid : sameProcessBirth(before.processBirth, after.processBirth, platform)));
 }
 export interface PendingRecord<Owner, Lease> {
   owner: Owner;
@@ -195,6 +203,9 @@ export class PendingInputs<Owner, Lease> {
 
   /** The pending message `id`, still held here, was accepted for an agent alone: a saved copy's resend keeps that whatever it says. */
   agentOnly(paneId: string, id: string): boolean { const item = this.records.get(id); return item?.paneId === paneId && item.message.agent_only === true; }
+
+  /** Whether any message for the pane is still here, queued, held or going: a runtime move waits for none. */
+  holds(paneId: string): boolean { return [...this.records.values()].some((item) => item.paneId === paneId); }
 
   next(paneId: string): PendingRecord<Owner, Lease> | null {
     if (!ready(this.statuses.get(paneId)) || this.gates.has(paneId)

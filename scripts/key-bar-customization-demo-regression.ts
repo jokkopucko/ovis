@@ -560,7 +560,9 @@ try {
         sidebarShortcut = dialog.getByRole("combobox", { name: "Toggle sidebar", exact: true });
         assert.match(await sidebarShortcut.locator('option[value="t"]').innerText(), /Reserved/);
         await sidebarShortcut.selectOption("t");
-        await dialog.getByText(`Your browser or operating system may intercept ${modifierLabel}+⇧+T.`, { exact: true }).waitFor({ timeout: 5_000 });
+        // the list's " — Reserved" is the warning; the changed row offers its own reset
+        await dialog.getByRole("button", { name: "Restore defaults: Toggle sidebar", exact: true }).waitFor({ timeout: 5_000 });
+        assert.match(await sidebarShortcut.evaluate((select: HTMLSelectElement) => select.selectedOptions[0]?.textContent ?? ""), /Reserved/);
         assert.equal(((await settingsOf(page)).shortcutOverrides as Record<string, string>)["toggle-sidebar"], "t", "a reservation warns without silently changing the configured key");
         await dialog.getByRole("button", { name: "Reset shortcuts", exact: true }).click();
         await page.waitForFunction((key) => Object.keys(JSON.parse(localStorage.getItem(key)!).shortcutOverrides).length === 0, SETTINGS_KEY, { timeout: 5_000 });

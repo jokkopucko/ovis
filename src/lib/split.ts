@@ -2,8 +2,7 @@
  * Panes side by side on a desktop, as a window snapped to half the screen: a tab, a sidebar or
  * Agents row, or a pane's title dragged to the left or right half of the pane area opens its pane
  * there, beside the one already open (a title over its own tab's panes arranges that tab instead:
- * useSplitLayout). With Settings > Terminal > Split into rows and columns (`splitGrid`, off by
- * default) the area takes more panes, side by side and stacked, as editor groups do in VS Code: a
+ * useSplitLayout). The area also takes more panes, side by side and stacked, as editor groups do in VS Code: a
  * pane dropped on a slot's edge opens beside, above or below it, and dropped on its middle in its
  * place, up to MAX_SPLIT_SLOTS.
  *
@@ -298,20 +297,6 @@ export function withoutSlots(state: SplitState, closed: ReadonlySet<SplitSlot>):
   const panes: Record<SplitSlot, SplitTarget> = {};
   for (const [slot, target] of Object.entries(state.panes)) if (!drop.has(slot)) panes[slot] = target;
   return { split: { ...state, root, panes }, solo: state.active };
-}
-
-/**
- * The split as two halves side by side, as it is drawn without rows and columns: the active slot and
- * the first other slot in reading order keep their ids (and terminals), in reading order, at half each.
- * The same state when it already is two halves.
- */
-export function asHalves(state: SplitState): SplitState {
-  const root = state.root;
-  if (!isLeaf(root) && root.dir === "row" && root.ratio === 0.5 && isLeaf(root.first) && isLeaf(root.second)) return state;
-  const slots = slotsOf(root);
-  const other = slots.find((slot) => slot !== state.active)!;
-  const [first, second] = slots.filter((slot) => slot === state.active || slot === other);
-  return { root: { dir: "row", ratio: 0.5, first: { slot: first! }, second: { slot: second! } }, panes: { [other]: state.panes[other]! }, active: state.active };
 }
 
 /** A slot's pane replaced (its pane closed and another of its tab takes its place). */

@@ -115,8 +115,7 @@ two panes trade places. Drop it on another pane's body to move it beside that pa
 nearest the pointer; the highlighted half shows where it goes. Within its own tab a title only
 arranges the tab: to open it in a half, drop it on the other half while that half shows another tab.
 
-To see more than two panes at once, turn on **Settings > Terminal > Split into rows and columns**.
-Then drop a pane on the edge of another pane in the split to open it beside, above or below that
+To see more than two panes at once, drop a pane on the edge of another pane in the split to open it beside, above or below that
 pane, up to four at once, or on its middle to open it in that pane's place. Drag the line between
 two panes, or focus it and use the arrow keys, to resize them.
 
@@ -149,7 +148,7 @@ bun "$root/scripts/plugin.ts" pair   # plugin install
 bun scripts/plugin.ts pair           # from a checkout
 ```
 
-`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. While the [Ovis relay](#through-the-ovis-relay) is online, `pair` also prints the relay's pairing link and its QR code; while it's off, it says where to turn it on. The actions start, stop and report on the server:
+`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. While the [Ovis relay](#through-the-ovis-relay) is online, `pair` also prints the relay's pairing link and its QR code; while it's off, it says where to turn it on. To link the PC through the relay from its terminal, `link` signs it in to your account and approves the device that adds it, and `link --code` shows a code to type and the relay QR code, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). A plugin checkout from before `link` needs a plugin reinstall first, since in-app updates do not replace the checkout. The actions start, stop and report on the server:
 
 ```bash
 herdr plugin action invoke devswha.ovis.start    # leaves a running server alone

@@ -164,7 +164,6 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Not pasted: the line has no room for the file's path. Shorten it, then paste again.": "未粘贴：输入行已没有空间放下文件路径。请先缩短该行，再重新粘贴。",
   "Pasted up to the line's limit: {n} characters were left out.": "已粘贴到输入行的上限：省略了 {n} 个字符。",
   "The clipboard could not be read. Use the keyboard's own paste in the input line.": "无法读取剪贴板。请在输入行中使用键盘自带的粘贴。",
-  "Paste and send": "粘贴并发送",
   "Paste is not available here. Use the keyboard's own paste in the message box.": "此处无法使用粘贴。请在输入框中使用键盘自带的粘贴。",
   "The clipboard could not be read. Use the keyboard's own paste in the message box.": "无法读取剪贴板。请在输入框中使用键盘自带的粘贴。",
   "The clipboard holds more than a message's {max} characters. Nothing was sent.": "剪贴板中的文本超过了消息上限 {max} 个字符。未发送任何内容。",

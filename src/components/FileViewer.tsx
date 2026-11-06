@@ -370,10 +370,10 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const previewRefused = preview.status === "failed";
   const previewable = hasPreview(language) && !previewRefused;
   const view = previewable && mode === "preview" ? "markdown" : "code";
-  // Settings > File viewer > Markdown outline: a drawn Preview (not the editor) with two headings or more lists them,
+  // the Markdown outline: a drawn Preview (not the editor) with two headings or more lists them,
   // beside it on a wide viewer, in a drawer over it (from the header's Outline button) on a narrow one
   const previewBlocks = !editing && view === "markdown" && preview.status === "ready" ? preview.blocks : null;
-  const outline = useMemo(() => settings.markdownOutline && previewBlocks !== null ? outlineOf(previewBlocks) : [], [settings.markdownOutline, previewBlocks]);
+  const outline = useMemo(() => previewBlocks !== null ? outlineOf(previewBlocks) : [], [previewBlocks]);
   const outlined = outline.length > 1;
   const [split, setSplit] = useState<HTMLDivElement | null>(null);
   const outlineColumn = useWideEnough(outlined ? split : null, OUTLINE_COLUMN_MIN_PX);

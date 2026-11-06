@@ -4,8 +4,7 @@
  * components/TextFileView.tsx, components/TextFileEditor.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
  * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
- * components/PullRequestPanel.tsx, lib/pullRequest.ts, components/MarkdownOutline.tsx,
- * components/MarkdownOutlineRow.tsx.
+ * components/PullRequestPanel.tsx, lib/pullRequest.ts, components/MarkdownOutline.tsx.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const FILES_KO: Record<string, string> = {
@@ -205,10 +204,6 @@ export const FILES_KO: Record<string, string> = {
   "Only a device that drives this PC can edit its files.": "이 PC를 조작할 수 있는 기기만 파일을 수정할 수 있습니다.",
   "The file could not be saved.": "파일을 저장하지 못했습니다.",
   "Text of {name}": "{name}의 내용",
-  "Markdown outline": "Markdown 목차",
-  "A Markdown preview lists its headings beside the text and marks the one you are reading. On a narrow screen, the Outline button in the header opens the list.": "Markdown 미리보기 옆에 제목 목록을 보여 주고 지금 읽는 제목을 표시합니다. 좁은 화면에서는 머리글의 목차 버튼으로 목록을 엽니다.",
-  "Documents in Files": "파일에 문서 탭",
-  "Files shows a Documents tab: the Markdown files under the pane's folder, newest first, with a filter. Each one opens in the file viewer to read.": "파일 창에 문서 탭을 보여 줍니다. 창 폴더 아래의 마크다운 파일을 최근에 바뀐 순서로 나열하고 이름으로 거를 수 있습니다. 파일을 누르면 파일 보기에서 읽을 수 있습니다.",
   "Documents": "문서",
   "Refresh documents": "문서 목록 새로 고침",
   "Filter documents": "문서 거르기",

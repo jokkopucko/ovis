@@ -232,7 +232,7 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
     // Settings can restore the size that led to the previous announcement: the next pinch must
     // clear and restore the same words, rather than silently assigning unchanged text.
     await page.keyboard.press("ControlOrMeta+Shift+Comma");
-    await openSettingsPage(page, "Terminal");
+    await openSettingsPage(page, "Appearance");
     await page.getByRole("button", { name: "Decrease terminal font size", exact: true }).click();
     await page.getByRole("button", { name: "Close settings", exact: true }).click();
     await page.evaluate(() => {

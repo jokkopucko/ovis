@@ -31,6 +31,18 @@ Unlicense).
 [Project Nayuki's QR Code generator](https://github.com/nayuki/QR-Code-generator),
 under MIT, Copyright (c) Project Nayuki. The MIT license text below applies.
 
+## Herdr app tab bar and status line
+
+The desktop header's one row (`src/App.tsx` `stripInHeader`, `src/styles.css` `.header-tabs`) and
+the pane column's status bar (`src/components/StatusBar.tsx`) follow the Herdr app,
+<https://github.com/herdrdev/herdr-app> (`defaults/mods/tabs/main.js` and
+`defaults/mods/workspace-status/main.js`, commit `cfcf836`): the workspace's tabs in the top row
+with `+` after them and the side panel's Files button at the far end, the sidebar's head with the
+logo, search and collapse in that order, and a 28 px status line under the workspace naming the
+computer and its branch. Its sizes and layout were adapted; no code was copied. Licensed under the
+Apache License, Version 2.0 (<http://www.apache.org/licenses/LICENSE-2.0>), copyright the Herdr
+app's authors.
+
 ## Agent of Empires request correlation
 
 `server/request-log.ts` adapts the request-completion boundary and client correlation-ID

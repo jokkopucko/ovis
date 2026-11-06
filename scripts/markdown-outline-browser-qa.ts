@@ -1,4 +1,4 @@
-/** Settings > File viewer > Markdown outline (#636) in the real viewer, built with the app's CSP: column, drawer, docked, off. */
+/** The Markdown outline (#636), always on, in the real viewer, built with the app's CSP: column, drawer, docked, and a stored old "off" ignored. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +22,7 @@ const evidence = process.env.UI_EVIDENCE_DIR;
 let browser: Browser | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
 
-/** A page of the fixture at `width`×`height`, with the outline setting as given. */
+/** A page of the fixture at `width`×`height`, with the old outline switch stored as given (it is ignored now). */
 async function open(width: number, height: number, { outline, theme = "dark", docked = false }: { outline: boolean; theme?: "dark" | "light"; docked?: boolean }): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const touch = width < 600;
   const context = await browser!.newContext({ viewport: { width, height }, isMobile: touch, hasTouch: touch, locale: "en-US" });
@@ -94,14 +94,12 @@ try {
   if (evidence) mkdirSync(evidence, { recursive: true });
 
   {
-    // off (the default): the viewer is as it was, the body's wrapper takes no box
+    // a device that stored the old switch off still gets the outline: the choice is gone
     const { page, errors, close } = await open(1280, 800, { outline: false });
-    assert.equal(await page.locator(".markdown-outline").count(), 0, "off: no outline");
-    assert.equal(await page.getByRole("button", { name: "Outline", exact: true }).count(), 0, "off: no Outline button");
-    assert.equal(await page.locator(".file-viewer-split").evaluate((element) => getComputedStyle(element).display), "contents", "off: the wrapper lays nothing out");
+    await page.getByRole("navigation", { name: "Outline" }).waitFor();
     assert.deepEqual(errors, []);
     await close();
-    console.log("PASS off: no outline, no button, the body laid out as before");
+    console.log("PASS a stored old off is ignored: the outline is drawn");
   }
 
   for (const theme of ["dark", "light"] as const) {

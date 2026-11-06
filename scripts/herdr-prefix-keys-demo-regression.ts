@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
-import { openSettingsPage } from "./settings-page.ts";
+import { openSettingsFolds, openSettingsPage } from "./settings-page.ts";
 import panes from "../site/demo/fixtures/panes.json";
 
 const screenshotDir = process.env.HERDR_KEYS_SCREENSHOT_DIR;
@@ -69,6 +69,8 @@ try {
         // turned on: the Settings row lists the bindings read from this PC's herdr config
         await page.keyboard.press("Control+Shift+Comma");
         await openSettingsPage(page, "Shortcuts");
+        // the opt-in sits under More settings
+        await openSettingsFolds(page);
         const toggle = page.getByRole("switch", { name: "Use herdr's prefix keys", exact: true });
         assert.equal(await toggle.getAttribute("aria-checked"), "false");
         await toggle.click();
@@ -160,9 +162,9 @@ try {
                 localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertsOn: false, theme, herdrPrefixKeys: true }));
               }, theme);
               const page = await shot.newPage();
-              await page.goto(`${origin}?pane=${encodeURIComponent(panes.api)}&view=terminal&settings=shortcuts`);
+              // a link to the group opens the More settings fold it sits in
+              await page.goto(`${origin}?pane=${encodeURIComponent(panes.api)}&view=terminal&settings=shortcuts&section=herdr-keys`);
               await page.locator(".settings-dialog").waitFor();
-              await openSettingsPage(page, "Shortcuts");
               const section = page.locator('[data-section="herdr-keys"]');
               await section.locator("kbd").first().waitFor();
               await section.scrollIntoViewIfNeeded();

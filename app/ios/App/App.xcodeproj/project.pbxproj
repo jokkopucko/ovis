@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		A67F098E31CE4D459B240001 /* OvisPushPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67F098E31CE4D459B240002 /* OvisPushPlugin.swift */; };
 		A67F098E31CE4D459B240040 /* OvisAuthPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67F098E31CE4D459B240041 /* OvisAuthPlugin.swift */; };
+		D1EC7A0000000000000000A2 /* OvisDirectPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1EC7A0000000000000000A1 /* OvisDirectPlugin.swift */; };
 		A67F098E31CE4D459B240003 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67F098E31CE4D459B240004 /* NotificationService.swift */; };
 		A67F098E31CE4D459B240005 /* OvisPushCore in Frameworks */ = {isa = PBXBuildFile; productRef = A67F098E31CE4D459B240006 /* OvisPushCore */; };
 		A67F098E31CE4D459B240007 /* OvisPushCore in Frameworks */ = {isa = PBXBuildFile; productRef = A67F098E31CE4D459B240008 /* OvisPushCore */; };
@@ -63,6 +64,7 @@
 /* Begin PBXFileReference section */
 		A67F098E31CE4D459B240002 /* OvisPushPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OvisPushPlugin.swift; sourceTree = "<group>"; };
 		A67F098E31CE4D459B240041 /* OvisAuthPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OvisAuthPlugin.swift; sourceTree = "<group>"; };
+		D1EC7A0000000000000000A1 /* OvisDirectPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OvisDirectPlugin.swift; sourceTree = "<group>"; };
 		A67F098E31CE4D459B240004 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		A67F098E31CE4D459B24000A /* OvisNotifications.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OvisNotifications.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A67F098E31CE4D459B24000E /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
@@ -142,6 +144,7 @@
 				4E5244520000000000000003 /* HerdrShellPlugin.swift */,
 				A67F098E31CE4D459B240002 /* OvisPushPlugin.swift */,
 				A67F098E31CE4D459B240041 /* OvisAuthPlugin.swift */,
+				D1EC7A0000000000000000A1 /* OvisDirectPlugin.swift */,
 				A67F098E31CE4D459B24000E /* App.entitlements */,
 				4E5244520000000000000001 /* HerdrBridgeViewController.swift */,
 				5C0BE9A70000000000000001 /* ScopePath.swift */,
@@ -285,6 +288,7 @@
 				4E5244520000000000000004 /* HerdrShellPlugin.swift in Sources */,
 				A67F098E31CE4D459B240001 /* OvisPushPlugin.swift in Sources */,
 				A67F098E31CE4D459B240040 /* OvisAuthPlugin.swift in Sources */,
+				D1EC7A0000000000000000A2 /* OvisDirectPlugin.swift in Sources */,
 				4E5244520000000000000002 /* HerdrBridgeViewController.swift in Sources */,
 				5C0BE9A70000000000000002 /* ScopePath.swift in Sources */,
 			);
@@ -394,7 +398,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 5;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -453,7 +457,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 5;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

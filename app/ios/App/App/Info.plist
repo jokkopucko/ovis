@@ -77,6 +77,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the QR code your PC shows under Settings, Phone &amp; devices.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect straight to your PC when it is on the same network, instead of through the Ovis relay.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dictate messages and commands to your agents with voice input.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

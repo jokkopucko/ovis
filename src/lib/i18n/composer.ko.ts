@@ -164,7 +164,6 @@ export const COMPOSER_KO: Record<string, string> = {
   "Not pasted: the line has no room for the file's path. Shorten it, then paste again.": "붙여넣지\u00a0못했습니다: 입력창에\u00a0파일\u00a0경로가\u00a0들어갈\u00a0자리가\u00a0없습니다. 줄을\u00a0줄인\u00a0뒤\u00a0다시\u00a0붙여넣으세요.",
   "Pasted up to the line's limit: {n} characters were left out.": "입력창\u00a0한도까지만\u00a0붙여넣었습니다: {n}자가\u00a0빠졌습니다.",
   "The clipboard could not be read. Use the keyboard's own paste in the input line.": "클립보드를\u00a0읽지\u00a0못했습니다. 입력창에서\u00a0키보드의\u00a0붙여넣기를\u00a0쓰세요.",
-  "Paste and send": "붙여넣고 보내기",
   "Paste is not available here. Use the keyboard's own paste in the message box.": "여기서는\u00a0붙여넣기를\u00a0쓸\u00a0수\u00a0없습니다. 입력창에서\u00a0키보드의\u00a0붙여넣기를\u00a0쓰세요.",
   "The clipboard could not be read. Use the keyboard's own paste in the message box.": "클립보드를\u00a0읽지\u00a0못했습니다. 입력창에서\u00a0키보드의\u00a0붙여넣기를\u00a0쓰세요.",
   "The clipboard holds more than a message's {max} characters. Nothing was sent.": "클립보드의\u00a0글이\u00a0메시지\u00a0한도\u00a0{max}자보다\u00a0깁니다. 아무것도\u00a0보내지\u00a0않았습니다.",

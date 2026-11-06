@@ -4,7 +4,7 @@
  * the heading folds the group; New workspace offers the groups. At 390 and 1280, light and dark.
  * No live session is read.
  *
- * Settings -> Appearance -> Named agent groups is on, with the groups Agents and Tasks.
+ * Settings -> Experimental -> Named agent groups is on, with the groups Agents and Tasks.
  *
  * UI_EVIDENCE_DIR: agent-groups-<390|1280>-<light|dark>.png (the grouped list),
  * agent-groups-dialog-<...>.png (New workspace's Group field) and agent-groups-setting-<...>.png.
@@ -69,7 +69,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await dialog.waitFor({ state: "detached" });
 
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
-  await openSettingsPage(page, "Appearance");
+  await openSettingsPage(page, "Experimental");
   const toggle = page.locator(".settings-dialog").getByRole("switch", { name: "Named agent groups", exact: true });
   assert.equal(await toggle.getAttribute("aria-checked"), "true", `${tag}: the setting reads on`);
   const settingRow = toggle.locator("xpath=ancestor::*[contains(@class, 'settings-row')][1]");

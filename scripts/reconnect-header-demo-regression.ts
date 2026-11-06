@@ -1,9 +1,10 @@
 /**
- * A lost connection is said in the header's title area, in the crumb's place: Reconnecting… while it is
- * lost, Connected a moment once it is back, then the crumb again (src/lib/headerConnection.ts). On a
- * phone (390, 412) and on a desktop (1280): the word is whole and on the title's line, the header keeps its
- * height, the title stays, nothing in the line is animated, and the draft typed before the loss is
- * neither lost nor sent by the return. The real client over owned demo fixtures; no live herdr session.
+ * A lost connection is said in words (src/lib/headerConnection.ts): Reconnecting… while it is lost,
+ * Connected once it is back. On a phone (390, 412) in the header's title area, in the crumb's place,
+ * then the crumb again: the word is whole and on the title's line, the header keeps its height, the title
+ * stays and nothing in the line is animated. On a desktop (1280) in the status bar under the pane, whose
+ * height and the header's stay put. On a tablet (800, touch) in the connection chip, its word drawn. Either way the draft typed before the loss is neither lost nor sent
+ * by the return. The real client over owned demo fixtures; no live herdr session.
  * The demo's `?demo_connection=switch` loses and restores the connection when the page says so.
  */
 import assert from "node:assert/strict";
@@ -69,6 +70,62 @@ async function restoreAndCatchConnected(page: Page): Promise<LineFacts> {
   }));
 }
 
+/** A tablet (a touch screen from 769px): the tabs are the header's row and no status bar is drawn, so
+ *  the connection chip itself says reconnecting in words, and the draft waits. */
+async function tabletChip(page: Page, width: number): Promise<void> {
+  await page.locator(".app-header.has-tab-row").waitFor();
+  assert.equal(await page.locator(".status-bar").count(), 0, `${width}: a touch screen draws no status bar`);
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  await composer.fill(DRAFT);
+  await page.evaluate(() => window.herdrDemoLoseConnection());
+  const word = page.locator(".app-header .conn-reconnecting .conn-text");
+  await word.waitFor();
+  await page.waitForFunction(() => document.querySelector(".app-header .conn-reconnecting .conn-text")?.textContent === "reconnecting");
+  const box = await word.boundingBox();
+  assert.ok(box !== null && box.width > 20 && box.height > 8, `${width}: the chip's word is drawn, not clipped away (${JSON.stringify(box)})`);
+  if (evidence) { mkdirSync(evidence, { recursive: true }); await page.screenshot({ path: join(evidence, `reconnect-header-${width}-reconnecting.png`) }); }
+  await page.evaluate(() => { window.herdrDemoRestoreConnection(); window.dispatchEvent(new Event("online")); });
+  await page.locator(".conn-live").waitFor({ state: "attached" });
+  assert.equal(await composer.inputValue(), DRAFT, `${width}: the return sends nothing: the draft waits for the user`);
+  console.log(`PASS ${width}: a tablet's chip says reconnecting in words, the draft kept`);
+}
+
+/** A desktop window: the status bar says the connection in words, its height and the header's unchanged,
+ *  the draft kept and nothing sent; another pane on the same connected PC says nothing new. */
+async function desktopStatusBar(page: Page, width: number): Promise<void> {
+  const conn = page.locator(".status-bar .status-bar-conn");
+  await conn.waitFor();
+  await appFaces(page);
+  assert.equal(await conn.getAttribute("data-state"), "live", `${width}: a page opening is not a reconnect`);
+  assert.equal((await conn.innerText()).trim(), "Connected");
+  const heights = () => page.evaluate(() => [".app-header", ".status-bar"].map((selector) => document.querySelector(selector)!.getBoundingClientRect().height));
+  const before = await heights();
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  await composer.fill(DRAFT);
+  await page.evaluate(() => window.herdrDemoLoseConnection());
+  await page.locator(".status-bar-conn[data-state='reconnecting']").waitFor();
+  assert.equal((await conn.innerText()).trim(), "Reconnecting…", `${width}: the status bar says it is reconnecting`);
+  assert.deepEqual(await heights(), before, `${width}: the header and the status bar keep their heights`);
+  assert.equal(await composer.inputValue(), DRAFT, `${width}: the draft stays while reconnecting`);
+  await composer.press("End");
+  await page.keyboard.insertText(MORE);
+  if (evidence) { mkdirSync(evidence, { recursive: true }); await page.screenshot({ path: join(evidence, `reconnect-header-${width}-reconnecting.png`) }); }
+  await page.evaluate(() => { window.herdrDemoRestoreConnection(); window.dispatchEvent(new Event("online")); });
+  await page.locator(".conn-live").waitFor({ state: "attached" });
+  await page.waitForFunction(() => document.querySelector(".status-bar-conn")?.getAttribute("data-state") !== "reconnecting");
+  assert.equal((await conn.innerText()).trim(), "Connected", `${width}: back, the status bar says so`);
+  assert.deepEqual(await heights(), before, `${width}: the heights still hold`);
+  assert.equal(await composer.inputValue(), DRAFT + MORE, `${width}: the return sends nothing: the draft waits for the user`);
+  assert.equal(await page.locator(".chat-turn-user", { hasText: DRAFT }).count(), 0, `${width}: and no message was sent`);
+  // another pane on the same, connected PC: its terminal connecting is no reconnect either
+  await page.locator(".status-bar-conn[data-state='live']").waitFor();
+  await page.locator(".sidebar").getByText("Plan the config file", { exact: true }).click();
+  await page.locator(".conn-live").waitFor({ state: "attached" });
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+  assert.equal(await conn.getAttribute("data-state"), "live", `${width}: a pane switch on a connected PC says nothing`);
+  console.log(`PASS ${width}: Reconnecting… then Connected in the status bar, the draft kept`);
+}
+
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
@@ -88,9 +145,11 @@ try {
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true });
     try {
-      for (const width of [390, 412, 1280]) {
+      for (const width of [390, 412, 800, 1280]) {
         const phone = width < 769;
-        const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, isMobile: phone, hasTouch: phone, colorScheme: "dark", locale: "en-US" });
+        // 800: a touch screen wide enough for the header's tab row, with no status bar under the pane
+        const tablet = width === 800;
+        const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, isMobile: phone, hasTouch: phone || tablet, colorScheme: "dark", locale: "en-US" });
         try {
           await context.addInitScript(`window.lineFacts = ${measureLine.toString()};`);
           await context.addInitScript(() => {
@@ -102,6 +161,8 @@ try {
           page.on("pageerror", (error) => errors.push(error.message));
           await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.hermes)}&view=chat&demo_connection=switch`);
           await page.locator(".conn-live").waitFor({ state: "attached" });
+          if (tablet) { await tabletChip(page, width); assert.deepEqual(errors, []); continue; }
+          if (!phone) { await desktopStatusBar(page, width); assert.deepEqual(errors, []); continue; }
           await page.locator(".context-title-text").waitFor();
           await appFaces(page);
           await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
@@ -142,15 +203,6 @@ try {
           assert.equal(await page.locator(".context-sub:not(.context-session)").innerText(), crumb, `${width}: then the crumb comes back`);
           assert.equal(await composer.inputValue(), DRAFT + MORE, `${width}: the return sends nothing: the draft waits for the user`);
           assert.equal(await page.locator(".chat-turn-user", { hasText: DRAFT }).count(), 0, `${width}: and no message was sent`);
-          if (!phone) {
-            // another pane on the same, connected PC: its terminal connecting is no reconnect either
-            const title = await page.locator(".context-title-text").innerText();
-            await page.locator(".sidebar").getByText("Plan the config file", { exact: true }).click();
-            await page.waitForFunction((before) => document.querySelector(".context-title-text")?.textContent !== before, title);
-            await page.locator(".conn-live").waitFor({ state: "attached" });
-            await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
-            assert.equal(await page.locator(".context-connection").count(), 0, `${width}: a pane switch on a connected PC says nothing`);
-          }
           assert.deepEqual(errors, []);
           console.log(`PASS ${width}: Reconnecting… then Connected in the header's title area, the draft kept`);
         } finally { await context.close(); }

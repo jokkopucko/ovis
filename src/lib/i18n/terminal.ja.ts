@@ -61,7 +61,6 @@ export const TERMINAL_JA: Record<string, string> = {
   "Input held:": "保持した入力:",
   "Send held input": "保持した入力を送信",
   "Discard held input": "保持した入力を破棄",
-  "View only": "表示のみ",
   "Terminal text size {px} px": "ターミナルの文字サイズ {px} px",
   "{command} ran": "{command} 実行済み",
   "Back to Chat": "チャットに戻る",

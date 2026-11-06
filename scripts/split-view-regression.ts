@@ -77,7 +77,7 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
     await page.mouse.move(box.x + box.width * 0.8, box.y + box.height / 2);
     await page.waitForFunction(() => {
       const guide = document.querySelector(".split-drop");
-      return guide?.classList.contains("is-visible") === true && guide.getAttribute("data-side") === "right";
+      return guide?.classList.contains("is-visible") === true && guide.getAttribute("data-edge") === "right";
     });
     if (options.newTargetAtDrop) {
       // The node under the pointer is replaced between the last dragover and the drop (xterm redraws
@@ -233,7 +233,7 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
         await settled(page);
         await page.waitForFunction(([shown, target]) => {
           const element = document.querySelector(".split-drop");
-          return element?.classList.contains("is-visible") === shown && element.getAttribute("data-side") === target;
+          return element?.classList.contains("is-visible") === shown && element.getAttribute("data-edge") === target;
         }, [visible, side] as const);
       };
       const start = async (): Promise<void> => {
@@ -253,9 +253,9 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       };
 
       await preview(false, null);
-      assert.equal(await guide.locator(".split-drop-half").count(), 2, "both drop guides stay mounted");
-      assert.equal(await guide.locator(".split-drop-target").count(), 1, "one indicator moves between the guides");
-      const indicator = (await guide.locator(".split-drop-target").elementHandle())!;
+      assert.equal(await guide.locator(".split-drop-slot").count(), 1, "the one pane's outline stays mounted");
+      assert.equal(await guide.locator(".split-drop-zone").count(), 1, "one indicator moves between the places");
+      const indicator = (await guide.locator(".split-drop-zone").elementHandle())!;
       await start();
       await hover(middle + 40, "right");
       await area.locator(".pane-slot").first().dispatchEvent("dragleave", {
@@ -306,7 +306,7 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await page.emulateMedia({ reducedMotion: "reduce" });
       await start();
       await hover(middle - 40, "left");
-      const durations = await guide.evaluate((element) => [element, element.querySelector(".split-drop-target")!]
+      const durations = await guide.evaluate((element) => [element, element.querySelector(".split-drop-zone")!]
         .flatMap((node) => getComputedStyle(node).transitionDuration.split(",").map((value) => Number.parseFloat(value))));
       assert.equal(durations.every((duration) => duration === 0), true, "reduced motion removes guide and indicator transitions");
       await source.dispatchEvent("dragend", { dataTransfer: data });
@@ -348,9 +348,9 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await page.mouse.down();
       await page.mouse.move(tab.x + tab.width / 2 + 8, tab.y + tab.height / 2 + 4, { steps: 2 });
       // the guide shows as soon as the drag starts, with no half chosen over the strip
-      await page.waitForFunction(() => { const guide = document.querySelector(".split-drop"); return guide?.classList.contains("is-visible") && !guide.hasAttribute("data-side"); });
+      await page.waitForFunction(() => { const guide = document.querySelector(".split-drop"); return guide?.classList.contains("is-visible") && !guide.hasAttribute("data-edge"); });
       await page.mouse.move(box.x + box.width * 0.8, box.y + box.height / 2, { steps: 8 });
-      await page.waitForFunction(() => document.querySelector(".split-drop")?.getAttribute("data-side") === "right");
+      await page.waitForFunction(() => document.querySelector(".split-drop")?.getAttribute("data-edge") === "right");
       await page.mouse.up();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2);
       await isActive(page, "right");
@@ -369,7 +369,8 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await page.mouse.move(again.x + again.width / 2, again.y + again.height / 2);
       await page.mouse.down();
       await page.mouse.move(box.x + box.width * 0.2, box.y + box.height / 2, { steps: 8 });
-      await page.waitForFunction(() => document.querySelector(".split-drop")?.getAttribute("data-side") === "left");
+      // two slots open: the middle of the left one offers its place
+      await page.waitForFunction(() => document.querySelector(".split-drop")?.getAttribute("data-edge") === "middle");
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => document.querySelector(".split-drop")?.classList.contains("is-visible") === false);
       await page.mouse.up();
@@ -470,7 +471,8 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await page.mouse.move(from.x + 38, from.y + from.height / 2 + 4, { steps: 2 });
       await page.mouse.move(area.x + area.width * 0.8, area.y + area.height / 2, { steps: 8 });
       await page.mouse.move(area.x + area.width * 0.8 + 1, area.y + area.height / 2);
-      await page.waitForFunction(() => document.querySelector(".split-drop")?.getAttribute("data-side") === "right");
+      // the middle of the right slot: the pane takes its place
+      await page.waitForFunction(() => document.querySelector(".split-drop")?.getAttribute("data-edge") === "middle");
       await page.mouse.up();
       await isActive(page, "right");
       assert.equal(await half(page, "right").locator(".pane-frame.is-current").getAttribute("data-layout-pane"), beside,
@@ -572,7 +574,7 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await page.mouse.move(rowBox.x + 28, rowBox.y + rowBox.height / 2 + 4, { steps: 2 });
       await page.mouse.move(title.x + 60, title.y + title.height / 2, { steps: 8 });
       await page.mouse.move(title.x + 61, title.y + title.height / 2);
-      await page.waitForFunction(() => document.querySelector(".split-drop")?.getAttribute("data-side") !== null);
+      await page.waitForFunction(() => document.querySelector(".split-drop")?.getAttribute("data-edge") !== null);
       assert.equal(await page.locator(".is-swap-target").count(), 0, "a sidebar row never marks a title");
       await page.mouse.up();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2);
@@ -783,7 +785,8 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await page.mouse.move(box.x + box.width * 0.2, box.y + box.height / 2);
       await page.waitForFunction(() => {
         const guide = document.querySelector(".split-drop");
-        return guide?.classList.contains("is-visible") === true && guide.getAttribute("data-side") === "left";
+        // the middle of the left slot: the dragged pane takes its place
+        return guide?.classList.contains("is-visible") === true && guide.getAttribute("data-edge") === "middle";
       });
       await page.mouse.up();
       await isActive(page, "left");
@@ -965,16 +968,17 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       console.log("PASS a pane moved outside this browser keeps its half, its draft and its lens under the new ID");
     }
 
-    // Rows and columns (Settings' splitGrid): a pane dropped on a slot's bottom edge opens below it,
+    // Rows and columns: a pane dropped on a slot's bottom edge opens below it,
     // the slots already open keep their terminals while the layout changes around them, a boundary
     // moves from the keyboard, the layout is kept for a reload, and closing slots goes back to one pane.
     {
       const [one, two, three] = await panesFor("grid-one", "grid-two", "grid-three") as [string, string, string];
       const sockets: WebSocket[] = [];
       const { page, errors } = await open([one, two, three], "terminal", async (context) => {
+        // the switch an older version stored turned off: it is ignored, the split still takes rows and columns
         await context.addInitScript(() => {
           const settings = JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as Record<string, unknown>;
-          if (!("splitGrid" in settings)) localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, splitGrid: true }));
+          localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, splitGrid: false }));
         });
         context.on("page", (opened) => opened.on("websocket", (socket) => sockets.push(socket)));
       });
@@ -991,7 +995,7 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
         const box = (await page.locator(".pane-split").boundingBox())!;
         await page.mouse.move(box.x + box.width * fx, box.y + box.height * fy, { steps: 8 });
         await page.mouse.move(box.x + box.width * fx, box.y + box.height * fy);
-        await page.waitForFunction((which) => document.querySelector(".split-drop.is-grid.is-visible")?.getAttribute("data-edge") === which, edge);
+        await page.waitForFunction((which) => document.querySelector(".split-drop.is-visible")?.getAttribute("data-edge") === which, edge);
         await page.mouse.up();
         await page.waitForFunction((count) => document.querySelectorAll(".pane-slot").length === count, slots);
       };
@@ -1040,28 +1044,14 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await slot("b").getByRole("button", { name: "Remove from the split", exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2);
       assert.equal(await active.evaluate((node) => node.isConnected), true, "the active slot keeps its terminal");
-      // three slots again, then the setting turned off: two halves, the active slot and the first other at half each
-      await dropAt(two, 0.75, 0.07, "top", 3);
-      await shows("b", two);
-      await page.evaluate(() => {
-        const settings = JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as Record<string, unknown>;
-        localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, splitGrid: false }));
-      });
-      await page.reload();
-      await page.locator(".conn-live").waitFor();
-      await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2
-        && document.querySelector('.pane-slot[data-side="left"][data-slot="a"]') !== null
-        && document.querySelector('.pane-slot[data-side="right"][data-slot="b"].is-active') !== null);
-      assert.equal(await page.locator(".pane-split-divider").count(), 0, "two halves have no boundary to move");
-      await page.waitForFunction((width) => {
-        const box = document.querySelector('.pane-slot[data-slot="a"]')?.getBoundingClientRect();
-        return box !== undefined && Math.abs(box.width - width / 2) < 2;
-      }, area.width);
+      // two slots side by side are two halves again: closing the other one goes back to one pane
+      await page.waitForFunction(() => document.querySelector('.pane-slot[data-side="left"][data-slot="a"]') !== null);
       await slot("a").getByRole("button", { name: "Close this half", exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 1 && sessionStorage.getItem("ovis:split") === null);
-      await shows("b", two);
+      await shows("c", three);
+      assert.equal(await active.evaluate((node) => node.isConnected), true, "the pane left keeps its terminal");
       assert.deepEqual(errors, []);
-      console.log("PASS rows and columns: a pane opens below a slot, slots keep their terminals, a boundary moves from the keyboard, a reload keeps the layout and the setting turned off leaves two halves");
+      console.log("PASS rows and columns, on a device that had turned them off: a pane opens below a slot, slots keep their terminals, a boundary moves from the keyboard, a reload keeps the layout and closing slots goes back to the active pane");
     }
 
     // A saved partner on a removed PC is discarded only after the roster arrives.

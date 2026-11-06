@@ -17,6 +17,7 @@ import { GUIDE_KO } from "./i18n/guide.ko.ts";
 import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
 import { RELAY_KO } from "./i18n/relay.ko.ts";
+import { RUNTIME_MOVE_KO } from "./i18n/runtime-move.ko.ts";
 
 /**
  * Korean for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -28,6 +29,7 @@ import { RELAY_KO } from "./i18n/relay.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "View only": "보기 전용",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "붙여넣지 않았습니다: 파일 경로에 줄바꿈이 있어 터미널이 Enter로 받아들입니다.",
   "Attach files": "파일 첨부",
   "Sign out": "로그아웃",
@@ -164,7 +166,6 @@ const BASE: Record<string, string> = {
   "Command palette (⌘⇧K)": "명령 팔레트 (⌘⇧K)",
   "Could not sign out. Try again.": "로그아웃하지 못했습니다. 다시 시도해 주세요.",
   "Retry": "다시 시도",
-  "Notify me when a pane needs input or finishes": "패널이 입력을 기다리거나 끝나면 알려줍니다",
   "On, pushed to this device": "켜짐, 이 기기로 푸시",
   "Alerts on, pushed to this device, even with the app closed. Tap to turn them off": "알림 켜짐, 이 기기로 푸시됩니다. 앱을 닫아도 옵니다. 누르면 꺼집니다",
   "Off on this device": "이 기기에서 꺼짐",
@@ -196,15 +197,13 @@ const BASE: Record<string, string> = {
   "local": "로컬",
   "Via a loopback address: this PC, or a tunnel to it": "루프백 주소로 연결: 이 PC, 또는 이 PC로 오는 터널",
   "Via the Ovis relay": "Ovis 릴레이를 거쳐 연결",
+  "Directly on the same network, not through the relay": "같은 네트워크에서 릴레이 없이 바로 연결",
   "Via the Portal relay": "Portal 릴레이를 거쳐 연결",
   "Via Tailscale": "Tailscale을 거쳐 연결",
   "Via Tailscale, or Funnel from the internet": "Tailscale을 거쳐 연결, 또는 인터넷에서 Funnel로 연결",
   "Via the local network": "로컬 네트워크를 거쳐 연결",
   "Straight to this address": "이 주소로 바로 연결",
-  "Sessions on this PC": "이 PC의 세션",
-  "{count} working": "작업 중 {count}개",
   "{count} waiting for you": "내 응답 대기 {count}개",
-  "{count} done": "완료 {count}개",
   "Open the next session waiting for you": "응답을 기다리는 다음 세션 열기",
   "Tab {index} of {count}": "탭 {count}개 중 {index}번째",
   "Tabs of {workspace}": "{workspace}의 탭",
@@ -436,9 +435,6 @@ const BASE: Record<string, string> = {
   "No group": "그룹 없음",
   "Context {percent}% left": "컨텍스트 {percent}% 남음",
   "{used} of {window} tokens": "{window} 토큰 중 {used}",
-  "Suggestion chip": "제안 칩",
-  "Artifacts chip": "아티팩트 칩",
-  "Side conversations chip (experimental)": "곁가지 대화 칩 (실험적)",
   "Permission mode": "권한 모드",
   "Model": "모델",
   "One model name, without spaces.": "띄어쓰기 없는 모델 이름 하나를 적으세요.",
@@ -453,6 +449,7 @@ const BASE: Record<string, string> = {
   "New terminal": "새 터미널",
   "New terminal failed: {reason}": "새 터미널 열기 실패: {reason}",
   "herdr prefix: press a key": "herdr 접두키: 키를 누르세요",
+  "Shell": "셸",
   "Connect a device": "기기 연결",
   "This device": "이 기기",
   "Sign out of {provider}": "{provider} 로그아웃",
@@ -462,6 +459,9 @@ const BASE: Record<string, string> = {
   "Phones paired through the relay will need to scan a new code.": "릴레이로 페어링된 폰은 새 코드를 다시 스캔해야 합니다.",
   "Pairs this phone through the relay, so Ovis keeps working away from home.": "이 폰을 릴레이로 페어링해 집 밖에서도 Ovis를 쓸 수 있게 합니다.",
   "This PC": "이 PC",
+  "Paste and send": "붙여넣고 보내기",
+  "Conversation": "대화",
+  "Off": "끄기",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
@@ -482,6 +482,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   updates: UPDATES_KO,
   palette: PALETTE_KO,
   relay: RELAY_KO,
+  "runtime-move": RUNTIME_MOVE_KO,
 };
 
 export const KO: Record<string, string> = Object.assign({}, ...Object.values(KO_PARTS));

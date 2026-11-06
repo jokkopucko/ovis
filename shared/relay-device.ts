@@ -28,6 +28,8 @@ export interface RelayDevice {
   readonly account?: string;
   /** when an introduction saved this PC: until its mailbox brings the add, the PC may not know this device yet */
   readonly introduced_at?: number;
+  /** the PC's direct carriers its last AUTH_OK named (docs/relay.md, "Direct on the same network"): tried first next time */
+  readonly direct?: readonly string[];
 }
 
 /** Updates are atomic, including between two tabs the same PC admits at once. */

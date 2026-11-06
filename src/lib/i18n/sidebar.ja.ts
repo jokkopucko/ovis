@@ -5,6 +5,7 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const SIDEBAR_JA: Record<string, string> = {
+  "{count} working": "作業中 {count} 件",
   "Pin agent": "エージェントを固定",
   "Unpin agent": "エージェントの固定を解除",
   "Lock agent": "エージェントをロック",
@@ -66,7 +67,6 @@ export const SIDEBAR_JA: Record<string, string> = {
   "Close group": "グループを閉じる",
   "Collapse": "折りたたむ",
   "Expand": "展開",
-  "Shell": "シェル",
   "Working": "作業中",
   "Idle": "待機",
   "{count} need you": "{count} 件が対応待ち",

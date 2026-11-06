@@ -1,5 +1,15 @@
 /* Settings is built from these: a group (caption + card), a row, and the four controls. */
 
+/* one grid for every page: a row's content starts this far in from its card's edge, and a caption, a
+   note and a fold line start there too; a row's picture takes the first column, its name the next */
+.settings-section,
+.settings-fold,
+.settings-row {
+  --settings-inset: calc(var(--space-4) + var(--hairline));
+  --settings-icon: 16px;
+  --settings-icon-column: calc(var(--settings-icon) + var(--space-2));
+}
+
 .settings-section {
   display: flex;
   flex-direction: column;
@@ -9,7 +19,7 @@
 
 .settings-section h3 {
   margin: 0;
-  padding: 0 var(--space-1);
+  padding: 0 var(--settings-inset);
   color: var(--text-dim);
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
@@ -22,7 +32,7 @@
   align-items: center;
   gap: var(--space-2);
   min-height: var(--control-h);
-  padding: 0 var(--space-1);
+  padding: 0 var(--settings-inset);
   color: var(--text-dim);
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
@@ -42,8 +52,8 @@
 
 .settings-fold-chevron {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
+  width: var(--settings-icon);
+  height: var(--settings-icon);
   transition: transform var(--dur-fast) var(--ease-out);
 }
 
@@ -73,7 +83,7 @@
 
 .settings-note {
   margin: 0;
-  padding: 0 var(--space-1);
+  padding: 0 var(--settings-inset);
 }
 
 /* one surface per group: its rows are parted by hairlines, never by boxes of their own */
@@ -89,6 +99,11 @@
 .settings-card > .settings-row,
 .settings-card > .settings-item {
   padding: var(--space-3) var(--space-4);
+}
+
+/* every row of a card is at least one control tall, a row of words alone too, so the hairlines keep one rhythm */
+.settings-card > .settings-row {
+  min-height: calc(var(--control-h) + var(--space-3) * 2);
 }
 
 .settings-card > * + * {
@@ -132,6 +147,297 @@
   font-weight: var(--fw-medium);
 }
 
+.settings-label-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* the sentence and condition under a name start where the name does, not under its picture */
+.settings-row-text:has(> .settings-label-line > .settings-row-icon) > :not(.settings-label-line) {
+  padding-inline-start: var(--settings-icon-column);
+}
+
+/* the ↺ beside a label whose value moved off its default */
+.settings-reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.settings-reset:hover {
+  background: var(--bg-hover);
+  color: var(--text-strong);
+}
+
+.settings-reset svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* one row of theme cards that scrolls sideways (ThemePicker): never more than a card tall */
+.theme-cards {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: 4px 2px;
+  margin: -4px -2px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+
+.theme-cards::-webkit-scrollbar {
+  display: none;
+}
+
+/* the other kind of themes after the side's own */
+.theme-cards-rule {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: var(--hairline);
+  margin: 6px 0 22px;
+  background: var(--border-strong);
+}
+
+.theme-card {
+  display: flex;
+  flex: 0 0 96px;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+  scroll-snap-align: start;
+}
+
+.theme-card[aria-checked="true"] {
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+
+/* a sidebar beside a pane, in the theme's own colours */
+.theme-card-art {
+  position: relative;
+  display: flex;
+  gap: 4px;
+  aspect-ratio: 16 / 10;
+  padding: 4px;
+  overflow: hidden;
+  border: var(--hairline) solid;
+  border-radius: var(--radius-md);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+.theme-card:hover .theme-card-art {
+  outline-color: var(--border-strong);
+}
+
+.theme-card[aria-checked="true"] .theme-card-art,
+.theme-card:focus-visible .theme-card-art {
+  outline-color: var(--accent);
+}
+
+.theme-card:focus-visible {
+  outline: none;
+}
+
+.theme-card-side,
+.theme-card-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px;
+  border: var(--hairline) solid;
+  border-radius: 3px;
+}
+
+.theme-card-side {
+  flex: 0 0 30%;
+}
+
+.theme-card-pane {
+  flex: 1 1 auto;
+}
+
+.theme-card-art i {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.theme-card-side i:nth-child(2),
+.theme-card-pane i:nth-child(2) {
+  width: 70%;
+  opacity: 0.7;
+}
+
+.theme-card-side i:nth-child(3) {
+  width: 55%;
+  opacity: 0.7;
+}
+
+.theme-card-art b {
+  width: 8px;
+  height: 8px;
+  margin-top: auto;
+  margin-left: auto;
+  border-radius: 50%;
+}
+
+.theme-card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the cards sit right under their row, inside the same block */
+.settings-card > .settings-item.theme-strip {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.theme-strip-frame {
+  position: relative;
+  min-width: 0;
+}
+
+.theme-strip-arrow {
+  position: absolute;
+  top: 30px;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-card);
+}
+
+.theme-strip-arrow.is-start {
+  left: -8px;
+}
+
+.theme-strip-arrow.is-end {
+  right: -8px;
+}
+
+/* a touch screen swipes instead */
+@media (hover: none) {
+  .theme-strip-arrow {
+    display: none;
+  }
+}
+
+/* the picture before a row's name, in a column of its own: every name of a page starts on one line */
+.settings-row-icon {
+  flex: 0 0 auto;
+  width: var(--settings-icon);
+  height: var(--settings-icon);
+  margin-inline-end: calc(var(--settings-icon-column) - var(--settings-icon) - var(--space-1));
+  color: var(--text-dim);
+}
+
+/* a tiny drawing of what the choice does, beside its control */
+.settings-row-preview {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+/* Wrap long lines, drawn: a line of code in a box two lines high, wrapped or running past the edge */
+.settings-wrap-preview {
+  display: block;
+  width: 88px;
+  height: 30px;
+  padding: 2px var(--space-1);
+  overflow: hidden;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 9px;
+  line-height: 12px;
+  white-space: pre;
+  position: relative;
+}
+
+/* off, the line runs past the edge: it fades there */
+.settings-wrap-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 18px;
+  background: linear-gradient(to right, transparent, var(--bg));
+}
+
+.settings-wrap-preview.is-wrapped {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.settings-wrap-preview.is-wrapped::after {
+  display: none;
+}
+
+/* Sidebar rows, drawn: two workspace rows, each one line or two */
+.sidebar-rows-preview {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 34px;
+  padding: 3px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.sidebar-rows-preview-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-rows-preview-item i {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--text-dim);
+}
+
+.sidebar-rows-preview.is-two .sidebar-rows-preview-item i + i {
+  width: 65%;
+  opacity: 0.55;
+}
+
+/* a font list and its size on one line, wrapping the size under the list when the row has no room */
+.settings-row > .settings-font-size {
+  flex: 0 1 auto;
+}
+
+.settings-font-size {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
 .settings-description,
 .settings-hint {
   margin: 0;
@@ -149,6 +455,11 @@
 .settings-condition {
   display: block;
   color: var(--text);
+}
+
+/* under a row's name it takes the sentence's size; elsewhere (a dialog's warning) it keeps its own */
+.settings-row-text > .settings-condition {
+  font-size: var(--fs-xs);
 }
 
 /* one sentence at rest; its conditions and exceptions open under it (DESIGN.md: messages say
@@ -220,6 +531,17 @@
   border-radius: var(--radius-md);
 }
 
+/* a mouse's stepper is one control tall, border included, as a select and the segments are */
+@media (pointer: fine) {
+  .settings-stepper {
+    height: var(--control-h);
+  }
+
+  .settings-stepper > .icon-button {
+    height: calc(var(--control-h) - var(--hairline) * 2);
+  }
+}
+
 .settings-stepper output {
   min-width: 3.5em;
   color: var(--text-strong);
@@ -282,12 +604,14 @@
   min-width: 0;
 }
 
-/* the switch keeps a finger-sized box; the negative margin keeps that box from growing its row */
+/* the switch keeps a finger-sized box; the negative margins keep that box from growing its row past
+   one control's height, and put the track's end on the edge every other control ends on */
 .settings-toggle {
   position: relative;
   width: calc(var(--touch-target) + var(--space-2));
   height: var(--touch-target);
-  margin-block: calc(var(--space-1) * -1);
+  margin-block: calc((var(--control-h) - var(--touch-target)) / 2);
+  margin-inline-end: calc(var(--space-1) * -1);
   padding: var(--space-2) var(--space-1);
   background: transparent;
   border: 0;
@@ -347,6 +671,44 @@
   .settings-row.is-wide > .settings-font-input {
     flex: 0 0 auto;
   }
+
+  /* a stepper under its name ends on the card's edge, as the font rows' steppers do */
+  .settings-row.is-wide > .settings-stepper,
+  .settings-row.is-wide > .settings-file-size {
+    align-self: flex-end;
+  }
+
+  /* a row's drawing stays on its name's line, at the end; the control takes the line under both */
+  .settings-row.is-wide:has(> .settings-row-preview) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .settings-row.is-wide > .settings-row-preview {
+    grid-row: 1;
+    grid-column: 2;
+  }
+
+  .settings-row.is-wide:has(> .settings-row-preview) > :not(.settings-row-text, .settings-row-preview) {
+    grid-column: 1 / -1;
+  }
+
+  /* a little narrower than three to a line, so the next card shows at the edge */
+  .theme-card {
+    flex-basis: 84px;
+  }
+
+  /* on a phone the list takes the line and its size sits under it, at the end */
+  .settings-row.is-wide > .settings-font-size {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .settings-row.is-wide > .settings-font-size > .settings-font-field {
+    flex: 1 1 100%;
+    width: auto;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -354,4 +716,68 @@
   .settings-toggle-thumb {
     transition: none;
   }
+}
+
+/* several on/off choices of one decision on one line: a chip each, pressed when on, a little under a
+   control's height so a wrapped set stays light */
+.settings-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.settings-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: calc(var(--control-h) - var(--space-1));
+  padding: 0 var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.settings-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--text-strong);
+}
+
+/* sections read as one card: herdr-app's About list */
+.settings-joined {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-joined > .settings-section:not(:first-child) > .settings-card {
+  border-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.settings-joined > .settings-section:not(:last-child) > .settings-card {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.settings-chip svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+/* a row of chips keeps its name on one line and wraps its chips beside it */
+.settings-row:has(> .settings-chips) > .settings-row-text {
+  flex: none;
+  white-space: nowrap;
+}
+
+.settings-row > .settings-chips {
+  flex: 1 1 0;
 }

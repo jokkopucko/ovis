@@ -64,7 +64,7 @@ try {
     try {
       if (evidence) mkdirSync(evidence, { recursive: true });
       for (const width of [390, 1440]) {
-        const { page, errors, close } = await open(browser, width, {}, "&settings=appearance&section=typography-more");
+        const { page, errors, close } = await open(browser, width, {}, "&settings=appearance&section=typography");
         try {
           const dialog = page.locator(".settings-dialog");
           const select = dialog.getByLabel("Interface font", { exact: true });
@@ -94,7 +94,7 @@ try {
           await page.reload();
           await page.locator(".conn-live").waitFor({ state: "attached" });
           assert.equal(await token(page), `"Fixture UI Font", "Hiragino Sans", ${BUILT_IN}`, "a reload keeps the typed list");
-          await page.goto(`${origin}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.web)}&settings=appearance&section=typography-more`);
+          await page.goto(`${origin}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.web)}&settings=appearance&section=typography`);
           await select.waitFor();
           assert.equal(await select.inputValue(), "custom", "and Settings says it is a typed list");
 

@@ -5,6 +5,7 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const SIDEBAR_ZH: Record<string, string> = {
+  "{count} working": "{count} 个工作中",
   "Pin agent": "固定 Agent",
   "Unpin agent": "取消固定 Agent",
   "Lock agent": "锁定 Agent",
@@ -66,7 +67,6 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Close group": "关闭分组",
   "Collapse": "折叠",
   "Expand": "展开",
-  "Shell": "Shell",
   "Working": "工作中",
   "Idle": "空闲",
   "{count} need you": "{count} 个需要你",

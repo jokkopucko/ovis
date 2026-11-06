@@ -60,7 +60,6 @@ export const CHAT_KO: Record<string, string> = {
   "Ran": "실행함",
   "{s}s": "{s}초",
   "{m}m {s}s": "{m}분 {s}초",
-  "Conversation": "대화",
   "Image {n} from {tool}": "{tool}에서 가져온 이미지 {n}",
   "failed": "실패",
   "Error": "오류",

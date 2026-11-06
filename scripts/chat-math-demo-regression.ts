@@ -75,7 +75,7 @@ async function check(browser: Browser, origin: string, width: number, theme: "da
     await context.addInitScript(([settings, pane]) => {
       localStorage.setItem("ovis:settings", settings!);
       localStorage.setItem(`ovis:view:${pane}`, "chat");
-    }, [JSON.stringify({ language: "en", alertInApp: false, theme, palette: "codex", darkTheme: "codex", lightTheme: "codex" }), PANE]);
+    }, [JSON.stringify({ language: "en", alertsOn: false, theme, palette: "codex", darkTheme: "codex", lightTheme: "codex" }), PANE]);
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));

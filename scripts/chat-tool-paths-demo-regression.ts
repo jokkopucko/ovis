@@ -252,7 +252,7 @@ createRoot(document.getElementById("root")).render(<SettingsProvider><Fixture />
 }
 
 // the demo's other agents finish turns now and then: their in-app alerts stay off over the cards
-const settingsOf = (theme: string, language: string) => JSON.stringify({ language, theme, alertInApp: false });
+const settingsOf = (theme: string, language: string) => JSON.stringify({ language, theme, alertsOn: false });
 let shots = 0;
 const captures: string[] = [];
 /** Once every running animation has finished: a sheet still sliding in or out is no state. */

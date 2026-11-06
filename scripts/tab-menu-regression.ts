@@ -123,7 +123,9 @@ async function checkDesktop(browser: Browser, origin: string, first: string, sec
     const stripMenu = strip.locator(".tab-strip-item.is-active .tab-strip-menu");
     const opacity = (locator: Locator) => locator.evaluate((node) => getComputedStyle(node).opacity);
     const pointerOffStrip = () => page.mouse.move(640, 600);
-    assert.equal(await strip.locator(".tab-strip-close, .tab-strip-panes").count(), 0, "tabs render neither close buttons nor chevrons");
+    assert.equal(await strip.locator(".tab-strip-panes").count(), 0, "tabs render no chevrons");
+    // the header's row is a browser's tab strip: only the open tab shows its close at rest
+    assert.equal(await strip.locator(".tab-strip-close:visible").count(), 1, "only the open tab shows its close at rest");
     // The selected tab's menu button holds its place hidden until the pointer is over the strip or
     // the tab has keyboard focus, and opens the trimmed menu a touch screen's button does.
     await pointerOffStrip();
@@ -232,6 +234,21 @@ async function checkDesktop(browser: Browser, origin: string, first: string, sec
     await pointerOffStrip();
     await narrowMenu.waitFor({ state: "hidden" });
     assert.equal(await tab.evaluate((node) => node === document.activeElement), true, "the resize closes the menu and restores a visible tab");
+    // the strip moves between the header (from 769px) and the pane as the window is resized: a focused
+    // tab's focus goes with it to the open tab of the strip drawn now, both ways
+    const openTabFocused = (label: string) => until(async () => await page.evaluate(() => {
+      const active = document.activeElement;
+      return active?.getAttribute("role") === "tab" && active.getAttribute("aria-selected") === "true" && active.isConnected;
+    }), label);
+    await tab.focus();
+    await page.setViewportSize({ width: 700, height: 800 });
+    await page.locator(".pane-slot .tab-strip").waitFor();
+    await openTabFocused("narrowed, the pane's strip has the focused open tab");
+    assert.equal(await page.evaluate(() => document.activeElement?.closest(".header-tabs") === null), true, "the focus left the header's strip with it");
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.locator(".header-tabs .tab-strip").waitFor();
+    await openTabFocused("widened again, the header's strip has the focused open tab");
+    await pointerOffStrip();
 
     // Right-click targets an inactive tab without activating it; Close removes only that target.
     const nativeTab = (await sessionSnapshot()).tabs.find((candidate) => candidate.tab_id === tabId)!;
@@ -375,6 +392,16 @@ async function checkDesktop(browser: Browser, origin: string, first: string, sec
     await inactive.waitFor({ state: "detached" });
     await currentPane(page, first);
     assert.equal(await strip.getByRole("tab").count(), 1, "closing an inactive tab preserves the original tab");
+    // the header's row is a browser's tab strip: a hovered resting tab's close closes it alone, at once
+    const closable = await tabCreate({ workspaceId: nativeTab.workspace_id, label: "close-x" });
+    const closableTab = page.getByRole("tab", { name: "close-x", exact: true });
+    await closableTab.hover();
+    const closingByX = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname.endsWith("/tab/close"));
+    await strip.locator(".tab-strip-item:not(.is-active)").filter({ has: closableTab }).getByRole("button", { name: "Close close-x", exact: true }).click();
+    assert.deepEqual((await closingByX).request().postDataJSON(), { tab_id: closable.tab.tab_id });
+    await closableTab.waitFor({ state: "detached" });
+    assert.equal(await tab.getAttribute("aria-selected"), "true", "closing another tab by its close keeps the open tab");
+    assert.equal(await strip.getByRole("tab").count(), 1);
 
     // Closing through Delete must return keyboard focus with the native removal, even when
     // its HTTP acknowledgement arrives later than the new snapshot.

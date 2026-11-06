@@ -35,7 +35,9 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
+import { link as linkPc, plainLabel } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
+import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
 import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server/windows-processes.ts";
@@ -866,13 +868,51 @@ async function approvePairings(): Promise<number> {
   const lines = console[Symbol.asyncIterator]();
   for (const pairing of pairings) {
     const what = pairing.intent === "account" ? "join your account" : "pair with this PC";
-    process.stdout.write(`${pairing.label} wants to ${what}. Approve it only if its screen shows ${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}. Approve? [y/N] `);
+    process.stdout.write(`${plainLabel(pairing.label)} wants to ${what}. Approve it only if its screen shows ${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}. Approve? [y/N] `);
     const answer = await lines.next();
     const decision = !answer.done && /^y(es)?$/i.test(answer.value.trim()) ? "approve" : "decline";
     const decided = await fetch(`${origin}/api/relay/pairing`, { method: "POST", headers, body: JSON.stringify({ id: pairing.id, decision }) });
-    process.stdout.write(decided.ok ? `${decision === "approve" ? "Approved" : "Declined"}.\n` : `${pairing.label} is no longer waiting.\n`);
+    process.stdout.write(decided.ok ? `${decision === "approve" ? "Approved" : "Declined"}.\n` : `${plainLabel(pairing.label)} is no longer waiting.\n`);
   }
   return 0;
+}
+
+/**
+ * `link [--code] [--google]`: this PC joins the relay from its own terminal (scripts/plugin-link.ts),
+ * signed in to the account by a device code, or with a code to type and a QR code.
+ */
+async function linkCommand(): Promise<number> {
+  // the checkout survives in-app updates: the release that runs has the link that fits its server (as phone-setup)
+  const active = activePluginScript(ROOT, port, APP_STATE_DIR);
+  if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) {
+    // Ctrl+C reaches the release's link too, which takes its code back; this one waits for it
+    process.on("SIGINT", () => undefined);
+    const child = Bun.spawn([process.execPath, active, "link", ...process.argv.slice(3)], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    // a SIGTERM or SIGHUP sent to this process alone is passed on, so the release takes its code back too
+    for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => child.kill(signal));
+    return await child.exited;
+  }
+  if (!(await health())) {
+    process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
+    return 1;
+  }
+  const headers: Record<string, string> = {};
+  if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
+  const stop = new AbortController();
+  // Ctrl+C, a supervisor's SIGTERM or the terminal closing (SIGHUP): each takes the code back on the way out.
+  // A signal can come twice (to the process group, and passed on by a checkout's link), so every one is
+  // caught, and the clean-up gets ten seconds before the process ends anyway
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => {
+    if (stop.signal.aborted) return;
+    stop.abort();
+    setTimeout(() => process.exit(1), 10_000).unref();
+  });
+  return linkPc(process.argv.slice(3), {
+    origin, headers, signal: stop.signal,
+    accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
+    out: (text) => process.stdout.write(text),
+    lines: console[Symbol.asyncIterator](),
+  });
 }
 
 /**
@@ -1013,10 +1053,11 @@ if (import.meta.main) {
   else if (command === "stop") process.exit(await stop());
   else if (command === "status") process.exit(await status());
   else if (command === "pair") process.exit(await pair());
+  else if (command === "link") process.exit(await linkCommand());
   else if (command === "phone") process.exit(await phone());
   else if (command === "phone-setup") process.exit(await phoneSetup());
   else {
-    process.stderr.write(`usage: bun scripts/plugin.ts <start|stop|status|pair|phone|phone-setup>\n`);
+    process.stderr.write(`usage: bun scripts/plugin.ts <start|stop|status|pair|link|phone|phone-setup>\n`);
     process.exit(2);
   }
 }

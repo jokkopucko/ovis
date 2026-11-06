@@ -46,7 +46,7 @@ export async function checkSettingsAcrossTabs(browser: Browser, origin: string):
     // tab B, open since before that change: an unrelated setting
     await tabB.bringToFront();
     await tabB.keyboard.press("ControlOrMeta+Shift+Comma");
-    await openSettingsPage(tabB, "Terminal");
+    await openSettingsPage(tabB, "Appearance");
     await tabB.getByRole("button", { name: "Increase terminal font size", exact: true }).click();
     await tabB.waitForFunction((before) => {
       const size = (JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as { terminalFontSize?: number }).terminalFontSize;

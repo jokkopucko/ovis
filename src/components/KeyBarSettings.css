@@ -205,3 +205,44 @@
     flex-wrap: wrap;
   }
 }
+
+/* PhonePreview: a phone in miniature beside a key bar setting */
+.key-bar-phone {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 22px;
+  height: 36px;
+  padding: 2px;
+  border: 1.5px solid var(--text-dim);
+  border-radius: 5px;
+}
+
+.key-bar-phone-screen {
+  flex: 1 1 auto;
+  border-radius: 1px;
+  background: var(--bg-hover);
+}
+
+.key-bar-phone-bar {
+  flex: none;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.key-bar-phone[data-bar="folded"] .key-bar-phone-bar {
+  height: 1px;
+}
+
+.key-bar-phone-keyboard {
+  flex: none;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--text-dim);
+  opacity: 0.55;
+}
+
+.key-bar-phone[data-keyboard="down"] .key-bar-phone-keyboard {
+  display: none;
+}

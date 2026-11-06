@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { useContext, useRef } from "react";
+import { BellRing } from "lucide-react";
 import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { inNativeApp } from "../lib/nativeApp.ts";
@@ -8,10 +9,12 @@ import { repairFailed, runPushAction, usePushHealth, type PushActionOutcome, typ
 import { repairOutcome } from "../lib/useNotifications.ts";
 import { useSettings } from "../lib/settings.ts";
 import { repairFailureText } from "./PushHealthNotice.tsx";
+import { SettingsBare } from "./SettingsControls.tsx";
 
 export function PushTestControls({ onEnable }: { onEnable: () => Promise<PushActionResult> }) {
   const { settings } = useSettings();
   const t = useT();
+  const bare = useContext(SettingsBare);
   // the same state as the notice over the pane (lib/pushHealth.ts): one fault, one repair, wherever it is read
   const { health, busy, result } = usePushHealth();
   const wanted = useRef(settings.alertsOn);
@@ -55,8 +58,8 @@ export function PushTestControls({ onEnable }: { onEnable: () => Promise<PushAct
     <div className="settings-item">
       <div className="settings-row">
         <div className="settings-row-text">
-          <span className="settings-label">{t("Test notification")}</span>
-          <span className="settings-description">{t("Check whether this device can receive push alerts")}</span>
+          <span className="settings-label-line"><BellRing className="settings-row-icon" aria-hidden="true" /><span className="settings-label">{t("Test notification")}</span></span>
+          {!bare && <span className="settings-description">{t("Check whether this device can receive push alerts")}</span>}
           {/* always in the document, empty until there is something to say: a live region */}
           <span className="settings-hint" role="status" data-testid="push-health-hint">{hint}</span>
         </div>

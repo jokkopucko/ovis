@@ -163,7 +163,7 @@ try {
         const context = await browser.newContext({ viewport: { width: view.width, height: mobile ? 844 : 900 }, deviceScaleFactor: mobile ? 3 : 1, isMobile: mobile, hasTouch: mobile, colorScheme: view.theme, locale: view.language === "ko" ? "ko-KR" : "en-US" });
         // the demo's other Claude pane finishes a few seconds in: its in-app alert is not this surface's
         await context.addInitScript(({ theme, language, demo }) => {
-          localStorage.setItem("ovis:settings", JSON.stringify({ language, theme, alertInApp: false }));
+          localStorage.setItem("ovis:settings", JSON.stringify({ language, theme, alertsOn: false }));
           window.bgCase = demo;
         }, { theme: view.theme, language: view.language ?? "en", demo });
         const page = await context.newPage();

@@ -17,6 +17,7 @@ import { GUIDE_JA } from "./i18n/guide.ja.ts";
 import { UPDATES_JA } from "./i18n/updates.ja.ts";
 import { PALETTE_JA } from "./i18n/palette.ja.ts";
 import { RELAY_JA } from "./i18n/relay.ja.ts";
+import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
 
 /**
  * Japanese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -30,6 +31,7 @@ import { RELAY_JA } from "./i18n/relay.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "View only": "表示のみ",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "貼り付けていません: ファイルのパスに改行があり、ターミナルが Enter として受け取ります。",
   "Attach files": "ファイルを添付",
   "Sign out": "サインアウト",
@@ -166,7 +168,6 @@ const BASE: Record<string, string> = {
   "Command palette (⌘⇧K)": "コマンドパレット (⌘⇧K)",
   "Could not sign out. Try again.": "サインアウトできませんでした。もう一度お試しください。",
   "Retry": "再試行",
-  "Notify me when a pane needs input or finishes": "ペインが入力を待っているときや完了したときに通知します",
   "On, pushed to this device": "オン、この端末にプッシュ",
   "Alerts on, pushed to this device, even with the app closed. Tap to turn them off": "通知オン。このデバイスにプッシュされます。アプリを閉じていても届きます。タップするとオフになります",
   "Off on this device": "この端末ではオフ",
@@ -198,15 +199,13 @@ const BASE: Record<string, string> = {
   "local": "ローカル",
   "Via a loopback address: this PC, or a tunnel to it": "ループバックアドレス経由: このPC、またはそこへのトンネル",
   "Via the Ovis relay": "Ovis リレー経由",
+  "Directly on the same network, not through the relay": "同じネットワークでリレーを通さず直接接続",
   "Via the Portal relay": "Portal リレー経由",
   "Via Tailscale": "Tailscale 経由",
   "Via Tailscale, or Funnel from the internet": "Tailscale 経由、またはインターネットから Funnel 経由",
   "Via the local network": "ローカルネットワーク経由",
   "Straight to this address": "このアドレスへ直接",
-  "Sessions on this PC": "この PC のセッション",
-  "{count} working": "作業中 {count} 件",
   "{count} waiting for you": "応答待ち {count} 件",
-  "{count} done": "完了 {count} 件",
   "Open the next session waiting for you": "応答を待っている次のセッションを開く",
   "Tab {index} of {count}": "タブ {index}/{count}",
   "Tabs of {workspace}": "{workspace} のタブ",
@@ -438,9 +437,6 @@ const BASE: Record<string, string> = {
   "No group": "グループなし",
   "Context {percent}% left": "コンテキスト残り {percent}%",
   "{used} of {window} tokens": "{used} / {window} トークン",
-  "Suggestion chip": "提案チップ",
-  "Artifacts chip": "アーティファクトチップ",
-  "Side conversations chip (experimental)": "サイド会話チップ（実験的）",
   "Permission mode": "権限モード",
   "Model": "モデル",
   "One model name, without spaces.": "空白を含まないモデル名を一つ指定してください。",
@@ -455,6 +451,7 @@ const BASE: Record<string, string> = {
   "New terminal": "新しいターミナル",
   "New terminal failed: {reason}": "新しいターミナルを開けませんでした: {reason}",
   "herdr prefix: press a key": "herdrプレフィックス: キーを押してください",
+  "Shell": "シェル",
   "Connect a device": "デバイスを接続",
   "This device": "このデバイス",
   "Sign out of {provider}": "{provider} からサインアウト",
@@ -464,6 +461,9 @@ const BASE: Record<string, string> = {
   "Phones paired through the relay will need to scan a new code.": "リレー経由でペアリングしたスマートフォンは、新しいコードを読み取り直す必要があります。",
   "Pairs this phone through the relay, so Ovis keeps working away from home.": "このスマートフォンをリレー経由でペアリングし、外出先でも Ovis を使えるようにします。",
   "This PC": "この PC",
+  "Paste and send": "貼り付けて送信",
+  "Conversation": "会話",
+  "Off": "オフ",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
@@ -484,6 +484,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   updates: UPDATES_JA,
   palette: PALETTE_JA,
   relay: RELAY_JA,
+  "runtime-move": RUNTIME_MOVE_JA,
 };
 
 export const JA: Record<string, string> = Object.assign({}, ...Object.values(JA_PARTS));

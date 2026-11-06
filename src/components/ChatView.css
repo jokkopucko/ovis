@@ -1850,7 +1850,7 @@ ol.markdown-list {
 
 .chat-skill[open] .chat-skill-caret { transform: rotate(180deg); }
 
-/* a turn's failed requests (Settings > Compaction and failed requests): one row, their errors on request */
+/* a turn's failed requests (#901): one row, their errors on request */
 .chat-failed-requests { width: fit-content; margin: var(--space-2) 0; }
 .chat-failed-requests > summary > svg:first-child { color: var(--status-blocked); }
 .chat-failed-requests-list { margin: 0; padding-inline-start: var(--space-8); font-family: var(--font-mono); white-space: pre-wrap; }

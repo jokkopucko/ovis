@@ -1,0 +1,93 @@
+/* the pane column's bottom line (StatusBar.tsx): one 28px row of quiet facts on the panel's surface */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 var(--space-3);
+  background: var(--bg-panel);
+  border-top: var(--hairline) solid var(--divider);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.status-bar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.status-bar-item svg {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+}
+
+.status-bar-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-bar-place {
+  flex: 0 1 auto;
+}
+
+.status-bar-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.status-bar-watch {
+  color: var(--text-strong);
+}
+
+.status-bar-waiting {
+  height: 20px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--status-blocked) 14%, transparent);
+  color: var(--text-strong);
+  font: inherit;
+  cursor: pointer;
+}
+
+.status-bar-waiting svg {
+  color: var(--status-blocked);
+}
+
+.status-bar-waiting[aria-disabled="true"] {
+  cursor: default;
+}
+
+.status-bar-waiting:not([aria-disabled="true"]):hover {
+  background: color-mix(in srgb, var(--status-blocked) 24%, transparent);
+}
+
+.status-bar-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--status-done);
+}
+
+.status-bar-conn.is-lost {
+  color: var(--status-blocked);
+}
+
+.status-bar-conn.is-lost .status-bar-dot {
+  background: var(--status-blocked);
+}
+
+@media (max-width: 768px) {
+  .status-bar {
+    display: none;
+  }
+}

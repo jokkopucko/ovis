@@ -2,7 +2,7 @@ import { type Dispatch, type DragEvent, type RefObject, type SetStateAction, use
 import type { HerdrPane, HerdrWorkspace, PaneDirection } from "../../shared/protocol.ts";
 import { paneStorageId, type HerdrIdentity, type Machine } from "../../shared/machines.ts";
 import { fetchSession, type HealthInfo } from "./api.ts";
-import { activateSlot as activatedSlot, asHalves, besideSide, MAX_SPLIT_SLOTS, closeSlots, dockPane, draggedPane, dropSide, dropZone, pickInSlot, PANE_DRAG_TYPE, replaceSlotPane, resizeSplit, sameTarget, sideZone, slotRects, slotsOf, splitDividers, storedSplit, storeSplit, withoutSlots, zoneRect, type DropZone, type SplitChange, type SplitRect, type SplitSide, type SplitSlot, type SplitState, type SplitTarget } from "./split.ts";
+import { activateSlot as activatedSlot, besideSide, MAX_SPLIT_SLOTS, closeSlots, dockPane, draggedPane, dropZone, pickInSlot, PANE_DRAG_TYPE, replaceSlotPane, resizeSplit, sameTarget, sideZone, slotRects, slotsOf, splitDividers, storedSplit, storeSplit, withoutSlots, zoneRect, type DropZone, type SplitChange, type SplitRect, type SplitSide, type SplitSlot, type SplitState, type SplitTarget } from "./split.ts";
 import { paneDrag, type PaneDrag } from "./paneDrag.ts";
 
 const SELECTION_KEY = "ovis:selection";
@@ -65,23 +65,14 @@ export function useSplitState() {
   }, []);
   // the guide appears as soon as a pane is picked up; a target is chosen only over the area
   const [paneDragging, setPaneDragging] = useState(false);
-  const [dropAt, setDropAt] = useState<SplitSide | null>(null);
-  const dropAtRef = useRef<SplitSide | null>(null);
-  const showDropTarget = useCallback((side: SplitSide | null): void => {
-    dropAtRef.current = side;
-    setDropAt(side);
-  }, []);
-  // with rows and columns (Settings' splitGrid) the guide shows a slot's edge or middle instead of a half
+  // the guide shows every slot and the slot's edge or middle the pane would take
   const [gridDrop, setGridDrop] = useState<DropZone | null>(null);
   const gridDropRef = useRef<DropZone | null>(null);
   const showGridDrop = useCallback((zone: DropZone | null): void => {
     gridDropRef.current = zone;
     setGridDrop((shown) => (shown?.slot === zone?.slot && shown?.edge === zone?.edge ? shown : zone));
   }, []);
-  const hideDropTarget = useCallback((): void => {
-    showDropTarget(null);
-    showGridDrop(null);
-  }, [showDropTarget, showGridDrop]);
+  const hideDropTarget = useCallback((): void => showGridDrop(null), [showGridDrop]);
   // the pane being dragged, read at dragstart (a dragover cannot read the drag's data), the title it
   // would trade places with if dropped now, and the pane it would go beside, its frame showing the
   // side (PaneCanvas.css). Only a drag from the pane's own title arranges its tab: a sidebar row, a
@@ -110,7 +101,7 @@ export function useSplitState() {
   const paneAreaRef = useRef<HTMLDivElement>(null);
   // a tab dragged out of its strip (lib/paneDrag.ts)
   const tabDrag = useSyncExternalStore(paneDrag.subscribe, paneDrag.snapshot);
-  return { split, setSplit, soloSlot, endSplit, splitRef, splitShownRef, lastKeyAtRef, paneDragging, setPaneDragging, dropAt, dropAtRef, showDropTarget, gridDrop, gridDropRef, showGridDrop, hideDropTarget, clearDropPreview, paneAreaRef, tabDrag, draggedPaneRef, markSwap, markMove };
+  return { split, setSplit, soloSlot, endSplit, splitRef, splitShownRef, lastKeyAtRef, paneDragging, setPaneDragging, gridDrop, gridDropRef, showGridDrop, hideDropTarget, clearDropPreview, paneAreaRef, tabDrag, draggedPaneRef, markSwap, markMove };
 }
 
 /** what a slot other than the active one draws: its pane, read from its PC's roster */
@@ -123,11 +114,9 @@ export interface SlotView {
   attach: boolean;
 }
 
-export function useSplitLayout({ machines, split, grid, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, dropAtRef, gridDrop, gridDropRef, clearDropPreview, tabDrag, showDropTarget, showGridDrop, hideDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, markMove, swapPanes, movePanes, arrangeRefused }: {
+export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, gridDrop, gridDropRef, clearDropPreview, tabDrag, showGridDrop, hideDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, markMove, swapPanes, movePanes, arrangeRefused }: {
   machines: Machine[];
   split: SplitState | null;
-  /** Settings' splitGrid: a drop opens a pane beside, above or below a slot, and boundaries move */
-  grid: boolean;
   wideScreen: boolean;
   selectedPaneId: string | null;
   selectedPane: HerdrPane | null;
@@ -149,12 +138,10 @@ export function useSplitLayout({ machines, split, grid, wideScreen, selectedPane
   splitRef: RefObject<SplitState | null>;
   selectPane: (paneId: string, focusInput?: boolean) => void;
   paneAreaRef: RefObject<HTMLDivElement | null>;
-  dropAtRef: RefObject<SplitSide | null>;
   gridDrop: DropZone | null;
   gridDropRef: RefObject<DropZone | null>;
   clearDropPreview: () => void;
   tabDrag: PaneDrag | null;
-  showDropTarget: (side: SplitSide | null) => void;
   showGridDrop: (zone: DropZone | null) => void;
   hideDropTarget: () => void;
   setPaneDragging: Dispatch<SetStateAction<boolean>>;
@@ -262,14 +249,6 @@ export function useSplitLayout({ machines, split, grid, wideScreen, selectedPane
     return () => { cancelled = true; };
   }, [split, machineRosterLoaded, machines, otherRosterTick, applyLayout, setSplit]);
 
-  // without rows and columns the split is two halves: a grid left by the setting turned off keeps the
-  // active slot and the first other one, each keeping its terminals
-  useEffect(() => {
-    if (grid || !split) return;
-    const halves = asHalves(split);
-    if (halves !== split) setSplit(halves);
-  }, [grid, split, setSplit]);
-
   /** A split change and the pane it selects. The slot that becomes active keeps its terminals: only
    *  a slot whose pane moves to another PC attaches again and reports its connection. */
   // `keepFocus`: the focus already went somewhere in the slot made active (a Tab onto one of its
@@ -310,26 +289,21 @@ export function useSplitLayout({ machines, split, grid, wideScreen, selectedPane
   const dockSide = (dragged: SplitTarget, side: SplitSide): void => {
     if (!wideScreen || current === null) return;
     // with rows and columns and room for another slot, the pane opens beside the active slot on that side
-    const room = grid && (!splitOn || slotsOf(split.root).length < MAX_SPLIT_SLOTS);
+    const room = !splitOn || slotsOf(split.root).length < MAX_SPLIT_SLOTS;
     const zone = room ? { slot: splitOn ? split.active : soloSlot, edge: side } : sideZone(splitOn ? split : null, soloSlot, side);
     const change = zone ? dockPane(splitOn ? split : null, current, dragged, zone, soloSlot) : null;
     if (change) applySplit(change);
   };
   /** The zone under a point of the pane area, as the guide shows it: null outside the area. */
-  const zoneAt = (x: number, y: number): { side: SplitSide | null; zone: DropZone | null } | null => {
+  const zoneAt = (x: number, y: number): DropZone | null => {
     const box = paneAreaRef.current?.getBoundingClientRect();
     if (!box || x < box.left || x >= box.right || y < box.top || y >= box.bottom) return null;
-    if (grid) return { side: null, zone: dropZone(x, y, box, splitOn ? split : null, soloSlot, gridDropRef.current) };
-    const side = dropSide(x, box.left, box.width, dropAtRef.current);
-    return { side, zone: sideZone(splitOn ? split : null, soloSlot, side) };
+    return dropZone(x, y, box, splitOn ? split : null, soloSlot, gridDropRef.current);
   };
-  const showZoneAt = (x: number, y: number): void => {
-    const at = zoneAt(x, y);
-    if (grid) { showDropTarget(null); showGridDrop(at?.zone ?? null); } else { showGridDrop(null); showDropTarget(at?.side ?? null); }
-  };
+  const showZoneAt = (x: number, y: number): void => showGridDrop(zoneAt(x, y));
   /** A pane dropped at a point: the slot under it opens the pane, or a new slot beside it. */
   const dockAt = (dragged: SplitTarget, x: number, y: number): void => {
-    const zone = zoneAt(x, y)?.zone ?? null;
+    const zone = zoneAt(x, y);
     clearDropPreview();
     if (zone === null || !wideScreen || current === null) return;
     const change = dockPane(splitOn ? split : null, current, dragged, zone, soloSlot);
@@ -349,7 +323,7 @@ export function useSplitLayout({ machines, split, grid, wideScreen, selectedPane
     if (point) showZoneAtRef.current(point.x, point.y); else hideDropTarget();
   }, [tabDrag, splitDragOn, hideDropTarget]);
   // the boundaries between slots, moved by a drag or the arrow keys (SplitDividers), with rows and columns only
-  const dividers = grid && splitOn ? splitDividers(split.root) : [];
+  const dividers = splitOn ? splitDividers(split.root) : [];
   const resizeDivider = useCallback((path: string, ratio: number): void => {
     const open = splitRef.current;
     if (!open) return;
@@ -357,11 +331,11 @@ export function useSplitLayout({ machines, split, grid, wideScreen, selectedPane
     if (next !== open) setSplit(next);
   }, [setSplit]);
   // the guide with rows and columns: every slot outlined, and the place the pane would take
-  const gridPreview = grid ? {
+  const gridPreview = {
     zone: gridDrop,
     slots: rects ? [...rects.values()] : [{ x: 0, y: 0, w: 1, h: 1 }],
     target: gridDrop ? zoneRect(gridDrop, splitOn ? split : null, soloSlot) : null,
-  } : null;
+  };
   // dragenter too: a drop hit-tests once more, and when the node under the pointer was replaced since
   // the last dragover (xterm redraws its rows, a transcript renders again) the new node gets a
   // dragenter instead. Chromium refuses a drop whose last drag event nobody accepted.

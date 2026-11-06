@@ -19,7 +19,8 @@ import { type OmpLookups, OpenCodePromptState, shownPromptText } from "../prompt
 import { attachableIdentity, sidecarAvailable } from "../pty/sidecar.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
-import { createSubmitText } from "./composer.ts";
+import { claudeBoxReads, createSubmitText } from "./composer.ts";
+import { claudeInputEmpty } from "../claude-input.ts";
 import { type Client, createConnections, type SocketData } from "./connections.ts";
 import { createInputLane } from "./input.ts";
 import { createPendingDelivery } from "./pending.ts";
@@ -125,6 +126,13 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
 
   return {
     sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, websocket, queueFirstMessage,
+    /** a message someone sent through Ovis still waits for the pane (runtime-move.ts) */
+    holdsPending: (paneId: string): boolean => pending.holds(paneId),
+    /** true: Claude Code's input box reads empty; false: text is in it or it cannot be read whole; null: an agent whose box Ovis cannot read */
+    inputEmpty: async (paneId: string, agent: string): Promise<boolean | null> => {
+      if (agent !== "claude") return null;
+      try { return claudeInputEmpty(...await claudeBoxReads(paneId)); } catch { return false; }
+    },
     // The relay uses these same handlers with a SocketLike; websocket above remains Bun's boundary.
     socketHandlers,
     /** once the server listens */

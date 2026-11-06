@@ -216,7 +216,8 @@ export type PromptPiece = { typed: string } | { pasted: string };
  * `revalidate` re-runs the caller's ownership, session-identity and state checks (they await herdr)
  * right before every write, so nothing is typed into a session that replaced the one checked.
  */
-export async function typeWithSkills(text: string, skills: readonly string[], allowed: () => boolean, io: SkillAttachIo, revalidate: () => Promise<void>): Promise<{ attached: string[]; missed: string[]; prompt: PromptPiece[] }> {
+export async function typeWithSkills(text: string, skills: readonly string[], allowed: () => boolean, io: SkillAttachIo, revalidate: () => Promise<void>,
+  beforeKey: (screen: string) => Promise<void> = async () => {}): Promise<{ attached: string[]; missed: string[]; prompt: PromptPiece[] }> {
   const attached: string[] = [];
   const missed: string[] = [];
   const prompt: PromptPiece[] = [];
@@ -248,6 +249,8 @@ export async function typeWithSkills(text: string, skills: readonly string[], al
       const box = autocomplete(before, id);
       // A read cannot guard the subsequent write atomically: that needs conditional herdr send-keys.
       if (box && skillRowSelected(before, id)) {
+        // the caller's last checks on the screen this key was decided on, which cost it no further read
+        await beforeKey(before);
         await io.sendKeys([OPENCODE_SKILL_ACCEPT_KEY], allowed);
         // attached only as the screen after the key shows it
         const deadline = io.now() + OPENCODE_SKILL_ACCEPT_WAIT_MS;

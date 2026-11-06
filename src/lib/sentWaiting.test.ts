@@ -451,6 +451,33 @@ describe("waitingText", () => {
     } finally { forgetWaitingSends(key); }
   });
 
+  it("keeps a send the PC stamped before the chat's first read waiting past an older identical turn of the stamp's second", () => {
+    const key = waitingKey("local", "unread-second-stamped");
+    const second = Date.parse("2026-10-29T10:00:02Z");
+    const older = [user("repeat", second), { ...assistant("ok"), ts: new Date(second).toISOString() }];
+    try {
+      // the PC stamps the send at 02.700, after the older "repeat" and its answer of the same second
+      rememberWaitingSend(key, "repeat", second + 700, stampedBaseline(waitingBaseline(key), new Date(second + 700).toISOString(), second + 700));
+      settleWaitingSends(key, older, second + 800, true);
+      expect(currentWaitingSends(key).map((send) => send.text)).toEqual(["repeat"]);
+      settleWaitingSends(key, [...older, user("repeat", second), { ...assistant("ok"), ts: new Date(second + 1_000).toISOString() }], second + 1_400, true);
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); }
+  });
+
+  it("settles a stamped send after the chat's read by its own whole-second turn though the answer began in that second", () => {
+    const key = waitingKey("local", "read-second-stamped");
+    const second = Date.parse("2026-10-29T10:00:02Z");
+    const earlier = user("earlier", second - 60_000);
+    try {
+      settleWaitingSends(key, [earlier], second, true);
+      // stamped at 02.400, written at 02.600 and answered from 02.800: Grok keeps both as 02
+      rememberWaitingSend(key, "next", second + 400, stampedBaseline(waitingBaseline(key), new Date(second + 400).toISOString(), second + 400));
+      settleWaitingSends(key, [earlier, user("next", second), { ...assistant("ok"), ts: new Date(second).toISOString() }], second + 900, true);
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); }
+  });
+
   it("drops every waiting send of a PC whose connection went, and only that PC's", () => {
     const here = waitingKey("local", "w1:p1"), other = waitingKey("local", "w2:p1"), away = waitingKey("remote", "w1:p1");
     try {

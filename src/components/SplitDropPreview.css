@@ -14,25 +14,6 @@
   transition-delay: 0s;
 }
 
-.split-drop-track {
-  position: absolute;
-  inset: var(--space-2);
-  display: flex;
-  gap: var(--space-2);
-}
-
-.split-drop-half {
-  position: relative;
-  display: flex;
-  flex: 1 1 0;
-  justify-content: center;
-  align-items: flex-start;
-  min-width: 0;
-  padding: var(--space-3);
-  border: var(--hairline) dashed var(--border-strong);
-  border-radius: var(--radius-md);
-}
-
 .split-drop-label {
   padding: var(--space-1) var(--space-2);
   border: var(--hairline) solid var(--border);
@@ -42,28 +23,7 @@
   font-size: var(--fs-xs);
 }
 
-/* Move one highlight instead of flashing between two newly mounted halves. */
-.split-drop-target {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: calc((100% - var(--space-2)) / 2);
-  border: 2px solid var(--accent);
-  border-radius: var(--radius-md);
-  background: var(--accent-tint);
-  opacity: 0;
-  transform: translateX(0);
-  transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
-}
-
-.split-drop[data-side] .split-drop-target {
-  opacity: 1;
-}
-
-.split-drop[data-side="right"] .split-drop-target {
-  transform: translateX(calc(100% + var(--space-2)));
-}
-
-/* rows and columns: every slot outlined, and one highlight moving to the place the pane would take */
+/* every slot outlined, and one highlight moving to the place the pane would take */
 .split-drop-slot {
   position: absolute;
   border: var(--hairline) dashed var(--border-strong);
@@ -95,8 +55,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .split-drop,
-  .split-drop-zone,
-  .split-drop-target {
+  .split-drop-zone {
     transition: none;
   }
 }

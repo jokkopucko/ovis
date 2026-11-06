@@ -7,6 +7,7 @@ import type { ConversationSearchResponse } from "../../shared/conversation-searc
 import { resumeConnectionTraces } from "./connectionTrace.ts";
 import type { PullRequestCheckLog, PullRequestMergeRequest, PullRequestView } from "../../shared/pull-request.ts";
 import type { SystemReport } from "../../shared/system.ts";
+import type { MovePlanResponse, MoveStartRequest } from "../../shared/runtime-move.ts";
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
 import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
@@ -222,6 +223,25 @@ export async function switchRuntime(runtime: "herdr" | "herdr-core"): Promise<vo
   if (!response.ok) throw await errorFrom(url, response);
 }
 
+/** Settings → About → Terminals: the move of this PC's whole herdr session to herdr-core, as it stands now (server/runtime-move.ts). */
+export function fetchMovePlan(): Promise<MovePlanResponse> {
+  return getJson<MovePlanResponse>("/api/runtime/move", { cache: "no-store" });
+}
+
+/** Starts the move of the plan shown, by its revision; a busy pane makes it wait, and the server goes by itself once none is. */
+export async function startMove(revision: string): Promise<void> {
+  const url = "/api/runtime/move";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ revision } satisfies MoveStartRequest) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** Ends a wait for busy panes; a move under way is not stopped. */
+export async function cancelMove(): Promise<void> {
+  const url = "/api/runtime/move";
+  const response = await apiFetch(url, { method: "DELETE", headers: { "x-herdr-update": "1" } });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 export async function requestHerdrUpdate(): Promise<void> {
   const url = "/api/herdr/update";
   const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
@@ -272,6 +292,11 @@ export async function requestRelay(action: "start" | "stop" | "reset-identity"):
     throw await errorFrom(url, response);
   }
   return (await response.json()) as RelayStatus;
+}
+
+/** POST /api/relay/direct: whether paired phones may connect straight to this PC on its networks while the relay is on. */
+export function requestRelayDirect(on: boolean): Promise<RelayStatus> {
+  return getJson<RelayStatus>("/api/relay/direct", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ on }) });
 }
 
 export function requestRelayOffer(): Promise<RelayOffer> {
@@ -1538,6 +1563,12 @@ export const addRelayPc = (link: string) => machineRequest<{ machine: Machine }>
  */
 export const findRelayPc = (code: string) => machineRequest<{ ticket: string; server_id: string; name: string | null }>("/relay/code", "POST", { code });
 export const addFoundRelayPc = (ticket: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { found: ticket });
+/** A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts). */
+export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null }
+/** GET /api/machines/tailnet: the PCs on this PC's Tailscale that one tap adds through the relay. */
+export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
+/** POST /api/machines/tailnet: asks that PC for its code over Tailscale and adds it through the relay. */
+export const addTailnetPc = (url: string) => machineRequest<{ machine: Machine }>("/tailnet", "POST", { url });
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);

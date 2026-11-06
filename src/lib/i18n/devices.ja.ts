@@ -205,4 +205,11 @@ export const DEVICES_JA: Record<string, string> = {
   "Same Wi-Fi": "同じ Wi-Fi",
   "Sign in with GitHub to connect without a code.": "GitHub でログインすると、コードなしで接続できます。",
   "Then approve it once on a device already in your account.": "あとはアカウントにあるデバイスで一度承認するだけです。",
+  "Same Wi-Fi direct connection on": "同じWi-Fiで直接接続：オン",
+  "Same Wi-Fi direct connection off": "同じWi-Fiで直接接続：オフ",
+  "This PC takes connections on your home network. Only devices paired through the relay can sign in there; nothing new pairs.": "このPCは自宅のネットワークで接続を受け付けます。ここでサインインできるのはリレーでペアリングしたデバイスだけで、新しいペアリングはできません。",
+  "On, but this PC has no home network address to listen on right now.": "オンですが、今このPCには接続を受け付ける自宅ネットワークのアドレスがありません。",
+  "Phones paired through the relay always go through the relay.": "リレーでペアリングしたスマホは常にリレーを経由します。",
+  "Same Wi-Fi direct connection": "同じWi-Fiで直接接続",
+  "This PC takes connections at {host} on your home network. Only devices paired through the relay can sign in there; nothing new pairs.": "このPCは自宅のネットワークの {host} で接続を受け付けます。ここでサインインできるのはリレーでペアリングしたデバイスだけで、新しいペアリングはできません。",
 };

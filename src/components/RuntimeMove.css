@@ -1,0 +1,201 @@
+.runtime-move {
+  width: min(100%, 520px);
+}
+
+.runtime-move:focus {
+  outline: none;
+}
+
+.runtime-move-lead {
+  margin: 0 0 var(--space-3);
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+}
+
+.runtime-move-note {
+  margin: var(--space-3) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.runtime-move-reason {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.runtime-move-error {
+  margin: var(--space-3) 0 0;
+  color: var(--status-blocked);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+/* workspace > tab > pane, nested as the sidebar nests them: indents, no boxes */
+.runtime-move-tree,
+.runtime-move-tree ul,
+.runtime-move-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runtime-move-tree > li + li {
+  margin-top: var(--space-3);
+}
+
+.runtime-move-workspace {
+  display: block;
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+.runtime-move-tab {
+  display: block;
+  margin-top: var(--space-1);
+  padding-left: var(--space-3);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.runtime-move-tree .runtime-move-pane {
+  padding-left: var(--space-5);
+}
+
+.runtime-move-pane {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--control-h);
+  padding-block: var(--space-1);
+}
+
+.runtime-move-list > li + li {
+  border-top: var(--hairline) solid var(--border);
+}
+
+.runtime-move-pane-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.runtime-move-pane-name {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-move-cwd {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-move-why {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+/* the verdict as words: one ink per tone, on its own tint; the status tokens of the sidebar's badges */
+.runtime-move-tag {
+  flex: 0 0 auto;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-2xs);
+  line-height: var(--chip-h);
+  white-space: nowrap;
+}
+
+.runtime-move-tag[data-tone="ok"] {
+  color: var(--status-done);
+  background: var(--status-done-tint);
+}
+
+.runtime-move-tag[data-tone="plain"] {
+  color: var(--text-dim);
+  background: var(--bg-elevated);
+}
+
+.runtime-move-tag[data-tone="warn"] {
+  color: var(--notice);
+  background: color-mix(in srgb, var(--notice) 14%, transparent);
+}
+
+.runtime-move-tag[data-tone="wait"] {
+  color: var(--status-working);
+  background: var(--status-working-tint);
+}
+
+.runtime-move-tag[data-tone="you"] {
+  color: var(--status-blocked);
+  background: var(--status-blocked-tint);
+}
+
+/* the four steps of a move: the ones done checked and dim, the one under way strong with its count */
+.runtime-move-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runtime-move-steps > li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.runtime-move-steps > li[data-state="now"] {
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+
+/* every step keeps the check's slot, so the words line up whether or not it is drawn */
+.runtime-move-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--status-done);
+}
+
+.runtime-move-mark svg {
+  width: 16px;
+  height: 16px;
+}
+
+.runtime-move-count {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* a phone: the tag goes under the pane's words, so neither is cut short */
+@media (max-width: 480px) {
+  .runtime-move-pane {
+    flex-wrap: wrap;
+  }
+
+  .runtime-move-pane-text {
+    flex-basis: 100%;
+  }
+}

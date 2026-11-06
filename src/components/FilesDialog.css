@@ -40,7 +40,7 @@
   padding: var(--space-3);
 }
 
-/* with Documents on (Settings: Documents in Files), four tabs do not fit beside the title and Close on
+/* with Documents, four tabs do not fit beside the title and Close on
    a phone or a narrow panel: they take the row under them, each an equal share of it */
 @media (max-width: 480px) {
   .files-dialog .modal-header:has(.files-dialog-tabs > :nth-child(4)) { flex-wrap: wrap; }

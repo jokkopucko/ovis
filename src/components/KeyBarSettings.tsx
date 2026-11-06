@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, GripVertical, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronUp, FoldVertical, GripVertical, Keyboard, Paperclip, Plus, X } from "lucide-react";
 
 import "./KeyBarSettings.css";
 
@@ -8,10 +8,52 @@ import { NO_STICKY_MODIFIERS, type StickyModifiers } from "../lib/keys.ts";
 import { useSettings } from "../lib/settings.ts";
 import { useT } from "../lib/i18n.ts";
 import { edgeScrollStep, rowAt } from "../lib/touchReorder.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { SettingsBare, SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
 
 const MODIFIERS: readonly (keyof StickyModifiers)[] = ["ctrl", "alt", "shift"];
 const MODIFIER_CAPS: Record<keyof StickyModifiers, string> = { ctrl: "Ctrl", alt: "Alt", shift: "Shift" };
 const CHARACTER_KEY = "character";
+
+/** A phone in miniature: the terminal, the key bar under it (folded to a line, or not) and the keyboard, up or down. */
+function PhonePreview({ keyboard, bar }: { keyboard: boolean; bar: "keys" | "folded" }) {
+  return (
+    <span className="key-bar-phone" data-keyboard={keyboard ? "up" : "down"} data-bar={bar}>
+      <span className="key-bar-phone-screen" />
+      <span className="key-bar-phone-bar" />
+      <span className="key-bar-phone-keyboard" />
+    </span>
+  );
+}
+
+/**
+ * How the key bar behaves on a touch screen: the keyboard only from its key, the bar folded in Input
+ * line mode, its Attach files key. Drawn atop the key bar editor, and on Settings > Terminal while a
+ * search looks for them.
+ */
+export function KeyBarToggles() {
+  const t = useT();
+  const { settings, update } = useSettings();
+  // the keyboard, the folded bar and the attach key are a touch screen's only (PaneTerminal.tsx, TerminalInput.tsx, KeyBar.tsx)
+  const touch = useMediaQuery("(pointer: coarse)");
+  if (!touch) return null;
+  return (
+    <SettingsBare.Provider value={true}>
+      <SettingsGroup>
+        {/* the picture: a tap on the terminal, with the keyboard it brings up or not */}
+        <SettingsRow label={t("Don't open the keyboard when tapping the terminal")} icon={Keyboard} preview={<PhonePreview keyboard={!settings.terminalKeyboardOnRequest} bar="keys" />} reset={["terminalKeyboardOnRequest"]} keywords={t("Keyboard only from the key bar")}>
+          <Toggle label={t("Don't open the keyboard when tapping the terminal")} checked={settings.terminalKeyboardOnRequest} onChange={(terminalKeyboardOnRequest) => update({ terminalKeyboardOnRequest })} />
+        </SettingsRow>
+        <SettingsRow label={t("Hide the key bar in the input line")} icon={FoldVertical} preview={<PhonePreview keyboard bar={settings.terminalFoldKeyBar ? "folded" : "keys"} />} reset={["terminalFoldKeyBar"]} keywords={t("Fold the key bar")}>
+          <Toggle label={t("Hide the key bar in the input line")} checked={settings.terminalFoldKeyBar} onChange={(terminalFoldKeyBar) => update({ terminalFoldKeyBar })} />
+        </SettingsRow>
+        <SettingsRow label={t("Attach files button")} icon={Paperclip} reset={["terminalAttachButton"]}>
+          <Toggle label={t("Attach files button")} checked={settings.terminalAttachButton} onChange={(terminalAttachButton) => update({ terminalAttachButton })} />
+        </SettingsRow>
+      </SettingsGroup>
+    </SettingsBare.Provider>
+  );
+}
 
 /** The phone's key row: handles are a shortcut; buttons keep editing possible without dragging. */
 export function KeyBarSettings() {
@@ -143,6 +185,7 @@ export function KeyBarSettings() {
 
   return (
     <div className="key-bar-settings">
+      <KeyBarToggles />
       <p className="settings-hint">{t("Choose the keys and their order under the terminal. The keyboard mode button stays first.")}</p>
       <ol ref={listRef} className="key-bar-settings-list" aria-label={t("Key bar keys")}>
         {items.map((item, index) => {

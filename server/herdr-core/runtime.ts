@@ -92,7 +92,7 @@ export function hcMachine(): { name: string; id: string } | null {
  * What `hc connect` runs in: a machine's server runs with a home of its own (machine-bridge.ts), and
  * OVIS_HC_ENV holds what finds the core (HOME, HC_*, XDG_*) as the server that started it has them.
  */
-function hcEnv(): Record<string, string | undefined> | undefined {
+export function hcEnv(): Record<string, string | undefined> | undefined {
   const kept = process.env["OVIS_HC_ENV"];
   return kept ? { ...process.env, ...(JSON.parse(kept) as Record<string, string>) } : undefined;
 }

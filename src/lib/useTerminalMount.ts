@@ -43,6 +43,7 @@ import { takeTypeAhead, type TypeAheadItem } from "./typeAhead.ts";
 import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_MS, VIEW_BUFFER_MAX, afterSwitch, dropViewChange, holdViews, inUse, connectedSockets, plainError, releaseViews, CONTROL_CHARACTER } from "./paneTerminalShared.ts";
 import { copyOnSelect, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 import { captureForGhostty } from "./ghostty/capture.ts";
+import { holdForPictures } from "./terminalImages.ts";
 
 /**
  * Build-time constant: on only in the browser lane's demo build (lib/crashProbe.ts). Read it through
@@ -117,6 +118,10 @@ export interface TerminalMountDeps {
   osc52AllowedRef: RefObject<boolean>;
   /** Settings' codexDrag: a plain drag in a Codex pane is Codex's (onMouseDown) */
   codexDragRef: RefObject<boolean>;
+  /** told whether this terminal keeps its history (a herdr-core server's `terminal-history`) each time that is read */
+  setTerminalHistory: (keeps: boolean) => void;
+  /** Pictures in the terminal as chosen on this device, null where the server decides (lib/terminalImages.ts) */
+  picturesChoiceRef: RefObject<boolean | null>;
   outputTargetRef: RefObject<string>;
   palette: Palette;
   paneRef: RefObject<string | null>;
@@ -188,7 +193,7 @@ export interface TerminalMountDeps {
 }
 
 export function useTerminalMount(deps: TerminalMountDeps): void {
-  const { typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef } = deps;
+  const { setTerminalHistory, picturesChoiceRef, typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef } = deps;
 
     // Where this terminal is: its pane, and whether it is active, presented, shown and not the chat view.
     // Counted on every commit that changes it: an explicit copy still waiting for herdr's text is
@@ -944,8 +949,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // bridge marked `replay` (the screen from before this attach) is presentation history, and a
       // copy request in it was answered when it was new. The flag holds from the frame's write
       // until its callback; xterm's own parser state says whether a replayed OSC is still open.
-      const outputFrames: { data: string; replay: boolean; view?: boolean; done?: () => void; seq: number }[] = [];
+      const outputFrames: { data: string; replay: boolean; view?: boolean; done?: () => void; acknowledge?: () => void; seq: number }[] = [];
       let writingOutput = false;
+      /** the queue waits for the picture addon (holdForPictures); writingOutput stays true meanwhile */
+      let holdingForPictures = false;
       let parsingReplay = false;
       // a hidden tab's view parsed on its return (resume): what it drew is history, and a query in it
       // was answered when it was new, so xterm's replies to it never reach the pane (queryReplies below)
@@ -993,6 +1000,16 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         return osc.open && (!osc.idComplete || osc.id === 52);
       };
       const writeNextOutput = (): void => {
+        holdingForPictures = false;
+        const next = outputFrames[0];
+        // a picture is drawn only once the addon is in: pictures on, by choice or as herdr-core's default
+        if (next && !disposed && (picturesChoiceRef.current ?? socket.hasTerminalHistory()) && holdForPictures(term, next.data, writeNextOutput)) {
+          writingOutput = holdingForPictures = true;
+          // the server stops a connection whose output goes unacknowledged (server/output-window.ts): what
+          // waits here is taken, as xterm's own write buffer would take it
+          for (const frame of outputFrames) acknowledgeFrame(frame);
+          return;
+        }
         const frame = outputFrames.shift();
         if (!frame || disposed) {
           writingOutput = false;
@@ -1014,14 +1031,22 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             oscStartFrame = term.oscStringState().open ? (oscStartFrame ?? frame.seq) : null;
           }
           try {
+            acknowledgeFrame(frame);
             frame.done?.();
           } finally {
             writeNextOutput();
           }
         });
       };
-      const writeOutput = (data: string, replay = false, done?: () => void, view = false): void => {
-        outputFrames.push({ data, replay, view, done, seq: ++framesReceived });
+      const acknowledgeFrame = (frame: { acknowledge?: () => void }): void => {
+        const acknowledge = frame.acknowledge;
+        frame.acknowledge = undefined;
+        acknowledge?.();
+      };
+      const writeOutput = (data: string, replay = false, done?: () => void, view = false, acknowledge?: () => void): void => {
+        const frame = { data, replay, view, done, acknowledge, seq: ++framesReceived };
+        outputFrames.push(frame);
+        if (holdingForPictures) acknowledgeFrame(frame);
         if (!writingOutput) writeNextOutput();
       };
       // A pane switch resets the parser, and a reconnect replays afresh: frames still queued from
@@ -1043,7 +1068,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (recoveringPane !== paneRef.current) endRecovery();
         else if (recoveringPane !== null) rejoin = true;
         frameGateRef.current.reset();
-        if (!writingOutput) replayOscOpen = oscMayCopy();
+        // output held for pictures was not parsing: the parser stands where the last frame left it
+        if (!writingOutput || holdingForPictures) replayOscOpen = oscMayCopy();
       };
       retireOutputRef.current = retireOutput;
       if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__) {
@@ -1117,6 +1143,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // TUI keeps its own. Returns whether it changed.
       const syncHistory = (): boolean => {
         const lines = socket.hasTerminalHistory() ? TERMINAL_HISTORY_LINES : 0;
+        setTerminalHistory(lines > 0);
         if (term.options.scrollback === lines) return false;
         term.options.scrollback = lines;
         return true;
@@ -1371,7 +1398,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           };
           const stamp = frameGateRef.current.enqueue(message.data, gridMatches());
           writeOutput(message.data, message.replay === true, () => {
-            acknowledge?.();
             if (disposed) return;
             if (paneRef.current !== owner || generation !== outputGeneration) {
               // output of a pane left behind, or of a dropped connection, was still queued in xterm
@@ -1395,7 +1421,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             setSecret((previous) => previous?.pane === owner && previous.prompt === prompt ? previous : prompt ? { pane: owner, prompt } : null);
             // a whole frame for this grid: the agent's input row may be read (a watched peek, the still-open guard)
             if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) onInputRowFrameRef.current();
-          });
+          }, false, acknowledge);
         } else if (message.type === "watch-data") {
           // a read-only view drawn for this grid: written as it comes, never acknowledged
           if (message.pane_id !== paneRef.current || !releasedRef.current || !watchingRef.current) return;

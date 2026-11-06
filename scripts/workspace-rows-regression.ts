@@ -189,12 +189,15 @@ try {
     return {
       headerChat: header.classList.contains("is-chat"), columnChat: column.classList.contains("is-chat"),
       header: getComputedStyle(header).backgroundColor, strip: getComputedStyle(document.querySelector(".tab-strip")!).backgroundColor,
+      // from 769px the tabs are the header's row, tinted, and the open tab takes the pane's surface
+      tabRow: header.classList.contains("has-tab-row"),
+      openTab: getComputedStyle(document.querySelector(".tab-strip-item.is-active")!).backgroundColor,
       chat: document.querySelector(".chat-view") ? getComputedStyle(document.querySelector(".chat-view")!).backgroundColor : null,
     };
   });
   assert.equal(surfaces.columnChat, surfaces.headerChat, "the header and the pane column agree on the lens");
   assert.equal(surfaces.strip, surfaces.header, "the strip is the header's surface");
-  if (surfaces.headerChat) assert.equal(surfaces.chat, surfaces.header, "which under the chat lens is the transcript's");
+  if (surfaces.headerChat) assert.equal(surfaces.chat, surfaces.tabRow ? surfaces.openTab : surfaces.header, surfaces.tabRow ? "the open tab under the chat lens is the transcript's surface" : "which under the chat lens is the transcript's");
   await page.getByRole("tab", { name: "Tab 1", exact: true }).click({ button: "right" });
   const tabMenu = page.getByRole("menu", { name: "Tab 1", exact: true });
   await tabMenu.waitFor();
