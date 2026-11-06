@@ -1547,7 +1547,7 @@
   white-space: pre-wrap;
 }
 
-@media (any-pointer: coarse) {
+@media (pointer: coarse) {
   .composer-text.has-suggestion::placeholder {
     color: transparent;
   }

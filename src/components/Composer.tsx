@@ -1448,7 +1448,7 @@ export function Composer({
           // in a frame, after the caret of dictation held through the composition has landed
           setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
         }}
-          className={`composer-text${offered !== null && text === "" ? " has-suggestion" : ""}`}
+          className={`composer-text${settings.suggestionChip && offered !== null && text === "" ? " has-suggestion" : ""}`}
           rows={1}
           maxLength={MAX_COMPOSER_CHARS}
           value={text}
@@ -1479,7 +1479,8 @@ export function Composer({
             setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
           }}
         />
-        {offered !== null && text === "" && (
+        {/* tapping the grey words takes the suggestion only when Settings asks for it: by default a tap there just focuses the box */}
+        {settings.suggestionChip && offered !== null && text === "" && (
           <div className="composer-inline-suggestion">
             <span role="button" tabIndex={-1} aria-label={t("Use the suggestion")}
               onClick={acceptSuggestion} onKeyDown={(event) => {

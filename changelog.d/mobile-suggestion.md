@@ -1,2 +1,3 @@
-### Fixed
-- Tap the grey suggested reply on touch devices to fill the chat input without sending it. Desktop Tab acceptance stays available.
+### Added
+- With Settings → Composer buttons → Suggestion on, tapping the grey suggested reply on a touch
+  screen fills the chat input without sending it. Desktop Tab acceptance stays available.

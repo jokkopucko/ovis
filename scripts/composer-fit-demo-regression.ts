@@ -702,7 +702,21 @@ try {
       });
       console.log("PASS prompt updates preserve a focused, internally scrolled draft and its mid-text caret at 390 and 1440px");
 
-      for (const width of [390, 1440]) await withCard(browser, width, { model: "gpt-5.6", status: "idle", pending: false, freezeConversation: true, suggestion: "Review the changes" }, async (page) => {
+      // by default a tap on the grey words only focuses the box: typing there writes the user's own reply
+      await withCard(browser, 390, { model: "gpt-5.6", status: "idle", pending: false, freezeConversation: true, suggestion: "Review the changes" }, async (page) => {
+        const box = page.getByRole("textbox", { name: "Message", exact: true });
+        await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>(".composer-text")?.placeholder === "Review the changes");
+        assert.equal(await page.locator(".composer-inline-suggestion").count(), 0);
+        const bounds = await box.boundingBox();
+        assert.ok(bounds);
+        await box.tap({ position: { x: 40, y: Math.min(bounds.height / 2, 20) } });
+        assert.equal(await box.inputValue(), "", "a tap on the suggestion does not take it unless Settings asks");
+        await page.keyboard.type("My own reply");
+        assert.equal(await box.inputValue(), "My own reply");
+      });
+      console.log("PASS by default a tap on the grey suggestion focuses the box without taking it");
+
+      for (const width of [390, 1440]) await withCard(browser, width, { model: "gpt-5.6", status: "idle", pending: false, freezeConversation: true, suggestion: "Review the changes", suggestionChip: true }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>(".composer-text")?.placeholder === "Review the changes");
         await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
@@ -749,7 +763,7 @@ try {
       });
       console.log("PASS touch suggestion acceptance and desktop Tab preserve focus, caret and editing without sending");
 
-      for (const key of ["Enter", " "]) await withCard(browser, 390, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "Review the changes" }, async (page) => {
+      for (const key of ["Enter", " "]) await withCard(browser, 390, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "Review the changes", suggestionChip: true }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         const suggestion = page.getByRole("button", { name: "Use the suggestion", exact: true });
         await suggestion.waitFor();
@@ -770,7 +784,7 @@ try {
       });
       console.log("PASS the optional suggestion chip accepts a draft without sending");
 
-      for (const width of [390, 1440]) for (const length of [MAX_COMPOSER_CHARS, MAX_COMPOSER_CHARS + 1]) await withCard(browser, width, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "x".repeat(length) }, async (page) => {
+      for (const width of [390, 1440]) for (const length of [MAX_COMPOSER_CHARS, MAX_COMPOSER_CHARS + 1]) await withCard(browser, width, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "x".repeat(length), suggestionChip: true }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         await page.waitForFunction((length) => document.querySelector<HTMLTextAreaElement>(".composer-text")?.placeholder.length === length, length);
         await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
