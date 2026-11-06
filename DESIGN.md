@@ -4557,4 +4557,4 @@ command opens on a typed address; no code is copied.
 
 ## Touch prompt suggestions
 
-The empty composer follows Claude Code's [prompt suggestion model](https://code.claude.com/docs/en/interactive-mode): accept into an editable draft, then send separately. On touch devices, the grey words also accept a tap. Only the words receive taps; the surrounding input keeps native focus and scrolling. Tab and the optional suggestion chip share the same acceptance function. No code or visual assets are copied.
+The empty composer follows Claude Code's [prompt suggestion model](https://code.claude.com/docs/en/interactive-mode): accept into an editable draft, then send separately. On touch devices, the grey words also accept a tap. Only the words receive taps; the surrounding input keeps native focus and scrolling. Tab and the optional suggestion chip share the same acceptance function. A focused inline suggestion also accepts Enter and Space. A suggestion that exceeds the message limit leaves the draft unchanged and shows the limit in the existing alert. No code or visual assets are copied.

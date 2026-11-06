@@ -650,6 +650,10 @@ export function Composer({
 
   const acceptSuggestion = useCallback(() => {
     if (offered === null || textRef.current !== "" || composingRef.current) return;
+    if (offered.length > MAX_COMPOSER_CHARS) {
+      setNote(t("{max}-character limit · {count} over", { max: formatChars(MAX_COMPOSER_CHARS), count: formatChars(offered.length - MAX_COMPOSER_CHARS) }));
+      return;
+    }
     setTextAndCaret(offered, offered.length);
   }, [offered, setTextAndCaret]);
 
@@ -1478,7 +1482,11 @@ export function Composer({
         {offered !== null && text === "" && (
           <div className="composer-inline-suggestion">
             <span role="button" tabIndex={-1} aria-label={t("Use the suggestion")}
-              onClick={acceptSuggestion}>{offered}</span>
+              onClick={acceptSuggestion} onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                acceptSuggestion();
+              }}>{offered}</span>
           </div>
         )}
         <textarea
