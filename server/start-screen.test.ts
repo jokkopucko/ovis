@@ -1,6 +1,24 @@
 import { describe, expect, it } from "bun:test";
 
-import { codexStartScreenUnused, readsStartScreen, startScreenMetadata } from "./start-screen.ts";
+import { agyStartScreenUnused, codexStartScreenUnused, readsStartScreen, startScreenMetadata } from "./start-screen.ts";
+
+const AGY = [
+  "❯ agy",
+  "",
+  "       ▄▀▀▄         Antigravity CLI 1.4.4",
+  "      ▀▀▀▀▀▀        user@example.test (Demo plan    )",
+  "     ▀▀▀▀▀▀▀▀       Gemini 3.8 Flash (High)",
+  "    ▄▀▀     ▀▀▄      /tmp/test-project",
+  "   ▄▀▀       ▀▀▄",
+  "",
+  " ⚠ Warning",
+  "  ⎿   \"Gemini 3.1 Pro (Low)\" is no longer available. Using \"Gemini 3.8 Flash (High)\".",
+  "",
+  " ────────────────────────────────────────",
+  " >",
+  " ────────────────────────────────────────",
+  " ? for shortcuts   Gemini 3.8 Flash · high",
+].join("\n");
 
 const CLAUDE = [
   " ▐▛███▛█   Claude Code v2.1.296",
@@ -109,6 +127,36 @@ describe("startScreenMetadata", () => {
     expect(codexStartScreenUnused(CODEX.replace(header, "  the tail of an answer\n\u2022 OpenAI Codex (v0.163.0)"))).toBeFalse();
     // the banner boxed, as some versions draw it
     expect(codexStartScreenUnused(CODEX.replace(header, "\u2502 >_ OpenAI Codex (v0.163.0) \u2502"))).toBeTrue();
+  });
+
+  it("tells an Agy start screen with nothing said yet from one with a conversation or an open panel", () => {
+    expect(agyStartScreenUnused(AGY)).toBeTrue();
+    // narrow layout with logo rows above the title and a multi-line draft in the composer
+    const narrow = [
+      "❯ agy",
+      "       ▄▀▀▄",
+      "      ▀▀▀▀▀▀",
+      "   Antigravity CLI 1.4.4",
+      "   user@example.test (Demo plan    )",
+      "   Gemini 3.8 Flash (High)",
+      "   /tmp/test-project",
+      " ────────────────────────────────────────",
+      " > fix the",
+      "   build",
+      " ────────────────────────────────────────",
+      " ? for shortcuts   Gemini 3.8 Flash · high",
+    ].join("\n");
+    expect(agyStartScreenUnused(narrow)).toBeTrue();
+    // a prompt, command, or assistant response above the composer
+    const said = (cells: string) => AGY.replace(" ────────────────────────────────────────\n >", `${cells}\n\n ────────────────────────────────────────\n >`);
+    expect(agyStartScreenUnused(said(" > hello\n\n ✦ Hi! How can I help?"))).toBeFalse();
+    expect(agyStartScreenUnused(said(" > /model\n  ⎿   Exited /model command"))).toBeFalse();
+    expect(agyStartScreenUnused(said(" ● Read(README.md)"))).toBeFalse();
+    // a panel open under the composer (/model, /codesearch) or a missing header/footer
+    expect(agyStartScreenUnused(`${AGY}\n Switch Model`)).toBeFalse();
+    expect(agyStartScreenUnused(AGY.replace(" ? for shortcuts   Gemini 3.8 Flash · high", " Code Search:\n ? for shortcuts   Gemini 3.8 Flash · high"))).toBeFalse();
+    expect(agyStartScreenUnused(AGY.replace("       ▄▀▀▄         Antigravity CLI 1.4.4", ""))).toBeFalse();
+    expect(agyStartScreenUnused(` > hello\n\n ✦ Hi there\n\n${AGY}`)).toBeFalse();
   });
 
   it("reads gjc's status line, keeping a model it has no id for as gjc wrote it", () => {

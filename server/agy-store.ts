@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { paneProcessInfo } from "./herdr/client.ts";
+import { agyStartScreenUnused } from "./start-screen.ts";
 
 export interface AgyStore { root: string; session: string; path: string; pid: number; started: string }
 const LOCK = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.lock$/i;
@@ -277,26 +278,28 @@ async function processIdentity(pid: number): Promise<{ started: string } | null>
   return null;
 }
 
-/** List open file paths held by the given process id on the current platform. */
-async function heldPaths(pid: number): Promise<string[]> {
+/** List open file paths held by the given process id on the current platform, or null when the query fails. */
+async function heldPaths(pid: number): Promise<string[] | null> {
   if (process.platform === "darwin") {
     const child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", String(pid), "-Fn"], { stdout: "pipe", stderr: "ignore", timeout: 3000 });
     const text = await new Response(child.stdout).text();
-    if (await child.exited !== 0 || text.length > 1024 * 1024) return [];
+    if (await child.exited !== 0 || text.length > 1024 * 1024) return null;
     return text.split("\n").filter((line) => line.startsWith("n")).map((line) => line.slice(1));
   }
   if (process.platform === "win32") return windowsHeldPaths(pid);
-  if (process.platform !== "linux") return [];
-  const dir = opendirSync(`/proc/${pid}/fd`);
-  const paths: string[] = [];
+  if (process.platform !== "linux") return null;
   try {
-    let count = 0;
-    for (let entry = dir.readSync(); entry; entry = dir.readSync()) {
-      if (++count > 4096) return [];
-      try { paths.push(readlinkSync(`/proc/${pid}/fd/${entry.name}`)); } catch { /* closed during enumeration */ }
-    }
-  } finally { dir.closeSync(); }
-  return paths;
+    const dir = opendirSync(`/proc/${pid}/fd`);
+    const paths: string[] = [];
+    try {
+      let count = 0;
+      for (let entry = dir.readSync(); entry; entry = dir.readSync()) {
+        if (++count > 4096) return null;
+        try { paths.push(readlinkSync(`/proc/${pid}/fd/${entry.name}`)); } catch { /* closed during enumeration */ }
+      }
+    } finally { dir.closeSync(); }
+    return paths;
+  } catch { return null; }
 }
 
 /** herdr names the process `agy` on Unix and `agy.exe` on Windows, as it does for herdr itself. */
@@ -314,9 +317,45 @@ export async function resolveAgyStore(pane: HerdrPane): Promise<AgyStore | null>
     if (owners.length !== 1) return null;
     const pid = owners[0]!.pid;
     const before = await processIdentity(pid);
-    const store = agyStoreFromLocks(await heldPaths(pid));
+    const paths = await heldPaths(pid);
+    const store = paths ? agyStoreFromLocks(paths) : null;
     const after = await processIdentity(pid);
     return before && store && before.started === after?.started ? { ...store, pid, started: before.started } : null;
+  } catch { return null; }
+}
+
+const AGY_SESSION_FLAGS = new Set(["-c", "--continue", "--conversation", "--remote-agent", "-p", "--print", "--prompt", "-i", "--prompt-interactive"]);
+
+function agyProcessArgv(owner: { pid: number; argv?: string[] | null }): string[] | null {
+  if (Array.isArray(owner.argv) && owner.argv.length > 0) return owner.argv;
+  if (process.platform !== "linux") return null;
+  try {
+    const argv = readFileSync(`/proc/${owner.pid}/cmdline`, "utf8").split("\0").filter(Boolean);
+    return argv.length > 0 ? argv : null;
+  } catch { return null; }
+}
+
+/**
+ * The history id of the conversation an Agy started in a terminal has not begun, or null unless
+ * its live screen shows the unused start screen, its single foreground Agy process was started
+ * without a resume/prompt/remote flag, and it holds no presence lock yet.
+ */
+export async function agyFreshSession(pane: HerdrPane, screen: string): Promise<string | null> {
+  // Windows names held locks from a shared, cached scan: an empty answer there proves no absence
+  if (process.platform === "win32" || pane.agent !== "agy" || !agyStartScreenUnused(screen)) return null;
+  try {
+    const info = await paneProcessInfo(pane.pane_id);
+    const owners = (info?.foreground_processes ?? []).filter((p) => isAgyProcessName(p.name) && Number.isSafeInteger(p.pid) && p.pid > 1);
+    if (owners.length !== 1) return null;
+    const owner = owners[0]!;
+    const argv = agyProcessArgv(owner);
+    if (!argv || argv.slice(1).some((arg) => AGY_SESSION_FLAGS.has(arg) || /^--(?:conversation|remote-agent|prompt|prompt-interactive)=/.test(arg))) return null;
+    const before = await processIdentity(owner.pid);
+    const paths = await heldPaths(owner.pid);
+    const after = await processIdentity(owner.pid);
+    if (!before || paths === null || before.started !== after?.started) return null;
+    if (paths.some((path) => basename(dirname(path)) === "presence" && LOCK.test(basename(path)))) return null;
+    return `unwritten:agy:${pane.pane_id}:${owner.pid}:${before.started}`;
   } catch { return null; }
 }
 

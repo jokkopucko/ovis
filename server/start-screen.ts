@@ -80,6 +80,36 @@ export function codexStartScreenUnused(screen: string): boolean {
     && !lines.slice(composer + 1).some((line) => CODEX_PROMPT.test(line) || CODEX_CELL.test(line));
 }
 
+const AGY_HEADER = /^(?:\s*[▄▀]+)*\s*Antigravity CLI \d[\d.]*\s*$/u;
+const AGY_RULE = /^\s*─{10,}\s*$/u;
+const AGY_PROMPT = /^\s*>(?:\s|$)/u;
+const AGY_CELL = /^\s*[✦●•■](?:\s|$)/u;
+
+/**
+ * Whether an Agy screen is its start screen with nothing said in it yet: under the last session
+ * header, its banner and optional startup warning, then the composer (`>` between two full-width
+ * rules) and its `? for shortcuts` footer, with no prompt, command, answer, or panel above or
+ * below the composer.
+ */
+export function agyStartScreenUnused(screen: string): boolean {
+  const all = screen.split("\n");
+  let header = all.length - 1;
+  while (header >= 0 && !AGY_HEADER.test(all[header]!)) header--;
+  if (header < 0 || all.slice(0, header).some((line) => AGY_RULE.test(line) || AGY_PROMPT.test(line) || AGY_CELL.test(line))) return false;
+  const visible = all.slice(header + 1);
+  let end = visible.length - 1;
+  while (end >= 0 && visible[end]!.trim() === "") end--;
+  if (end < 3 || !/^\s*\? for shortcuts(?:\s|$)/u.test(visible[end]!)) return false;
+  let lower = end - 1;
+  while (lower >= 0 && visible[lower]!.trim() === "") lower--;
+  if (lower < 2 || !AGY_RULE.test(visible[lower]!)) return false;
+  let upper = lower - 1;
+  while (upper >= 0 && !AGY_RULE.test(visible[upper]!)) upper--;
+  if (upper < 0 || visible.slice(0, upper).some((line) => AGY_RULE.test(line) || AGY_PROMPT.test(line) || AGY_CELL.test(line))) return false;
+  const box = visible.slice(upper + 1, lower).filter((line) => line.trim() !== "");
+  return box.length > 0 && AGY_PROMPT.test(box[0]!) && box.slice(1).every((line) => /^\s{2,}\S/u.test(line));
+}
+
 /** ` ⬢ opus-5.5 · ◉ xhigh · 1.5% / …`, the status line over the composer. */
 function gjcScreen(lines: string[]): Screen {
   const found = lastMatch(lines, new RegExp(`⬢ (\\S+) · ◉ (${EFFORT})(?: |$)`, "u"));
