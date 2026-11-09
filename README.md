@@ -74,7 +74,7 @@ To connect a phone, turn on the end-to-end encrypted **Ovis relay** in **Setting
 
 [All features →](docs/guide.md#features)
 
-**Limits:** your computer has to be on and reachable (the Ovis relay, Tailscale, a VPN or an SSH tunnel). The Herdr desktop app's terminals work on Linux and macOS only.
+**Limits:** your computer has to be on and reachable (the Ovis relay, Tailscale, a VPN or an SSH tunnel). On Windows, Ovis shows herdr's terminals until you switch to the Herdr desktop app's in Settings.
 
 **Privacy:** sessions stay on your computer, with no account. The optional relay can't read what is sent ([trust model](docs/relay.md#trust-model)). Anonymous usage counts are on by default; **Settings → About** or `OVIS_TELEMETRY=0` turns them off ([what is sent](docs/guide.md#anonymous-usage-counts)).
 

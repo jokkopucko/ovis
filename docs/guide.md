@@ -917,8 +917,9 @@ Whether the core runs is read from its socket file (`HC_SOCKET`, `socket` in hc'
 `config.toml`, else `<session>.sock` under `$XDG_RUNTIME_DIR/herdr-core/`; `HC_SESSION` names the
 session, `default` otherwise); nothing connects to it.
 
-On Windows Ovis serves herdr-core only when `OVIS_RUNTIME=herdr-core` is set, as the desktop app
-sets it: the automatic choice stays on herdr there, and Settings offers no switch.
+On Windows the automatic choice stays on herdr: Ovis serves herdr-core when it is chosen in
+Settings, or when `OVIS_RUNTIME=herdr-core` is set, as the desktop app sets it. Settings and
+`/api/health` find herdr there in `%LOCALAPPDATA%\Programs\Herdr\bin` and `%APPDATA%\herdr`.
 
 **Moving everything to herdr-core.** On a Linux or macOS PC where Ovis serves herdr's TUI through
 its own launcher and no Herdr app is installed, **Settings → About → Terminals** offers **Move

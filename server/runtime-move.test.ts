@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { PaneInfo, PaneLayoutSnapshot, SessionSnapshot } from "../shared/herdr-api.generated.ts";
-import { planMove, tabTree, type MoveFacts } from "./runtime-move.ts";
+import { moveUnavailable, planMove, tabTree, type MoveFacts } from "./runtime-move.ts";
 
 // herdr 0.9.5's answer for a tab split right, then its right pane split down (isolated test session)
 const layout: PaneLayoutSnapshot = {
@@ -16,6 +16,15 @@ const layout: PaneLayoutSnapshot = {
     { pane_id: "w1:p3", focused: false, rect: { x: 60, y: 20, width: 60, height: 20 } },
   ],
 };
+
+describe("moveUnavailable", () => {
+  it("offers no move on Windows, where Settings still switches to herdr-core", () => {
+    const facts = { serving: "herdr", source: "detected", tui: { installed: true, running: true }, app_installed: false, switch_to: "herdr-core", locked: null } as const;
+    expect(moveUnavailable("herdr", facts, "linux")).toBeNull();
+    // the move ends panes through Unix process groups, and its lock refuses Windows (runtime-move-lock.ts)
+    expect(moveUnavailable("herdr", facts, "win32")).toBe("runtime_locked");
+  });
+});
 
 describe("tabTree", () => {
   it("rebuilds herdr's split tree from its split paths", () => {
