@@ -499,7 +499,11 @@
   position: relative;
   display: inline-block;
   max-width: 100%;
+  /* clip, not hidden: a hidden box is a scroll container, and in a phone sheet (contained
+     there) a swipe begun on it would scroll nothing (#3475). hidden stays for a WebView that
+     has no clip (before Safari 16) */
   overflow: hidden;
+  overflow: clip;
   background: var(--bg-elevated);
 }
 
@@ -561,7 +565,9 @@
 .markdown-mermaid {
   display: flex;
   justify-content: center;
+  /* clip, not hidden: no scroll container to end a sheet's swipe (#3475), as for .image-slot */
   overflow: hidden;
+  overflow: clip;
   cursor: zoom-in;
 }
 
