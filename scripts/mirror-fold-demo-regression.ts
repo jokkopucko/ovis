@@ -17,6 +17,7 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
+import { openMoreGroup } from "./header-more.ts";
 
 const COLS = 120;
 const ROWS = 40;
@@ -208,6 +209,9 @@ const choose = async (page: Page, label: string, phone: boolean): Promise<void> 
   if (phone) {
     await page.locator(".app-header .context-tabs").waitFor();
     await page.locator(".header-more-button").click();
+    await page.locator(".row-sheet").waitFor();
+    // the pane's actions are under More's Pane and tab… (G-143)
+    await openMoreGroup(page, "pane");
   } else {
     // a desktop's tab strip shows the selected tab's actions button under the pointer (ui-regression.ts)
     await page.locator(".tab-strip").first().hover();
@@ -285,10 +289,11 @@ const hostScroll = (page: Page): Promise<{ top: number; left: number }> => page.
   const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
   return { top: host.scrollTop, left: host.scrollLeft };
 });
-/** The labels of the pane's actions on a phone (its header More: the title lists the tabs), closed again with Escape. */
+/** The labels of the pane's actions on a phone (its header More: the title lists the tabs; Pane and tab… under it, G-143), closed again with Escape. */
 const sheetItems = async (page: Page): Promise<string[]> => {
   await page.locator(".header-more-button").click();
   await page.locator(".row-sheet").waitFor();
+  await openMoreGroup(page, "pane");
   const items = await page.locator(".row-sheet .row-sheet-item .row-sheet-label").allTextContents();
   await page.keyboard.press("Escape");
   await page.locator(".row-sheet").waitFor({ state: "detached" });

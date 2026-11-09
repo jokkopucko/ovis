@@ -7,6 +7,7 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openMoreGroup } from "./header-more.ts";
 
 // Deep links (lib/deepLink.ts) on the unmodified app over the demo's fixture transport: an
 // address names the PC, workspace, pane, lens and Settings page, opens there, and follows the app
@@ -671,8 +672,11 @@ try {
         await page.goForward();
         await waitSelected(page, DOCS);
         // an item that opens a dialog on the sheet's address keeps the sheet's entry: More's (a phone's
-        // pane menu) Rename pane dialog stays up once the sheet's closing has settled, and Back closes it alone
+        // pane menu, under its Pane and tab… sheet, which takes More's entry: G-143) Rename pane dialog stays up once the
+        // sheet's closing has settled, and Back closes it alone
         await more.tap();
+        await sheet.waitFor();
+        await openMoreGroup(page, "pane");
         await page.getByRole("button", { name: "Rename pane", exact: true }).tap();
         const creation = page.getByRole("dialog", { name: /^Rename pane · / });
         await creation.waitFor();

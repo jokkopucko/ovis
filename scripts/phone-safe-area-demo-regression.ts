@@ -19,6 +19,7 @@ import { chromium, type Browser, type Locator, type Page } from "playwright-core
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openMoreGroup } from "./header-more.ts";
 
 type Insets = { top: number; right: number; bottom: number; left: number };
 type Screen = { label: string; width: number; height: number; insets: Insets };
@@ -122,7 +123,12 @@ async function keep(page: Page, name: string): Promise<void> {
 
 async function headerMore(page: Page, item?: string): Promise<void> {
   await page.locator(".header-more-button").click();
-  if (item) await page.locator(".row-sheet, .row-menu").getByText(item, { exact: true }).click();
+  if (!item) return;
+  const menu = page.locator(".row-sheet, .row-menu");
+  await menu.waitFor();
+  // a phone's More holds the pane's and tab's actions under Pane and tab… (G-143)
+  if (!(await menu.getByText(item, { exact: true }).isVisible())) await openMoreGroup(page, "pane");
+  await menu.getByText(item, { exact: true }).click();
 }
 
 async function close(page: Page, surface: string): Promise<void> {

@@ -15,6 +15,19 @@ export async function moreItem(page: Page, label: string): Promise<Locator> {
   return item;
 }
 
+/**
+ * A phone's More (its sheet) folds the find items and the open pane's and tab's actions into one item each, Find… and
+ * Pane and tab…, each opening a sheet of its own (G-143). With More open, this opens `group`'s sheet and waits for it;
+ * where More lists those items itself (a popover, or a group of one) it does nothing.
+ */
+export async function openMoreGroup(page: Page, group: "find" | "pane"): Promise<void> {
+  const item = page.locator(`.row-sheet .row-sheet-item[data-item="${group}-group"]`);
+  if ((await item.count()) === 0) return;
+  await item.click();
+  await item.waitFor({ state: "detached" });
+  await page.locator(".row-sheet .row-sheet-item").first().waitFor();
+}
+
 /** Runs an item; the menu closes with it. */
 export async function runMoreItem(page: Page, label: string): Promise<void> {
   const item = await moreItem(page, label);

@@ -6,6 +6,7 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openMoreGroup } from "./header-more.ts";
 
 // Search conversation (#2018) in the unmodified app over the demo's fixture transport: offered in
 // the pane's menu and the palette where the PC's bridge searches, opened there, a pick opening the
@@ -16,11 +17,20 @@ const app = mkdtempSync(join(tmpdir(), "ovis-search-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 if (evidence) mkdirSync(evidence, { recursive: true });
 
-/** The pane's menu: a mouse right-clicks the pane; a phone's header, which lists the tabs, has More carry the pane's actions. */
+/**
+ * The pane's menu: a mouse right-clicks the pane; a phone's header, which lists the tabs, has More carry the pane's actions,
+ * its find items under Find… when there are two of them (G-143).
+ */
 const paneMenu = async (page: Page, width: number): Promise<void> => {
-  if (width >= 640) await page.locator(".pane-frame.is-current .chat-view").click({ button: "right", position: { x: 300, y: 200 } });
-  else await page.locator(".header-more-button").click();
-  await page.getByText("Close pane", { exact: true }).first().waitFor();
+  if (width >= 640) {
+    await page.locator(".pane-frame.is-current .chat-view").click({ button: "right", position: { x: 300, y: 200 } });
+    await page.getByText("Close pane", { exact: true }).first().waitFor();
+    return;
+  }
+  await page.locator(".header-more-button").click();
+  await page.locator(".row-sheet").waitFor();
+  await openMoreGroup(page, "find");
+  await page.getByText("Find in terminal", { exact: true }).waitFor();
 };
 const paletteActions = async (page: Page): Promise<string[]> => {
   await page.keyboard.press("Control+Shift+K");

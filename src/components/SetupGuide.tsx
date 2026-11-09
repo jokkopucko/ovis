@@ -325,7 +325,7 @@ function AgentsScreen({ catalog, ready, machineId, onInstalled, onLookAgain, onO
           <Check aria-hidden="true" />
           <div>
             <h1 id="setup-step-title" tabIndex={-1}>{t("You're set up")}</h1>
-            <p className="setup-lead">{t("Ovis found these on this PC. Start opens your first project with the one picked.")}</p>
+            <p className="setup-lead">{t("Pick one, then press Start.")}</p>
           </div>
         </div>
       ) : (

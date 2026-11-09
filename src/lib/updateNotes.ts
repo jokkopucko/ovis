@@ -142,7 +142,29 @@ export function writeAnnounced(version: string): void {
 
 /** Tells `listener` the version another tab of this device closed the line for; returns the unsubscribe. */
 export function watchAnnounced(listener: (version: string | null) => void): () => void {
-  const onStorage = (event: StorageEvent) => { if (event.key === ANNOUNCED_KEY || event.key === null) listener(event.newValue); };
+  return watchKey(ANNOUNCED_KEY, listener);
+}
+
+// the line offering a release, closed on this device for that release (G-102): keyed by its revision, since a
+// tag moved to another commit is a new offer, and shown again for the next one
+const OFFER_CLOSED_KEY = "ovis:update-offer-closed";
+
+/** The revision whose offer line this device closed. */
+export function readOfferClosed(): string | null {
+  try { return window.localStorage.getItem(OFFER_CLOSED_KEY); } catch { return null; }
+}
+
+export function writeOfferClosed(revision: string): void {
+  try { window.localStorage.setItem(OFFER_CLOSED_KEY, revision); } catch { /* storage blocked: closed until the page reloads */ }
+}
+
+/** Tells `listener` the revision another tab of this device closed the offer for; returns the unsubscribe. */
+export function watchOfferClosed(listener: (revision: string | null) => void): () => void {
+  return watchKey(OFFER_CLOSED_KEY, listener);
+}
+
+function watchKey(key: string, listener: (value: string | null) => void): () => void {
+  const onStorage = (event: StorageEvent) => { if (event.key === key || event.key === null) listener(event.newValue); };
   window.addEventListener("storage", onStorage);
   return () => window.removeEventListener("storage", onStorage);
 }

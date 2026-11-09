@@ -31,15 +31,18 @@ export function PushHealthNotice({ onRepair, onOpen }: { onRepair: () => void; o
   const t = useT();
   const { health, busy, result, dismissed } = usePushHealth();
   if (health.problem === null || health.problem === "permission" || health.problem === dismissed) return null;
-  const text = repairFailureText(t, result)
+  const failure = repairFailureText(t, result);
+  const text = failure
     ?? (health.problem === "gone" ? t("The push service retired this device's subscription. Turn alerts on again to make a new one.")
       : health.problem === "missing" ? t("This device's push subscription is missing. Turn alerts on again.")
       : health.problem === "key-mismatch" ? t("This device's push subscription was made for another server key. Turn alerts on again to make a new one.")
       : t("The push service refused the last alert to this device. Send a test to check whether it still does."));
   return (
-    <div className="update-notice is-alerts" role="status" data-testid="push-health-notice" data-problem={health.problem} data-result={result ?? undefined}>
+    // one line at every width, Close at its right end (G-103): the fault's sentence is cut, Settings → Alerts says it in
+    // full; why a repair failed is a step to read, so that sentence alone wraps, the buttons still beside it
+    <div className={`update-notice is-line is-alerts${failure !== null ? " is-failure" : ""}`} role="status" data-testid="push-health-notice" data-problem={health.problem} data-result={result ?? undefined}>
       <BellOff aria-hidden="true" />
-      <span>{text}</span>
+      <span title={text}>{text}</span>
       {health.repair
         ? <button type="button" className="btn btn-primary" disabled={busy !== null} onClick={onRepair}>{busy === "repair" ? t("Turning alerts on…") : t("Turn alerts on again")}</button>
         : <button type="button" className="btn" onClick={onOpen}>{t("Alerts")}</button>}

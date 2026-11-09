@@ -207,6 +207,18 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
     await page.locator(".conn-live").waitFor({ state: "attached" });
     const line = page.locator(".update-notice");
 
+    // the offer closed from the keyboard hands the focus to the header's More, never to the page (G-102); the
+    // closed offer is then forgotten so the line comes back for the rest
+    await line.getByText("Ovis v9.9.9 is available.", { exact: true }).waitFor();
+    await line.filter({ hasText: "Ovis v9.9.9 is available." }).getByRole("button", { name: "Dismiss", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await page.getByText("Ovis v9.9.9 is available.", { exact: true }).waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => document.activeElement?.matches(".header-more-button") ?? false), true, "closing the offer from the keyboard leaves the focus on the header's More");
+    await page.evaluate(() => localStorage.removeItem("ovis:update-offer-closed"));
+    await page.reload();
+    await page.locator(".conn-live").waitFor({ state: "attached" });
+    console.log("PASS the offer closes from the keyboard and the focus goes to the header's More");
+
     // happy: the header's Update names A, and the install's steps are shown as they are told
     await line.getByText("Ovis v9.9.9 is available.", { exact: true }).waitFor();
     await line.getByRole("button", { name: "What's new", exact: true }).waitFor();

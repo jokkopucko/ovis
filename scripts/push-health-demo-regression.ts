@@ -53,7 +53,7 @@ const STAND_IN = `<script>(() => {
   else if (mode !== "unsupported") live = fresh(serverKey);
   const pushManager = {
     getSubscription: async () => live,
-    subscribe: async (options) => { live = fresh(options.applicationServerKey.buffer.slice(options.applicationServerKey.byteOffset, options.applicationServerKey.byteOffset + options.applicationServerKey.byteLength)); return live; },
+    subscribe: async (options) => { if (hook.subscribeFails) throw new DOMException("push service off", "NotAllowedError"); live = fresh(options.applicationServerKey.buffer.slice(options.applicationServerKey.byteOffset, options.applicationServerKey.byteOffset + options.applicationServerKey.byteLength)); return live; },
   };
   if (mode !== "unsupported") {
     Object.defineProperty(globalThis, "PushManager", { value: class PushManager {}, configurable: true });
@@ -66,7 +66,7 @@ const STAND_IN = `<script>(() => {
   const counts = {};
   const answers = {};
   const hook = {
-    counts, offline: false,
+    counts, offline: false, subscribeFails: false,
     hold(key) { let release; holds.set(key, new Promise((resolve) => { release = resolve; })); hook.releases[key] = release; },
     releases: {},
     release(key) { const release = hook.releases[key]; holds.delete(key); delete hook.releases[key]; if (release) release(); },
@@ -108,6 +108,8 @@ declare global {
     __push: {
       counts: Record<string, number>;
       offline: boolean;
+      /** the browser will not make a subscription (Brave with its push service off): a repair fails as "refused" */
+      subscribeFails: boolean;
       hold(key: string): void;
       release(key: string): void;
       refuse(key: string, status: number, code: string): void;
@@ -191,6 +193,14 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       assert.ok(await noSidewaysScroll(page), `${tag}: nothing scrolls sideways with the notice`);
       const button = notice(page).getByRole("button", { name: REPAIR, exact: true });
       if (phone) assert.ok(await touchSized(button), `${tag}: the notice's button is a finger-sized target`);
+      // one line at every width (G-103): Close shares the button's row and keeps to the notice's right end
+      {
+        const close = (await notice(page).getByRole("button", { name: language === "ko" ? "닫기" : "Dismiss", exact: true }).boundingBox())!;
+        const repairBox = (await button.boundingBox())!;
+        const line = (await notice(page).boundingBox())!;
+        assert.ok(Math.abs((close.y + close.height / 2) - (repairBox.y + repairBox.height / 2)) < 2, `${tag}: Close sits on the button's line`);
+        assert.ok(close.x > repairBox.x + repairBox.width && line.x + line.width - (close.x + close.width) < 24, `${tag}: Close is the line's last control, at its right end`);
+      }
       await capture(page, width, theme, language, "rest");
       if (!phone) {
         await button.hover();
@@ -356,6 +366,59 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
   console.log(`PASS push health ${tag}: one notice over the pane and in Settings, repaired once, cleared on the proven push; refusal, key mismatch, missing, transient, denied, unsupported, offline, loading and a watching device's refused test`);
 }
 
+/**
+ * A repair that fails says why in full (repairFailureText): on a narrow phone at the largest interface text the
+ * sentence keeps most of the line's width, the repair button drops under it, Close stays at the top right, and the
+ * notice stays within the screen, scrolling inside itself when it must (G-103). A wide screen keeps the line's row:
+ * only the sentence wraps, the repair button and Close stay beside it.
+ */
+async function checkFailedRepairAtLargeText(browser: Browser, origin: string, width: number): Promise<void> {
+  const wide = width > 640;
+  const viewport = wide ? DESKTOP : { width, height: width === 320 ? 568 : 844 };
+  const tag = `${width} failed repair at 20px`;
+  const context = await browser.newContext({ viewport, ...(wide ? {} : { deviceScaleFactor: 3, isMobile: true, hasTouch: true }), locale: "en-US", permissions: ["notifications"] });
+  await context.addInitScript(([settings, key]) => { localStorage.setItem("ovis:settings", settings); localStorage.setItem(key, "fresh"); }, [JSON.stringify({ language: "en", theme: "light", alertsOn: true, uiFontSize: 20 }), QA_KEY] as const);
+  try {
+    const page = await context.newPage();
+    await page.goto(origin);
+    await page.locator(".conn-live").waitFor();
+    await waitForCount(page, "POST /api/push/status", 1);
+    // the subscription is gone from this device, and the browser will not make another: the repair fails for the
+    // fault it was meant to mend, which keeps its reason on the line
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      await (await registration!.pushManager.getSubscription())?.unsubscribe();
+      window.__push.subscribeFails = true;
+    });
+    await cameToFront(page);
+    const notice = page.locator(NOTICE);
+    await notice.waitFor();
+    await notice.getByRole("button", { name: "Turn alerts on again", exact: true }).click();
+    // whichever way the browser's refusal is told (refused, no worker, not registered), the line says why in full
+    await page.locator(`${NOTICE}:is([data-result="refused"], [data-result="no-worker"], [data-result="unregistered"])`).waitFor();
+    const box = async (locator: Locator) => (await locator.boundingBox())!;
+    const line = await box(notice);
+    const reason = await box(notice.locator("span"));
+    const action = await box(notice.getByRole("button", { name: "Turn alerts on again", exact: true }));
+    const close = await box(notice.getByRole("button", { name: "Dismiss", exact: true }));
+    if (EVIDENCE) await page.screenshot({ path: join(EVIDENCE, `push-health-${width}-light-failed-repair-20px.png`) });
+    if (wide) {
+      const middle = (b: { y: number; height: number }) => b.y + b.height / 2;
+      assert.ok(Math.abs(middle(action) - middle(close)) < 2 && action.x >= reason.x + reason.width - 1, `${tag}: the repair button and Close stay on one row beside the reason`);
+      assert.ok(line.x + line.width - (close.x + close.width) < 24, `${tag}: Close stays at the line's right end`);
+      console.log(`PASS ${tag}: the line keeps its row, the reason beside the repair button and Close`);
+      return;
+    }
+    assert.ok(reason.width >= line.width * 0.6, `${tag}: the reason keeps most of the line's width (${Math.round(reason.width)} of ${Math.round(line.width)}px)`);
+    assert.ok(action.y >= reason.y + reason.height - 1, `${tag}: the repair button sits under the reason`);
+    assert.ok(close.y - line.y < 24 && line.x + line.width - (close.x + close.width) < 24, `${tag}: Close stays at the top right`);
+    assert.ok(line.y + line.height <= viewport.height / 2 + 1, `${tag}: the notice keeps to the top half of the screen (${Math.round(line.height)}px tall)`);
+    // what does not fit is read by scrolling the notice itself
+    assert.ok(await notice.evaluate((node) => node.scrollHeight <= node.clientHeight + 1 || getComputedStyle(node).overflowY === "auto"), `${tag}: an overflowing reason scrolls inside the notice`);
+    console.log(`PASS ${tag}: the reason reads at width, the button under it, Close at the top right, the notice within the screen`);
+  } finally { await context.close(); }
+}
+
 const app = mkdtempSync(join(tmpdir(), "herdr-push-health-demo-"));
 try {
   await buildDemoApp(app);
@@ -383,6 +446,7 @@ try {
       for (const [width, theme, language] of [[PHONE.width, "light", "en"], [PHONE.width, "dark", "en"], [DESKTOP.width, "light", "en"], [DESKTOP.width, "dark", "en"], [PHONE.width, "light", "ko"]] as const) {
         await run(browser, origin, width, theme, language);
       }
+      for (const width of [320, PHONE.width, DESKTOP.width]) await checkFailedRepairAtLargeText(browser, origin, width);
     } finally { await browser.close(); }
   } finally { server.stop(true); }
   if (EVIDENCE) {

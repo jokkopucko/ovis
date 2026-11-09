@@ -21,7 +21,7 @@ export const GUIDE_JA: Record<string, string> = {
   "Turn on the Ovis relay": "Ovis リレーをオンにする",
   "Use Tailscale or Wi-Fi instead": "代わりに Tailscale か Wi-Fi を使う",
   "You're set up": "インストール済みのエージェント",
-  "Ovis found these on this PC. Start opens your first project with the one picked.": "この PC にあるエージェントです。開始を押すと、選んだエージェントで最初のワークスペースを開きます。",
+  "Pick one, then press Start.": "1つ選んで開始を押してください。",
   "Pick an AI coding helper": "コーディングエージェントのインストール",
   "Nothing is installed until you tap Install.": "「インストール」を押したエージェントだけをインストールします。",
   "AI coding helpers": "コーディングエージェント",

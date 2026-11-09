@@ -55,6 +55,7 @@ import { chromePath } from "./chrome-path.ts";
 import { moves, ringOwner, targetVerdict, walkFocus, type FocusStop, type Layout, type Rect, type RingRead } from "./design-gate-checks.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { sheetRisen } from "./settings-page.ts";
+import { openMoreGroup } from "./header-more.ts";
 
 const repo = join(import.meta.dir, "..");
 const PREFIX = "/herdr-web-ui/demo/app/";
@@ -593,6 +594,8 @@ const SURFACES: Surface[] = [
         await button.evaluate((node: HTMLElement) => node.click());
       }
       await menuRoot(page).waitFor();
+      // a phone's More holds the pane's actions under Pane and tab… (G-143)
+      if (env.phone) await openMoreGroup(page, "pane");
       await settle(page);
       await env.press(menuItem(page, label("Recover unsent text")));
       await page.locator(".unsent-modal").waitFor();

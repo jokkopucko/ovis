@@ -174,6 +174,8 @@ const BASE: Record<string, string> = {
   "Choosing this PC's Ovis server over SSH requires Linux or macOS": "SSH でこの PC の Ovis サーバーを選ぶには Linux または macOS が必要です",
   "Browse files": "ファイルを参照",
   "Copy link": "リンクをコピー",
+  "Find…": "検索…",
+  "Pane and tab…": "ペインとタブ…",
   "Goal: {objective}": "目標: {objective}",
   "Transcript size unknown": "記録のサイズは不明",
   "Transcript {size}": "記録 {size}",

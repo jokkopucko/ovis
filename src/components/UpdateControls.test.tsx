@@ -7,7 +7,7 @@ import { SettingsProvider } from "../lib/settings.ts";
 import type { UpdatesModel } from "../lib/updates.ts";
 import * as herdrUpdate from "../lib/herdrUpdate.ts";
 import { SettingsBare } from "./SettingsControls.tsx";
-import { HerdrUpdateControls, UpdateControls } from "./UpdateControls.tsx";
+import { HerdrUpdateControls, UpdateControls, UpdateNotice } from "./UpdateControls.tsx";
 
 Object.assign(globalThis, { __APP_VERSION__: "0.4.22" });
 
@@ -48,6 +48,38 @@ describe("the Updates section's heading", () => {
     const shown = heading(render(false));
     expect(shown).not.toBe("");
     expect(shown).not.toContain("visually-hidden");
+  });
+});
+
+// the offer line closes for its release on this device (G-102), as the done line does, and offers the next one again
+describe("the update offer line", () => {
+  const offer = (revision: string, closed: string | null, model?: Partial<UpdatesModel>): string => {
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: { getItem: (key: string) => key === "ovis:update-offer-closed" ? closed : null } } });
+    try {
+      const status = { ...blocked, blocked_reason: null, available: true, latest_version: "0.4.23", latest_revision: revision };
+      return renderToStaticMarkup(createElement(SettingsProvider, null,
+        createElement(UpdateNotice, { updates: { ...updates(status), ...model }, onOpen: () => undefined })));
+    } finally {
+      if (saved) Object.defineProperty(globalThis, "window", saved);
+      else Reflect.deleteProperty(globalThis, "window");
+      if (languages) Object.defineProperty(navigator, "languages", languages);
+      else Reflect.deleteProperty(navigator, "languages");
+    }
+  };
+
+  it("can be closed, and stays closed for that release only", () => {
+    expect(offer("aaaa111", null)).toContain('aria-label="Dismiss"');
+    expect(offer("aaaa111", "aaaa111")).toBe("");
+    expect(offer("bbbb222", "aaaa111")).toContain("Ovis v0.4.23 is available.");
+  });
+
+  it("keeps a failed install on the line, with no Close", () => {
+    const html = offer("aaaa111", "aaaa111", { error: "The release server could not be reached." });
+    expect(html).toContain("The update could not be installed.");
+    expect(html).not.toContain('aria-label="Dismiss"');
   });
 });
 

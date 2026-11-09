@@ -359,6 +359,11 @@
     padding-top: var(--space-4);
   }
 
+  /* a phone reaches Start sooner: the agents screen's blocks sit a step closer (G-192) */
+  .setup-step {
+    gap: var(--space-3);
+  }
+
   /* Start, then Connect your phone below it, each the full width */
   .setup-actions .btn:not(.btn-ghost) {
     flex: 1 1 100%;

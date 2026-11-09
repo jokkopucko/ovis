@@ -21,7 +21,7 @@ export const GUIDE_KO: Record<string, string> = {
   "Turn on the Ovis relay": "Ovis 릴레이 켜기",
   "Use Tailscale or Wi-Fi instead": "대신 Tailscale이나 Wi-Fi 쓰기",
   "You're set up": "설치된 에이전트",
-  "Ovis found these on this PC. Start opens your first project with the one picked.": "이 PC에 있는 에이전트입니다. 시작을 누르면 고른 에이전트로 첫 워크스페이스를 엽니다.",
+  "Pick one, then press Start.": "하나를 고르고 시작을 누르세요.",
   "Pick an AI coding helper": "코딩 에이전트 설치",
   "Nothing is installed until you tap Install.": "설치를 누른 에이전트만 설치합니다.",
   "AI coding helpers": "코딩 에이전트",

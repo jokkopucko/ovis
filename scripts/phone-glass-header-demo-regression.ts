@@ -6,6 +6,7 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openMoreGroup } from "./header-more.ts";
 
 // #1457: a compact-height phone (including the iPhone Duo's outer display, or a phone with its
 // keyboard up) drops a lone tab's row, and the chat then puts the glass header over the pane. The
@@ -105,7 +106,7 @@ try {
         await page.keyboard.press("Escape");
         await page.locator("#new-session-title").waitFor({ state: "detached" });
         // and the tab is named in a dialog, the row's inline field being gone with it
-        await openMore(page);
+        await openPaneMenu(page);
         await sheet.getByText("Rename tab", { exact: true }).click();
         const tabName = page.getByRole("textbox", { name: "Tab name", exact: true });
         await tabName.fill("Duo tab");
@@ -125,13 +126,13 @@ try {
         await page.keyboard.press("Escape");
         await tabName.waitFor({ state: "detached" });
         // Move to workspace\u2026 lists the other workspaces in a second menu (the move itself is the last step)
-        await openMore(page);
+        await openPaneMenu(page);
         await sheet.getByText("Move to workspace\u2026", { exact: true }).click();
         await sheet.getByText("Move Duo tab to", { exact: true }).waitFor();
         assert.ok(await sheet.locator(".row-sheet-item:not(.row-sheet-cancel)").count() > 0, "the second menu lists the other workspaces");
         await closeMenu(page);
         // Close tab asks first, as the row's does for a workspace's last tab
-        await openMore(page);
+        await openPaneMenu(page);
         await sheet.getByText("Close tab", { exact: true }).click();
         const closeDialog = page.getByRole("alertdialog", { name: "Close tab Duo tab?" });
         await closeDialog.waitFor();
@@ -141,7 +142,7 @@ try {
         // header's More, all on screen, and Escape gives the focus back to that button
         await page.setViewportSize({ width: 667, height: 375 });
         await page.locator(".tab-strip").waitFor({ state: "detached" });
-        await openMore(page);
+        await openPaneMenu(page);
         await sheet.getByText("Move to workspace\u2026", { exact: true }).click();
         const destinations = page.getByRole("menu", { name: "Move Duo tab to" });
         await destinations.waitFor();
@@ -206,7 +207,7 @@ try {
         }
         // the move from the header's menu: the lone tab joins another workspace, and the view goes with its pane
         const before = new URL(page.url()).searchParams.get("ws");
-        await openMore(page);
+        await openPaneMenu(page);
         await sheet.getByText("Move to workspace\u2026", { exact: true }).click();
         await sheet.getByText("Move Duo tab to", { exact: true }).waitFor();
         await sheet.locator(".row-sheet-item:not(.row-sheet-cancel)").first().click();
@@ -229,6 +230,12 @@ async function openMore(page: Page): Promise<void> {
   await page.locator(".row-sheet, .row-menu").waitFor();
 }
 
+/** Opens the pane's and tab's actions from More: its Pane and tab… sheet on a phone (G-143), More itself where it is a popover. */
+async function openPaneMenu(page: Page): Promise<void> {
+  await openMore(page);
+  await openMoreGroup(page, "pane");
+}
+
 async function closeMenu(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
   await page.locator(".row-sheet, .row-menu").waitFor({ state: "detached" });
@@ -248,8 +255,11 @@ async function checkMenus(page: Page, label: string): Promise<void> {
     for (const item of newTab) assert.equal(await sheet.getByText(item, { exact: true }).count(), 1, `${label}: the title's list offers ${item}`);
     await closeMenu(page);
   }
+  // the palette stays in More itself; the pane's and tab's actions are under its Pane and tab… on a phone (G-143)
   await openMore(page);
-  for (const item of ["Search panes and actions", "Rename pane", "Close pane", ...(listed ? [] : newTab), "Rename tab", "Move to workspace\u2026", "Close tab"]) {
+  assert.equal(await sheet.getByText("Search panes and actions", { exact: true }).count(), 1, `${label}: the header's menu offers Search panes and actions`);
+  await openMoreGroup(page, "pane");
+  for (const item of ["Rename pane", "Close pane", ...(listed ? [] : newTab), "Rename tab", "Move to workspace\u2026", "Close tab"]) {
     assert.equal(await sheet.getByText(item, { exact: true }).count(), 1, `${label}: the header's menu offers ${item}`);
   }
   for (const item of listed ? newTab : []) assert.equal(await sheet.getByText(item, { exact: true }).count(), 0, `${label}: More leaves ${item} to the title's list`);

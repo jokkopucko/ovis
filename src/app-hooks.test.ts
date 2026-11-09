@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 // Every later App refactor lowers this to its new count; it never goes up.
-const APP_HOOK_CEILING = 24;
+const APP_HOOK_CEILING = 22;
 
 const HOOK = /\buse(State|Ref|Reducer|Effect|LayoutEffect|Memo|Callback|SyncExternalStore)\b/g;
 

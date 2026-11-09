@@ -172,6 +172,8 @@ const BASE: Record<string, string> = {
   "Choosing this PC's Ovis server over SSH requires Linux or macOS": "SSH로 이 PC의 Ovis 서버를 선택하려면 Linux 또는 macOS가 필요합니다",
   "Browse files": "파일 찾아보기",
   "Copy link": "링크 복사",
+  "Find…": "찾기…",
+  "Pane and tab…": "패널·탭…",
   "Goal: {objective}": "목표: {objective}",
   "Transcript size unknown": "대화 기록 크기 알 수 없음",
   "Transcript {size}": "대화 기록 {size}",

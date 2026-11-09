@@ -21,7 +21,7 @@ export const GUIDE_ZH: Record<string, string> = {
   "Turn on the Ovis relay": "开启 Ovis 中继",
   "Use Tailscale or Wi-Fi instead": "改用 Tailscale 或 Wi-Fi",
   "You're set up": "已安装的 Agent",
-  "Ovis found these on this PC. Start opens your first project with the one picked.": "这是本机上的 Agent。点开始会用选中的 Agent 打开第一个工作区。",
+  "Pick one, then press Start.": "选一个，然后点开始。",
   "Pick an AI coding helper": "安装 Agent",
   "Nothing is installed until you tap Install.": "只安装你点了“安装”的 Agent。",
   "AI coding helpers": "Agent",
