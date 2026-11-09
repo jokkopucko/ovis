@@ -20,7 +20,7 @@ import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
 import { isThemeId, pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
-import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT } from "../lib/i18n.ts";
+import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT, type Translate } from "../lib/i18n.ts";
 import { focusInOtherModal, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { awaitRestart, restartState, subscribeRestart } from "../lib/runtimeSwitch.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
@@ -268,6 +268,9 @@ function openFolds(group: HTMLElement): void {
   for (let fold = group.closest("details"); fold !== null; fold = fold.parentElement?.closest("details") ?? null) fold.open = true;
 }
 
+/** how to show the Herdr app's terminals here: the steps About's runtime line leaves out (G-101) */
+const RUNTIME_HELP = "https://github.com/devswha/ovis/blob/main/docs/guide.md#herdr-app-terminals";
+
 /** The pages in the order the list shows them: what is looked at first, then what is set once. */
 export const PAGES: readonly { id: SettingsPage; icon: LucideIcon }[] = [
   { id: "appearance", icon: Palette },
@@ -280,6 +283,24 @@ export const PAGES: readonly { id: SettingsPage; icon: LucideIcon }[] = [
   { id: "experimental", icon: FlaskConical },
   { id: "about", icon: Info },
 ];
+
+/**
+ * The one dim line under a page's title: what the page holds (G-173). About has none: it is a page of
+ * facts without sentences on purpose. Literal `t()` calls, so the dictionaries' checks find each key.
+ */
+function pageNote(t: Translate, page: SettingsPage): string | null {
+  switch (page) {
+    case "appearance": return t("Theme, fonts and the sidebar on this device.");
+    case "chat": return t("How conversations look and what the message box offers.");
+    case "terminal": return t("How terminal panes look and take input.");
+    case "alerts": return t("When this device alerts you, and where else alerts go.");
+    case "agents": return t("Coding agents on this PC, their accounts and plan limits.");
+    case "shortcuts": return t("Keyboard shortcuts, and herdr's prefix keys.");
+    case "devices": return t("Phones, browsers and PCs that reach this Ovis.");
+    case "experimental": return t("Features still being shaped; they may change.");
+    default: return null;
+  }
+}
 
 /** The sheet's own breakpoint (`.modal`, styles.css): under it the list and a page take turns. */
 const NARROW_QUERY = "(max-width: 640px)";
@@ -494,13 +515,13 @@ function AppearancePage() {
       <SettingsRow icon={SquareTerminal} label={t("Terminal font")} description={t("Comma-separated, tried in order. A font this device does not have falls back to the default.")} keywords={`${t("Terminal font size")} ${t("Applied to every terminal pane")}`} wide reset={["terminalFontFamily", "terminalFontSize"]}>
         <span className="settings-font-size">
           <FontFamilyInput value={settings.terminalFontFamily} label={t("Terminal font")} fixedWidthFor="terminal" onCommit={(terminalFontFamily) => update({ terminalFontFamily })} />
-          <Stepper label={t("Terminal font size")} value={settings.terminalFontSize} text={`${settings.terminalFontSize}px`} min={TERMINAL_FONT_MIN} max={TERMINAL_FONT_MAX} decreaseLabel={t("Decrease terminal font size")} increaseLabel={t("Increase terminal font size")} onChange={(terminalFontSize) => update({ terminalFontSize })} />
+          <Stepper label={t("Terminal font size")} value={settings.terminalFontSize} text={`${settings.terminalFontSize}px`} min={TERMINAL_FONT_MIN} max={TERMINAL_FONT_MAX} decreaseLabel={t("Decrease terminal font size")} increaseLabel={t("Increase terminal font size")} onChange={(terminalFontSize) => update({ terminalFontSize })} unit="px" range={t("Enter {min}–{max}px", { min: TERMINAL_FONT_MIN, max: TERMINAL_FONT_MAX })} />
         </span>
       </SettingsRow>
       <SettingsRow icon={MessageSquare} label={t("Chat font")} description={t("Message text; code stays monospace. Comma-separated, tried in order. A font this device does not have falls back to the default.")} keywords={`${t("Chat font size")} ${t("Messages, code, prompt cards and the message box in the chat view")}`} wide reset={["chatFontFamily", "chatFontSize"]}>
         <span className="settings-font-size">
           <FontFamilyInput value={settings.chatFontFamily} label={t("Chat font")} onCommit={(chatFontFamily) => update({ chatFontFamily })} />
-          <Stepper label={t("Chat font size")} value={chatFontSize(settings)} text={`${chatFontSize(settings)}px`} min={CHAT_FONT_MIN} max={CHAT_FONT_MAX} decreaseLabel={t("Decrease chat font size")} increaseLabel={t("Increase chat font size")} onChange={(size) => update({ chatFontSize: size })} />
+          <Stepper label={t("Chat font size")} value={chatFontSize(settings)} text={`${chatFontSize(settings)}px`} min={CHAT_FONT_MIN} max={CHAT_FONT_MAX} decreaseLabel={t("Decrease chat font size")} increaseLabel={t("Increase chat font size")} onChange={(size) => update({ chatFontSize: size })} unit="px" range={t("Enter {min}–{max}px", { min: CHAT_FONT_MIN, max: CHAT_FONT_MAX })} />
         </span>
       </SettingsRow>
     </SettingsGroup>
@@ -608,7 +629,7 @@ function ChatPage() {
           <Toggle label={touch ? t("Return inserts a new line") : t("Enter sends")} checked={touch ? !enterSendsOn(settings, touch) : enterSendsOn(settings, touch)} onChange={(checked) => update({ enterSends: touch ? !checked : checked })} />
         </SettingsRow>
         {/* the message box's optional buttons and chips, each off by default; the suggestion chip is drawn on a touch screen only (Composer.tsx) */}
-        <SettingsRow icon={Sparkles} label={t("Composer buttons")} wide reset={touch ? ["composerPasteSend", "composerArtifacts", "suggestionChip"] : ["composerPasteSend", "composerArtifacts"]}
+        <SettingsRow icon={TextCursorInput} label={t("Composer buttons")} wide reset={touch ? ["composerPasteSend", "composerArtifacts", "suggestionChip"] : ["composerPasteSend", "composerArtifacts"]}
           keywords={[t("Paste and send button"), t("A button in the empty message box sends the text copied on this device as a message."), t("Artifacts chip"), t("A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool."), ...(touch ? [t("Suggestion chip"), t("A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.")] : [])].join(" ")}>
           <span className="settings-chips">
             {chip(ClipboardPaste, t("Paste and send"), settings.composerPasteSend, (composerPasteSend) => update({ composerPasteSend }))}
@@ -1035,16 +1056,20 @@ function ShortcutsPage() {
   });
   return (
     <>
-      <input
-        type="search"
-        className="input settings-shortcut-search"
-        value={query}
-        placeholder={t("Search shortcuts")}
-        aria-label={t("Search shortcuts")}
-        autoComplete="off"
-        spellCheck={false}
-        onChange={(event) => setQuery(event.target.value)}
-      />
+      {/* the same glass as Settings' own search (G-178) */}
+      <div className="settings-search">
+        <Search aria-hidden="true" />
+        <input
+          type="search"
+          className="input settings-search-input settings-shortcut-search"
+          value={query}
+          placeholder={t("Search shortcuts")}
+          aria-label={t("Search shortcuts")}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </div>
       {visible.length === 0 && <p className="settings-hint" role="status">{t("No shortcuts match.")}</p>}
       <SettingsGroup className="settings-shortcuts" section="shortcuts">
         {visible.map((shortcut) => {
@@ -1667,15 +1692,14 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
   }
   if (served === null || (known === null && facts === null)) return null;
   const onCore = served === "herdr-core";
-  const vars = { version: core?.version ?? "", setting: "OVIS_RUNTIME=herdr-core", command: "herdr plugin config-dir devswha.ovis" };
   const target = facts?.switch_to ?? null;
   // under the fact, not beside it: the fact keeps its one line on a phone
   const hint = facts?.fallback === "no_herdr_core" ? t("The Herdr app was chosen here, but no herdr-core answered, so herdr TUI is shown.")
     : facts?.locked === "env" ? t("OVIS_RUNTIME in Ovis's environment decides which terminals this PC shows; change it there to switch.")
     // where the OS does not serve herdr-core, setting OVIS_RUNTIME=herdr-core would stop Ovis: no how-to
     : target !== null || onCore || !core?.version || facts?.locked === "platform" ? null
-    : core.running ? t("The Herdr app's core (hc {version}) runs on this PC too. To show its terminals here, set {setting} where Ovis starts (the .env file in the folder {command} prints) and restart Ovis.", vars)
-    : t("The Herdr app's core (hc {version}) is installed on this PC too. To show its terminals here, set {setting} where Ovis starts (the .env file in the folder {command} prints) and restart Ovis.", vars);
+    // what it switches, in one line; the steps are in the guide (G-101)
+    : <span>{t("The Herdr app's core (hc {version}) is on this PC too. Ovis can show its terminals instead of herdr's.", { version: core.version })} <a className="settings-link" href={RUNTIME_HELP} target="_blank" rel="noreferrer">{t("How to switch")}</a></span>;
   const toCore = target === "herdr-core";
   // what this PC's server reports, never guessed: the runtime it serves with its version, then the
   // others it found installed. With two installed the choice between them is right on the first line.
@@ -2104,7 +2128,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
               ))}
             </SettingsQuery.Provider>
           </div>
-        ) : page !== null && <div key={page} ref={settingsBodyRef} id="settings-panel" className="modal-body settings-body" role="tabpanel" aria-label={label(page)} hidden={keyBarOpen}>{saveError !== null && <SaveFailure error={saveError} paused={savePaused} retrying={saveRetrying} onRetry={onRetrySave} />}{body(page)}</div>}
+        ) : page !== null && <div key={page} ref={settingsBodyRef} id="settings-panel" className="modal-body settings-body" role="tabpanel" aria-label={label(page)} hidden={keyBarOpen}>{saveError !== null && <SaveFailure error={saveError} paused={savePaused} retrying={saveRetrying} onRetry={onRetrySave} />}{pageNote(t, page) !== null && <p className="settings-page-note">{pageNote(t, page)}</p>}{body(page)}</div>}
         {keyBarOpen && <div className="modal-body settings-key-bar-body"><KeyBarSettings /></div>}
       </section>
     </div>

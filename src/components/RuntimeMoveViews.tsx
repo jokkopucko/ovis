@@ -55,6 +55,8 @@ export function PlanView({ t, plan, leadId }: { t: Translate; plan: MovePlan; le
   const byId = new Map(plan.panes.map((pane) => [pane.pane_id, pane]));
   return (
     <>
+      {/* what does not move, read before the list and the Move button (G-104) */}
+      <p className="runtime-move-note" id={leadId}>{t("Scrollback and programs running in shells do not come along. herdr itself stays as it is.")}</p>
       <ul className="runtime-move-tree">
         {plan.workspaces.map((workspace) => (
           <li key={workspace.workspace_id}>
@@ -72,7 +74,6 @@ export function PlanView({ t, plan, leadId }: { t: Translate; plan: MovePlan; le
           </li>
         ))}
       </ul>
-      <p className="runtime-move-note" id={leadId}>{t("Scrollback and programs running in shells do not come along. herdr itself stays as it is.")}</p>
     </>
   );
 }

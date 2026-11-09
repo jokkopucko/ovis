@@ -89,7 +89,8 @@ export function AlertWebhookGroup() {
   });
   const submit = (event: FormEvent) => { event.preventDefault(); void save(alerts); };
 
-  const note = t("This PC also posts its alerts to a chat app or any URL: the PC and pane names, what happened, and a link to the pane. A pane's name is its terminal title, which may hold your task.");
+  // one plain line: what leaves this PC (G-094, G-176)
+  const note = t("Sends alerts to another app too, with the PC and pane names and a link to open the pane.");
   if (view === null) {
     if (unreadable === null) return null;
     return (

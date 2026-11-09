@@ -1,4 +1,4 @@
-import { createContext, isValidElement, useContext, type ComponentProps, type ReactNode } from "react";
+import { createContext, isValidElement, useContext, useEffect, useId, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Minus, Plus, RotateCcw, type LucideIcon } from "lucide-react";
 
 import { DEFAULT_SETTINGS, useSettings, type Settings } from "../lib/settings.ts";
@@ -197,13 +197,64 @@ export function ChipToggles({ label, chips }: { label: string; chips: readonly {
   );
 }
 
-/** A number moved one step at a time between its limits, shown as `text`. The glyph buttons carry their names as tooltips too (G-167). */
-export function Stepper({ label, value, text, min, max, decreaseLabel, increaseLabel, onChange }: { label: string; value: number; text: string; min: number; max: number; decreaseLabel: string; increaseLabel: string; onChange: (value: number) => void }) {
-  return (
+/** The whole number `draft` holds when it lies within `min`..`max`; null for anything else, which is refused, never clamped (G-179). */
+export function typedStep(draft: string, min: number, max: number): number | null {
+  if (!/^\d+$/.test(draft.trim())) return null;
+  const value = Number(draft.trim());
+  return value >= min && value <= max ? value : null;
+}
+
+/**
+ * A number moved one step at a time between its limits, shown as `text`. The glyph buttons carry their names as tooltips too (G-167).
+ * `unit`: the number can be typed in its place too, followed by this unit. The whole draft is read (a pasted 200 is not cut to 20);
+ * a number out of range is refused and the field goes back, and `range` (the limits in words) shows under it until the next edit;
+ * it describes the field all along. A valid number still in the field is kept when the field goes without a blur (a swipe or Back
+ * closing Settings), and the -/+ buttons step from it (G-179).
+ */
+export function Stepper({ label, value, text, min, max, decreaseLabel, increaseLabel, onChange, unit, range }: { label: string; value: number; text: string; min: number; max: number; decreaseLabel: string; increaseLabel: string; onChange: (value: number) => void; unit?: string; range?: string }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [refused, setRefused] = useState(false);
+  const rangeId = useId();
+  const shown = draft ?? String(value);
+  const typed = draft === null ? null : typedStep(draft, min, max);
+  // what the buttons step from: the size in the field when it is one, else the saved one
+  const current = typed ?? value;
+  const commit = () => {
+    if (typed !== null && typed !== value) onChange(typed);
+    setRefused(draft !== null && typed === null);
+    setDraft(null);
+  };
+  const step = (by: number) => {
+    setDraft(null);
+    setRefused(false);
+    const next = Math.min(max, Math.max(min, current + by));
+    if (next !== value) onChange(next);
+  };
+  // the field can go without a blur (Settings closed by a swipe or Back): a valid size still in it is kept
+  const pending = useRef<() => void>(() => {});
+  pending.current = () => { if (typed !== null && typed !== value) onChange(typed); };
+  useEffect(() => () => pending.current(), []);
+  const stepper = (
     <div className="settings-stepper" role="group" aria-label={label}>
-      <button type="button" className="icon-button" aria-label={decreaseLabel} title={decreaseLabel} disabled={value <= min} onClick={() => onChange(value - 1)}><Minus aria-hidden="true" /></button>
-      <output aria-live="polite">{text}</output>
-      <button type="button" className="icon-button" aria-label={increaseLabel} title={increaseLabel} disabled={value >= max} onClick={() => onChange(value + 1)}><Plus aria-hidden="true" /></button>
+      <button type="button" className="icon-button" aria-label={decreaseLabel} title={decreaseLabel} disabled={current <= min} onClick={() => step(-1)}><Minus aria-hidden="true" /></button>
+      {unit === undefined ? <output aria-live="polite">{text}</output> : <span className="settings-stepper-field">
+        <input className="settings-stepper-value" type="text" inputMode="numeric" aria-label={label} title={range} value={shown}
+          aria-describedby={range === undefined ? undefined : rangeId}
+          aria-invalid={refused || (draft !== null && typed === null) ? true : undefined} autoComplete="off" spellCheck={false}
+          onChange={(event) => { setRefused(false); setDraft(event.target.value); }} onBlur={commit}
+          onKeyDown={(event) => {
+            // an IME's own Enter and Escape finish or drop its composition, not the draft
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+            if (event.key === "Enter") commit(); else if (event.key === "Escape" && draft !== null) { event.stopPropagation(); setRefused(false); setDraft(null); }
+          }} />
+        <span aria-hidden="true">{unit}</span>
+        {/* the field is not announced as it changes: the size the -/+ buttons or a typed number set is */}
+        <output className="visually-hidden" aria-live="polite">{text}</output>
+      </span>}
+      <button type="button" className="icon-button" aria-label={increaseLabel} title={increaseLabel} disabled={current >= max} onClick={() => step(1)}><Plus aria-hidden="true" /></button>
     </div>
   );
+  if (unit === undefined || range === undefined) return stepper;
+  // the range is read with the field all along, and seen under it only after a refused size, until the next edit
+  return <>{stepper}<span id={rangeId} className={refused ? "settings-stepper-range" : "visually-hidden"}>{range}</span></>;
 }

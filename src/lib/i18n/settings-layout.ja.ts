@@ -50,4 +50,15 @@ export const SETTINGS_LAYOUT_JA: Record<string, string> = {
   "A drag in a Codex pane selects through its whole history; Shift+drag still copies in Ovis.": "Codex ペインでのドラッグは履歴全体から選択します。Shift+ドラッグは引き続き Ovis でコピーします。",
   "Opens the side conversations an OMP session saved with /btw.": "OMP セッションが /btw で保存したサイド会話を入力欄から開きます。",
   "A subagent counts as running until the session that started it is told it ended.": "サブエージェントが待機しても、起動元のセッションに終了が伝わるまで実行中とみなします。",
+  // the one line under each page's title (G-173)
+  "Theme, fonts and the sidebar on this device.": "このデバイスのテーマ、フォント、サイドバー。",
+  "How conversations look and what the message box offers.": "会話の見え方と入力欄の機能。",
+  "How terminal panes look and take input.": "ターミナルペインの見た目と入力。",
+  "When this device alerts you, and where else alerts go.": "このデバイスがいつ通知するか、通知をほかにどこへ送るか。",
+  "Coding agents on this PC, their accounts and plan limits.": "この PC のコーディングエージェント、アカウント、プランの使用量。",
+  "Keyboard shortcuts, and herdr's prefix keys.": "ショートカットと herdr のプレフィックスキー。",
+  "Phones, browsers and PCs that reach this Ovis.": "この Ovis に接続するスマホ、ブラウザー、PC。",
+  "Features still being shaped; they may change.": "調整中の機能です。変わることがあります。",
+  // the range under a typed font size it refused (G-179)
+  "Enter {min}–{max}px": "{min}–{max}px の範囲で入力してください。",
 };

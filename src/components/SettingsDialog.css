@@ -735,6 +735,19 @@
   list-style: none;
 }
 
+/* the one dim line under a page's title: what the page holds (G-173) */
+.settings-page-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 640px) {
+  .settings-page-note {
+    font-size: var(--fs-sm);
+  }
+}
+
 /* a read-only fact beside its label (Phone & devices, Access): text, never a control */
 .settings-fact {
   flex: 0 1 auto;

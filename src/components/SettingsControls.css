@@ -578,6 +578,59 @@
   text-align: center;
 }
 
+/* a size typed in the number's place (G-179): the number and its unit read as the output did */
+.settings-stepper-field {
+  display: inline-flex;
+  align-self: stretch;
+  align-items: center;
+  justify-content: center;
+  min-width: 3.5em;
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+/* the number is a target of its own: a pointer's height and width, a finger's on a touch screen */
+.settings-stepper-value {
+  box-sizing: border-box;
+  align-self: stretch;
+  width: 2.5ch;
+  min-width: var(--pointer-target);
+  min-height: var(--pointer-target);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: end;
+}
+
+.settings-stepper-value[aria-invalid="true"] {
+  color: var(--status-blocked);
+}
+
+/* the range under a typed size it refused, until the next edit: its own line at the end of the row */
+.settings-stepper-range {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--status-blocked);
+  font-size: var(--fs-xs);
+  text-align: end;
+}
+
+@media (pointer: coarse) {
+  /* never under --fs-input, the smallest size iOS does not zoom the page for, as .input */
+  .settings-stepper-field {
+    font-size: max(var(--fs-input), var(--fs-sm));
+  }
+
+  .settings-stepper-value {
+    min-width: var(--touch-target);
+    min-height: var(--touch-target);
+  }
+}
+
 /* Settings → File text size: a chosen size offers its way back to the chat's beside the stepper */
 .settings-file-size {
   display: inline-flex;
@@ -823,7 +876,12 @@
   cursor: pointer;
 }
 
+/* a finger's chips: as tall as a touch target, and further apart so a tap lands on the one meant (G-089) */
 @media (pointer: coarse) {
+  .settings-chips {
+    gap: var(--space-3);
+  }
+
   .settings-chip {
     min-height: var(--touch-target);
   }

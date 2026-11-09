@@ -18,6 +18,11 @@
   font-size: var(--fs-xs);
 }
 
+/* the plan's note leads, over the list (G-104) */
+.runtime-move-note:first-child {
+  margin: 0 0 var(--space-3);
+}
+
 .runtime-move-reason {
   margin: 0;
   color: var(--text);

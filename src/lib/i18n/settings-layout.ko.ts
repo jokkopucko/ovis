@@ -50,4 +50,15 @@ export const SETTINGS_LAYOUT_KO: Record<string, string> = {
   "A drag in a Codex pane selects through its whole history; Shift+drag still copies in Ovis.": "Codex 드래그는 전체 기록 선택, Shift+드래그는 Ovis에서 복사",
   "Opens the side conversations an OMP session saved with /btw.": "입력창에서 OMP의 /btw 대화 열기",
   "A subagent counts as running until the session that started it is told it ended.": "상위 세션의 종료 확인까지 실행으로 표시",
+  // the one line under each page's title (G-173)
+  "Theme, fonts and the sidebar on this device.": "이 기기의 테마, 글꼴, 사이드바.",
+  "How conversations look and what the message box offers.": "대화가 보이는 방식과 입력칸 기능.",
+  "How terminal panes look and take input.": "터미널 패널의 모양과 입력.",
+  "When this device alerts you, and where else alerts go.": "이 기기가 언제 알릴지, 알림을 어디로 더 보낼지.",
+  "Coding agents on this PC, their accounts and plan limits.": "이 PC의 코딩 에이전트, 계정, 요금제 사용량.",
+  "Keyboard shortcuts, and herdr's prefix keys.": "단축키와 herdr 프리픽스 키.",
+  "Phones, browsers and PCs that reach this Ovis.": "이 Ovis에 연결하는 폰, 브라우저, PC.",
+  "Features still being shaped; they may change.": "다듬는 중인 기능입니다. 바뀔 수 있습니다.",
+  // the range under a typed font size it refused (G-179)
+  "Enter {min}–{max}px": "{min}–{max}px 사이로 입력하세요.",
 };
