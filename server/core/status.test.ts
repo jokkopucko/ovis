@@ -7,6 +7,8 @@ import * as gjc from "../gjc-status.ts";
 import * as omo from "../omo.ts";
 import * as records from "../omo-records.ts";
 import * as service from "../opencode-service.ts";
+import * as agyStore from "../agy-store.ts";
+import * as processStart from "../process-start.ts";
 import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import type { StatusCollectorDeps } from "../collector.ts";
 import { noteSubmitted } from "../prompt.ts";
@@ -312,6 +314,34 @@ describe("the status hub's OpenCode subagents", () => {
     await h.snapshot();
     handlers.onStatus("w1:p1", "idle", "claude");
     expect(h.last().bg).toBe(false);
+  });
+});
+
+describe("the status hub's agy tasks", () => {
+  it("holds an agy turn that ended on its background task, and alerts its finish once the task's turn ends", async () => {
+    const path = join(root, "agy-transcript.jsonl");
+    const step = (type: string, status: string, offset: number, content: string) => line({ step_index: offset, source: type === "USER_INPUT" ? "USER_EXPLICIT" : "MODEL", type, status, created_at: new Date(at + offset).toISOString(), content });
+    writeFileSync(path, step("USER_INPUT", "DONE", 0, "deploy it") + step("GENERIC", "RUNNING", 10, "Tool is running as a background task with task id: s1/task-2\nTask Description: gh run watch 1"));
+    const h = hub();
+    const stubs = [spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session: "s1", path, pid: 1, started: "x" }), spyOn(processStart, "processStartUpperBoundAsync").mockResolvedValue(null)];
+    try {
+      const agy = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent_status: "idle", agent: "agy" };
+      h.herdrSays(agy);
+      handlers.onBaseline([agy]);
+      await h.snapshot();
+      await h.status.taskAgents.refresh([agy as HerdrPane]);
+      handlers.onStatus("w1:p1", "working", "agy");
+      handlers.onStatus("w1:p1", "idle", "agy");
+      expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+      expect(h.alerts.at(-1)).toBe("working");
+      // its notice ends the task and starts the next turn
+      appendFileSync(path, step("SYSTEM_MESSAGE", "DONE", 20, "[Message] sender=s1/task-2 content=Task id \"s1/task-2\" finished"));
+      h.status.taskAgents.poll();
+      handlers.onStatus("w1:p1", "working", "agy");
+      handlers.onStatus("w1:p1", "idle", "agy");
+      expect(h.last()).toEqual({ status: "done", tasks: 0, bg: false });
+      expect(h.alerts.at(-1)).toBe("done");
+    } finally { for (const stub of stubs) stub.mockRestore(); }
   });
 });
 
