@@ -174,6 +174,7 @@ run_script scripts/droplet-demo-regression.ts
 run_script scripts/phone-glass-header-demo-regression.ts
 run_script scripts/phone-safe-area-demo-regression.ts
 run_script scripts/reconnect-header-demo-regression.ts
+run_script scripts/tab-agent-mark-demo-regression.ts
 run_script scripts/header-context-demo-regression.ts
 run_script scripts/chat-greeting-demo-regression.ts
 run_script scripts/restored-draft-demo-regression.ts

@@ -141,6 +141,12 @@
   flex: 0 0 auto;
 }
 
+/* the mark's own span is a box too, as in the sidebar and the composer: an inline span sits its SVG
+   on the text baseline of a line box taller than the mark, which lifts the logo above the name */
+.tab-strip-agent .agent-mark {
+  display: inline-flex;
+}
+
 /* the header's tab list (a phone's sheet): the state, then the agent, in a column of their own so
    the names line up; a tab at rest keeps a hollow dot */
 .tab-sheet-marks {
