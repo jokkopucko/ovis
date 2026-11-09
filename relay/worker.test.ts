@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { answerServerChallenge, SERVER_PROOF_CLOSE, SERVER_PROOF_MS } from "../shared/relay-server-proof.ts";
-import { RELAY_PASS_HEADER, RELAY_PASS_LIFETIME_S, RELAY_PASS_SKEW_S, signRelayPass } from "../shared/relay-pass.ts";
+import { RELAY_NEW_SESSIONS_REFUSED, RELAY_PASS_HEADER, RELAY_PASS_LIFETIME_S, RELAY_PASS_SKEW_S, signRelayPass } from "../shared/relay-pass.ts";
 import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, USAGE_REPORT_MS, WARM_QUIET_MS, parseSocketRequest, type Frame } from "./core.ts";
 import { answerChallenge, newServer, type TestServer } from "./relay-test-client.ts";
 import { PAIR_GUEST_MS } from "./pair-room.ts";
@@ -1102,6 +1102,139 @@ describe("relay pass", () => {
     const client = await w.open("role=client");
     expect(client.json(0)).not.toHaveProperty("relay_pass");
     expect((w.fake.stored.get("pass_until") as { until: number }).until).toBe(T0 + RELAY_PASS_LIFETIME_S * 1000);
+  });
+
+  const passSaying = (newSessions: boolean, at = T0) => signRelayPass(signer, KID, SERVER, Math.floor(at / 1000), undefined, { newSessions });
+
+  type World = Awaited<ReturnType<typeof world>>;
+  /** a client of the room, and the connection_id the relay gave it */
+  const clientOf = async (w: World) => {
+    const socket = await w.open("role=client");
+    return { socket, id: (socket.json(0) as { connection_id: string }).connection_id };
+  };
+  /** the PC's data socket for `id`, proven, opened with `pass` */
+  const dataFor = async (w: World, id: string, pass: string) => w.prove(await w.open(`role=server&connection_id=${id}&${proof()}`, pass), id);
+  /** the PC identified the device on `id` as one new to it, and says so on its control socket */
+  const newSession = async (w: World, control: FakeSocket, id: string) => { await w.box.room.webSocketMessage(control, JSON.stringify({ type: "new_session", connection_id: id })); };
+  const renew = async (w: World, control: FakeSocket, pass: string) => { await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass })); };
+  const refused = { code: CLOSE.NEW_SESSIONS, reason: RELAY_NEW_SESSIONS_REFUSED };
+
+  test("while enforced, a PC whose pass allows no new sessions keeps the clients it has, and a later renewal that allows them lifts the refusal, past an eviction", async () => {
+    const w = await world("enforce");
+    const control = await w.control(await passSaying(true));
+    const kept = await clientOf(w);
+    // the renewal issued next (it runs out later) says no new sessions
+    const refusedAt = T0 + 3_600_000;
+    setSystemTime(new Date(refusedAt));
+    await renew(w, control, await passSaying(false, refusedAt));
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: refusedAt + RELAY_PASS_LIFETIME_S * 1000, kid: KID, noNew: true });
+    await w.evict();
+    const fresh = await clientOf(w);
+    await newSession(w, control, fresh.id);
+    expect(fresh.socket.closedWith).toEqual(refused);
+    expect(kept.socket.closedWith).toBeNull();
+    expect(control.closedWith).toBeNull();
+    const allowedAt = refusedAt + 3_600_000;
+    setSystemTime(new Date(allowedAt));
+    await renew(w, control, await passSaying(true, allowedAt));
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: allowedAt + RELAY_PASS_LIFETIME_S * 1000, kid: KID });
+    const later = await clientOf(w);
+    await newSession(w, control, later.id);
+    expect(later.socket.closedWith).toBeNull();
+  });
+
+  test("a renewal with the same expiry that allows no new sessions applies, and one that allows them lifts nothing", async () => {
+    const w = await world("enforce");
+    const control = await w.control(await passSaying(true));
+    // issued the same second as the pass the room holds, so it runs out at the same time
+    setSystemTime(new Date(T0 + 60_000));
+    await renew(w, control, await passSaying(false));
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: T0 + RELAY_PASS_LIFETIME_S * 1000, kid: KID, noNew: true });
+    setSystemTime(new Date(T0 + 120_000));
+    await renew(w, control, await passSaying(true));
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: T0 + RELAY_PASS_LIFETIME_S * 1000, kid: KID, noNew: true });
+    const fresh = await clientOf(w);
+    await newSession(w, control, fresh.id);
+    expect(fresh.socket.closedWith).toEqual(refused);
+  });
+
+  test("a pass with the same expiry proven later on a PC socket opened earlier never lifts a stricter one", async () => {
+    const w = await world("enforce");
+    const control = await w.control(await passSaying(true));
+    const waiting = await clientOf(w);
+    // the PC's data socket opens with the pass the PC held then, and is still proving when a renewal of the same second says no new sessions
+    const data = await w.open(`role=server&connection_id=${waiting.id}&${proof()}`, await passSaying(true));
+    await renew(w, control, await passSaying(false));
+    w.prove(data, waiting.id);
+    expect(data.closedWith).toBeNull();
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: T0 + RELAY_PASS_LIFETIME_S * 1000, kid: KID, noNew: true });
+    await newSession(w, control, waiting.id);
+    expect(waiting.socket.closedWith).toEqual(refused);
+  });
+
+  test("while enforced, only a client the PC identified as a new device is refused: its own devices, reconnecting ones included, get in", async () => {
+    const w = await world("enforce");
+    const control = await w.control(await passSaying(false));
+    // the owner's device: the PC answers it and names nothing
+    const own = await clientOf(w);
+    expect(own.socket.closedWith).toBeNull();
+    const data = await dataFor(w, own.id, await passSaying(false));
+    w.box.room.webSocketMessage(data, "welcome");
+    expect(own.socket.sent.at(-1)).toBe("welcome");
+    // its socket drops and it comes back: a device the PC counts already, not a new session
+    closeFromFar(w.box.room, own.socket);
+    const again = await clientOf(w);
+    const dataAgain = await dataFor(w, again.id, await passSaying(false));
+    // what a data socket sends is the client's, never a word to the relay
+    const lookalike = JSON.stringify({ type: "new_session", connection_id: again.id });
+    w.box.room.webSocketMessage(dataAgain, lookalike);
+    expect(again.socket.sent.at(-1)).toBe(lookalike);
+    expect(again.socket.closedWith).toBeNull();
+    // a device new to the PC: refused once the PC identified it
+    const stranger = await clientOf(w);
+    await newSession(w, control, stranger.id);
+    expect(stranger.socket.closedWith).toEqual(refused);
+    expect(again.socket.closedWith).toBeNull();
+    expect(control.closedWith).toBeNull();
+  });
+
+  test("a client that waited while the PC was away is refused too once the PC, back with a pass that allows no new sessions, identifies it as a new device", async () => {
+    const w = await world("enforce");
+    const queued = await clientOf(w);
+    expect(queued.socket.closedWith).toBeNull();
+    const control = await w.control(await passSaying(false));
+    expect(control.json(0)).toMatchObject({ type: "sync", connection_ids: [queued.id] });
+    const data = await dataFor(w, queued.id, await passSaying(false));
+    w.box.room.webSocketMessage(data, "handshake");
+    await newSession(w, control, queued.id);
+    expect(queued.socket.closedWith).toEqual(refused);
+    expect(data.closedWith?.code).toBe(CLOSE.GOING_AWAY);
+  });
+
+  test("a client the PC has not identified hears nothing of a pass that allows no new sessions", async () => {
+    const w = await world("enforce");
+    await w.control(await passSaying(false));
+    const stranger = await clientOf(w);
+    expect(stranger.socket.closedWith).toBeNull();
+    expect(stranger.socket.json(0)).toEqual({ type: "assigned", connection_id: stranger.id });
+    // never answered, it closes as any client the PC does not answer
+    setSystemTime(new Date(T0 + HANDSHAKE_MS));
+    await w.box.room.alarm();
+    expect(stranger.socket.closedWith).toEqual({ code: CLOSE.TRY_AGAIN, reason: "the server did not answer in time" });
+  });
+
+  test("a PC socket's proof says for the room that its pass allows no new sessions; in grace a new device still gets in", async () => {
+    const enforced = await world("enforce");
+    const control = await enforced.control(await passSaying(false));
+    const refusedClient = await clientOf(enforced);
+    await newSession(enforced, control, refusedClient.id);
+    expect(refusedClient.socket.closedWith).toEqual(refused);
+    const grace = await world("grace");
+    const graceControl = await grace.control(await passSaying(false));
+    const admitted = await clientOf(grace);
+    await newSession(grace, graceControl, admitted.id);
+    expect(admitted.socket.closedWith).toBeNull();
+    expect(grace.fake.stored.get("pass_until")).toMatchObject({ noNew: true });
   });
 
   test("a pass whose proof fails authorizes nothing", async () => {

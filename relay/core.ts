@@ -7,7 +7,8 @@
  *
  * Three kinds of socket meet in one room per `server_id` (`GET /v1/ws?server_id=..&v=1`):
  * - control (`role=server`): one per PC. It hears `sync`, `connected` and `disconnected` (JSON
- *   text) about clients, and sends nothing but keepalive pings.
+ *   text) about clients, and sends nothing but keepalive pings, pass renewals, and
+ *   `{"type":"new_session","connection_id":".."}` once it identified a client as a device new to it.
  * - client (`role=client`): a phone or browser. The relay picks its `connection_id` and says so
  *   in its first frame, `{"type":"assigned","connection_id":"..."}`.
  * - data (`role=server&connection_id=..`): the PC's socket for one client, opened once the PC
@@ -40,7 +41,7 @@
 
 import { parsePairRequest, type PairSocketRequest } from "./pair-room.ts";
 import { SERVER_KEY_INVALID, SERVER_KEY_MISMATCH, SERVER_PROOF_CLOSE, SERVER_PROOF_MS, SERVER_PROOF_REQUIRED, deriveServerId, proofKey, serverChallenge, verifyServerProof } from "../shared/relay-server-proof.ts";
-import { RELAY_PASS_CLOSE, RELAY_PASS_EXPIRED, RELAY_PASS_HEADER, RELAY_PASS_INVALID, RELAY_PASS_REQUIRED, RELAY_PASS_SKEW_S } from "../shared/relay-pass.ts";
+import { RELAY_NEW_SESSIONS_CLOSE, RELAY_NEW_SESSIONS_REFUSED, RELAY_PASS_CLOSE, RELAY_PASS_EXPIRED, RELAY_PASS_HEADER, RELAY_PASS_INVALID, RELAY_PASS_REQUIRED, RELAY_PASS_SKEW_S } from "../shared/relay-pass.ts";
 import { checkPass, passMayHold, passMode, passNotice, type PassPolicy, type PassResult, type PassState } from "./pass.ts";
 
 /** the wire version this relay speaks, `v=` in the socket URL */
@@ -104,6 +105,8 @@ export const CLOSE = {
   SERVER_PROOF: SERVER_PROOF_CLOSE,
   /** a PC socket without a relay pass that holds, while the relay asks for one (pass.ts) */
   RELAY_PASS: RELAY_PASS_CLOSE,
+  /** a client the PC identified as a device new to it, while passes are enforced and the room's pass allows no new sessions (account limits); its other clients stay */
+  NEW_SESSIONS: RELAY_NEW_SESSIONS_CLOSE,
 } as const;
 
 /** how long after its pass's expiry a room's PC sockets stay, for clocks that differ */
@@ -135,6 +138,8 @@ export interface SocketInfo {
   /** a PC socket still proving: its pass's expiry (ms) and key id, which authorize the room once the proof holds */
   pass_exp?: number;
   pass_kid?: string;
+  /** a PC socket still proving: its pass allows no new client sessions, which it says for the room once the proof holds */
+  pass_no_new?: true;
   /** a PC socket still proving: what the relay made of its pass, told to the PC in `sync` */
   pass_state?: PassState;
   /** a control socket's generation, new each time one is proven; a warm socket's, the one it was opened under */
@@ -270,8 +275,8 @@ export function passRefusal(socket: Pick<SocketRequest, "role" | "pass"> | PairS
   return socket.pass?.state === "ok" ? null : socket.pass?.reason ?? RELAY_PASS_REQUIRED;
 }
 
-/** A room's relay pass authorization: the latest expiry any of its proven PC sockets' passes gave, and that pass's key id. */
-export interface RoomAuthorization { readonly until: number; readonly kid: string }
+/** A room's relay pass authorization: the latest expiry any of its proven PC sockets' passes gave, that pass's key id, and whether it allows no new client sessions. */
+export interface RoomAuthorization { readonly until: number; readonly kid: string; readonly noNew?: true }
 export interface RoomPass {
   readonly policy: PassPolicy;
   /** the authorization, or null when no pass authorized this room */
@@ -417,7 +422,7 @@ export class Room<S extends object> {
     const expires = now + SERVER_PROOF_MS;
     this.host.setInfo(socket, { role: request.role, connection_id: request.connection_id, seen: now, buffered: false, proof: { expected: challenge.expected, expires }, server_id: request.server_id,
       ...(request.role === "warm" ? { generation: request.generation } : {}),
-      ...(request.pass ? { pass_state: request.pass.state, ...(request.pass.exp !== undefined && request.pass.kid !== undefined ? { pass_exp: request.pass.exp, pass_kid: request.pass.kid } : {}) } : {}) });
+      ...(request.pass ? { pass_state: request.pass.state, ...(request.pass.exp !== undefined && request.pass.kid !== undefined ? { pass_exp: request.pass.exp, pass_kid: request.pass.kid, ...(request.pass.noNew ? { pass_no_new: true as const } : {}) } : {}) } : {}) });
     this.lastSeen.set(socket, now);
     this.host.send(socket, challenge.frame);
     this.host.wake?.(expires);
@@ -489,13 +494,24 @@ export class Room<S extends object> {
     return (serverId === undefined || !pass.policy.revoked.has(serverId)) && now < auth.until + PASS_SKEW_MS;
   }
 
-  /** A proven PC socket's pass authorizes the room until its expiry; an earlier expiry changes nothing while the saved one holds. */
-  private authorize(until: number, kid: string): void {
+  /** Whether passes are enforced now and the pass that authorizes the room allows no new client sessions. */
+  private refusesNewSessions(now: number): boolean {
+    const pass = this.host.pass;
+    return pass !== undefined && passMode(pass.policy, now) === "enforce" && this.authorized(now) && pass.until()?.noNew === true;
+  }
+
+  /**
+   * A proven PC socket's pass authorizes the room until its expiry, and says whether new client
+   * sessions are allowed; an earlier expiry changes nothing while the saved one holds, so the pass
+   * issued last (which runs out last) decides, and of two issued the same second the stricter.
+   */
+  private authorize(until: number, kid: string, noNew: boolean): void {
     const pass = this.host.pass;
     if (!pass) return;
     const current = pass.until();
-    if (current && this.authorized(this.host.now()) && until <= current.until) return;
-    pass.setUntil({ until, kid });
+    // one with the same expiry was issued the same second: the stricter of the two holds, whichever is proven last
+    if (current && this.authorized(this.host.now()) && (until < current.until || (until === current.until && (!noNew || current.noNew === true)))) return;
+    pass.setUntil({ until, kid, ...(noNew ? { noNew: true as const } : {}) });
     this.host.wake?.(until + PASS_SKEW_MS);
   }
 
@@ -516,7 +532,7 @@ export class Room<S extends object> {
       const result = await checkPass(pass.policy, text, info.server_id, now);
       // the socket may have closed (its pass ran out, say) while the signature was checked
       if (this.ended.has(socket) || this.host.info(socket)?.role !== "control") return;
-      if (result.state === "ok" && result.exp !== undefined && result.kid !== undefined) this.authorize(result.exp, result.kid);
+      if (result.state === "ok" && result.exp !== undefined && result.kid !== undefined) this.authorize(result.exp, result.kid, result.noNew === true);
     } finally { this.renewing.delete(socket); }
   }
 
@@ -524,7 +540,7 @@ export class Room<S extends object> {
   private attach(socket: S, info: SocketInfo): void {
     const now = this.host.now();
     const peers = this.peers();
-    if (info.pass_exp !== undefined && info.pass_kid !== undefined) this.authorize(info.pass_exp, info.pass_kid);
+    if (info.pass_exp !== undefined && info.pass_kid !== undefined) this.authorize(info.pass_exp, info.pass_kid, info.pass_no_new === true);
     if (info.role === "control") {
       // the newest proven control socket wins: an older one may be half-open after the PC's network moved
       for (const peer of peers) if (peer.info.role === "control") this.end(peer.socket, CLOSE.POLICY, "replaced by a newer control socket");
@@ -597,8 +613,13 @@ export class Room<S extends object> {
     if (info.role === "control" && typeof frame === "string" && size <= RENEWAL_BYTES) {
       let value: unknown;
       try { value = JSON.parse(frame); } catch { return; }
-      const { type, pass } = typeof value === "object" && value !== null ? value as { type?: unknown; pass?: unknown } : {};
+      const { type, pass, connection_id } = typeof value === "object" && value !== null ? value as { type?: unknown; pass?: unknown; connection_id?: unknown } : {};
       if (type === "relay_pass" && typeof pass === "string") return this.renew(socket, info, pass);
+      // the PC identified this client as a device new to it (the relay cannot: its frames are end-to-end encrypted)
+      if (type === "new_session" && typeof connection_id === "string" && this.refusesNewSessions(now)) {
+        const client = this.find("client", connection_id);
+        if (client) this.end(client.socket, CLOSE.NEW_SESSIONS, RELAY_NEW_SESSIONS_REFUSED);
+      }
       return;
     }
     if (info.role === "control" || info.role === "warm") return;

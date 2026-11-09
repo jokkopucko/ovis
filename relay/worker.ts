@@ -81,7 +81,8 @@ function isPassResult(value: unknown): value is PassResult {
   return ["ok", "missing", "invalid", "expired"].includes(result["state"] as string)
     && (result["reason"] === undefined || typeof result["reason"] === "string")
     && (result["exp"] === undefined || typeof result["exp"] === "number")
-    && (result["kid"] === undefined || typeof result["kid"] === "string");
+    && (result["kid"] === undefined || typeof result["kid"] === "string")
+    && (result["noNew"] === undefined || result["noNew"] === true);
 }
 
 /** the key a PC's usage is kept under: not its server_id itself */
@@ -124,6 +125,7 @@ function isInfo(value: unknown): value is SocketInfo {
     && (info["usage"] === undefined || isUsage(info["usage"]))
     && (info["pass_exp"] === undefined || typeof info["pass_exp"] === "number")
     && (info["pass_kid"] === undefined || typeof info["pass_kid"] === "string")
+    && (info["pass_no_new"] === undefined || info["pass_no_new"] === true)
     && (info["pass_state"] === undefined || ["ok", "missing", "invalid", "expired"].includes(info["pass_state"] as string))
     && (info["ended"] === undefined || info["ended"] === true);
 }
@@ -145,7 +147,7 @@ export class RelayRoom {
     if (this.passLoaded || !this.policy || this.policy.mode === "off") return undefined;
     this.passLoad ??= this.state.storage.get<unknown>(PASS_UNTIL).then((saved) => {
       const value = typeof saved === "object" && saved !== null ? saved as Partial<RoomAuthorization> : {};
-      this.passUntil = typeof value.until === "number" && typeof value.kid === "string" ? { until: value.until, kid: value.kid } : null;
+      this.passUntil = typeof value.until === "number" && typeof value.kid === "string" ? { until: value.until, kid: value.kid, ...(value.noNew === true ? { noNew: true as const } : {}) } : null;
       this.passLoaded = true;
     });
     return this.passLoad;

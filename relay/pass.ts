@@ -10,7 +10,7 @@
  * - `RELAY_PASS_KEYS`: `kid:hex[,kid:hex]`, the Ed25519 public keys passes are checked with.
  * - `RELAY_PASS_REVOKED`: server_ids whose passes are refused, comma separated.
  */
-import { RELAY_PASS_LIFETIME_S, RELAY_PASS_REQUIRED, RELAY_PASS_SKEW_S, checkRelayPass, importRelayPassKey, parseRelayPass } from "../shared/relay-pass.ts";
+import { RELAY_PASS_LIFETIME_S, RELAY_PASS_REQUIRED, RELAY_PASS_SKEW_S, checkRelayPass, importRelayPassKey, parseRelayPass, relayPassAdmitsNewSessions } from "../shared/relay-pass.ts";
 
 export type PassMode = "off" | "grace" | "enforce";
 
@@ -22,9 +22,9 @@ export interface PassPolicy {
   readonly revoked: ReadonlySet<string>;
 }
 
-/** What the relay made of a PC socket's pass; `exp` (ms) only when it holds. */
+/** What the relay made of a PC socket's pass; `exp` (ms) only when it holds, and `noNew` when it holds and allows no new client sessions (a v2 pass with `new` 0). */
 export type PassState = "ok" | "missing" | "invalid" | "expired";
-export interface PassResult { readonly state: PassState; readonly reason?: string; readonly exp?: number; readonly kid?: string }
+export interface PassResult { readonly state: PassState; readonly reason?: string; readonly exp?: number; readonly kid?: string; readonly noNew?: true }
 
 export interface PassSettings {
   readonly RELAY_PASS_MODE?: string;
@@ -90,7 +90,7 @@ export function passMayHold(policy: PassPolicy, pass: string | null, serverId: s
 export async function checkPass(policy: PassPolicy, pass: string | null | undefined, serverId: string, now: number): Promise<PassResult> {
   if (policy.revoked.has(serverId)) return pass ? { state: "invalid", reason: "relay pass invalid" } : { state: "missing", reason: RELAY_PASS_REQUIRED };
   const check = await checkRelayPass(pass, policy.keys, serverId, Math.floor(now / 1000));
-  if (check.ok) return { state: "ok", exp: check.payload.exp * 1000, kid: check.payload.kid };
+  if (check.ok) return { state: "ok", exp: check.payload.exp * 1000, kid: check.payload.kid, ...(relayPassAdmitsNewSessions(check.payload) ? {} : { noNew: true as const }) };
   return { state: check.reason === RELAY_PASS_REQUIRED ? "missing" : check.reason === "relay pass expired" ? "expired" : "invalid", reason: check.reason };
 }
 

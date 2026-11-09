@@ -708,7 +708,10 @@ run yourself need no account and no pass.
   The request names the pass forms the PC reads (`pass_versions: [1, 2]`): the service signs a v2
   pass (one that can say new client sessions to the PC are not allowed) only for a PC that names
   it, and only once every relay runs a version that reads it. An older PC names none and gets v1.
-  Relays accept v2 but do not act on `new` yet: that is enforced by a later relay change.
+  While passes are enforced and the PC's pass says `new` 0, a relay closes a client the PC has
+  identified as a device new to it (named on its control socket with `new_session`) with `4403`
+  (`no new sessions for this server`); its own devices and the clients already connected stay. The
+  PC does not send `new_session` yet.
 - **Keeping it.** The pass lasts 48 hours. The PC keeps it in `relay/pass.json` (readable by your user
   only), so a restart or an account service outage costs nothing while it holds, and asks for the
   next one after 12 hours, backing off (and honoring `Retry-After`) when the service does not answer.
