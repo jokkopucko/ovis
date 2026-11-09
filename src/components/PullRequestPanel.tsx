@@ -17,7 +17,7 @@ export interface PullRequestPanelProps {
   paneId: string;
   /** the pane's folder, read when the pane is gone */
   directory: string;
-  /** the PC's name, said for a remote PC instead of its id */
+  /** the PC's name where it says which PC (another PC, or this one among several), in place of its id */
   machineName?: string;
 }
 
@@ -93,7 +93,7 @@ export function PullRequestPanel({ paneId, directory, machineName }: PullRequest
   const passed = view?.checks.filter((check) => check.state === "pass").length ?? 0;
   const blocked = view === null ? null : mergeBlockedWord(t, view);
   const stateWord = view === null ? "" : view.state === "merged" ? t("Merged") : view.state === "closed" ? t("Closed without merging") : view.draft ? t("Draft") : t("Ready for review");
-  const pcName = machineId !== LOCAL_MACHINE ? machineName ?? machineId : null;
+  const pcName = machineName ?? (machineId !== LOCAL_MACHINE ? machineId : null);
   const pcPrefix = pcName !== null ? `${pcName} · ` : "";
   const fallbackHeading = load.status === "pending"
     ? `${pcPrefix}${t("Loading…")}`

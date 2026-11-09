@@ -557,7 +557,7 @@ function RenameDialog({ title, field, initial, placeholder, maxLength, required,
         if (required !== undefined && value.trim() === "") { setError({ message: required, detail: null }); return; }
         setBusy(true); void onSave(value.trim()).then(onClose, (reason) => { setError(userErrorMessage(reason)); setBusy(false); }); }}>
         <header className="modal-header"><h2 className="modal-title">{title}</h2></header>
-        <div className="modal-body"><label>{field}<input ref={input} className="input" value={value} placeholder={placeholder} disabled={busy} maxLength={maxLength} onFocus={(event) => event.currentTarget.select()} onChange={(event) => { setValue(event.target.value); onDraft?.(event.target.value); }} /></label>{error && <p role="alert">{error.message}{error.detail !== null && <><br /><code>{error.detail}</code></>}</p>}</div>
+        <div className="modal-body"><label className="field"><span className="field-label">{field}</span><input ref={input} className="input" value={value} placeholder={placeholder} disabled={busy} maxLength={maxLength} onFocus={(event) => event.currentTarget.select()} onChange={(event) => { setValue(event.target.value); onDraft?.(event.target.value); }} /></label>{error && <p role="alert">{error.message}{error.detail !== null && <><br /><code>{error.detail}</code></>}</p>}</div>
         <footer className="modal-footer"><button type="button" className="btn" disabled={busy} onClick={onCancel ?? onClose}>{t("Cancel")}</button><button className="btn btn-primary" disabled={busy}>{t("Save")}</button></footer>
       </form>
     </div>

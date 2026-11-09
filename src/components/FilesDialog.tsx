@@ -34,7 +34,7 @@ export interface FilesDialogProps {
   panelStart?: ReactNode;
   /** docked, with a file or web page in its place: kept, folder and tab, for when that closes */
   covered?: boolean;
-  /** the PC's name, which the Pull request tab says for a remote PC */
+  /** the PC's name where it says which PC (another PC, or this one among several): Pull request names it */
   machineName?: string;
 }
 

@@ -1,7 +1,7 @@
 import { moveDestinations } from "../lib/layoutTargets.ts";
 import { useAppLayout, MachineContext, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { Bell, Columns2, CornerLeftUp, Folder, FolderInput, FolderOpen, FolderSearch, Globe, History, ListFilter, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pencil, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SunMoon, SwitchCamera, TextSearch, X } from "lucide-react";
+import { Bell, Columns2, CornerLeftUp, Folder, FolderInput, FolderOpen, FolderSearch, GitBranch, Globe, History, ListFilter, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pencil, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SunMoon, SwitchCamera, TextSearch, X } from "lucide-react";
 
 import "./CommandPalette.css";
 
@@ -30,6 +30,8 @@ import { paneCovered } from "../lib/panePresentation.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { useSessionHistoryOffered } from "../lib/useSessionHistoryOffered.ts";
+import { useRepositoryWorkspaces } from "../lib/repositoryWorkspaces.ts";
 import { useWorktreeBranches } from "../lib/useWorktreeBranches.ts";
 import { worktreeLabel } from "../lib/worktreeName.ts";
 import { browseEntries, folderQuery, folderQueryFor, homeRelative, matchFolders, pinnedFolders, requestFilesFolder } from "../lib/paletteFolders.ts";
@@ -305,7 +307,9 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const zoom = tabLayout !== undefined && selectedPaneId !== null ? zoomMode(tabLayout, selectedPaneId) : null;
   // a tab's name and workspace change only where the PC's herdr answers it (lib/machineContext.tsx); App
   // already gives no split or zoom where it does not (lib/layoutActions.ts)
-  const { rename: renameOffered, move: moveOffered } = useAppLayout();
+  const { rename: renameOffered, move: moveOffered, worktrees: worktreesOffered } = useAppLayout();
+  // the workspace row menu's worktree and Earlier sessions items, for the selected pane's workspace (Sidebar)
+  const historyOffered = useSessionHistoryOffered(online);
   const splitPane = actions.splitPane;
   const zoomPane = actions.zoomPane;
   // browsing starts in the selected pane's folder, home without one
@@ -314,11 +318,24 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   // Rename tab opens the tab strip's name field, or, where the strip is left out (a lone tab on a
   // cramped screen), the dialog that stands in for it (PaneCanvas)
   const tabShown = selectedPane !== undefined;
+  // a worktree is made or opened from its repository's main checkout, found as the row menu finds it
+  // (herdr's mark, else git's answer for the folder: lib/repositoryWorkspaces.ts)
+  const { repositoryWorkspaces } = useRepositoryWorkspaces({ machineId, snapshot, online, watching, offered: worktreesOffered, listWorktrees: api.listWorktrees });
+  const selectedWorkspaceInfo = snapshot?.workspaces.find((workspace) => workspace.workspace_id === selectedPane?.workspace_id);
+  const startsWorktrees = selectedWorkspaceInfo !== undefined && (selectedWorkspaceInfo.worktree ? !selectedWorkspaceInfo.worktree.is_linked_worktree : repositoryWorkspaces.has(selectedWorkspaceInfo.workspace_id));
+  // both ask the PC: a disconnected one offers neither (herdr's mark and the history answer outlive the connection)
+  const worktreeHere = online && actions.openWorktree !== undefined && worktreesOffered && !watching && startsWorktrees;
+  const historyHere = online && selectedPaneId !== null && historyOffered && !watching;
 
   const paletteActions = useMemo<PaletteAction[]>(() => [
     { id: "new", label: t("New workspace"), icon: MessageSquarePlus, shortcut: "new-session", run: actions.openNewSession },
     // in the selected pane's workspace: nothing to add a tab to without one
     ...(selectedPaneId !== null ? [{ id: "new-tab", label: t("New tab"), icon: Plus, shortcut: "new-tab", run: () => actions.openNewTab() }] satisfies PaletteAction[] : []),
+    ...(worktreeHere ? [
+      { id: "new-worktree", label: t("New worktree"), icon: GitBranch, run: () => actions.openWorktree?.("create") },
+      { id: "open-worktree", label: t("Open worktree…"), icon: FolderOpen, run: () => actions.openWorktree?.("open") },
+    ] satisfies PaletteAction[] : []),
+    ...(historyHere ? [{ id: "session-history", label: t("Earlier sessions…"), icon: History, run: () => actions.openSessionHistory() }] satisfies PaletteAction[] : []),
     ...(selectedPaneId !== null && tabShown && renameOffered ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
     // herdr's prefix+v and prefix+-: the new pane is opened here only when asked, as herdr's --focus
     ...(splitPane ? [
@@ -343,7 +360,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     // starts the address a page this PC serves is typed as (below), the port left to type
     ...(actions.openLocalPage ? [{ id: "local-page", label: t("Open a page on this PC…"), icon: Globe, keepOpen: true, run: () => { setQuery("localhost:"); setFilter("all"); setSelection(NO_SELECTION); inputRef.current?.focus(); } }] : []),
     { id: "refresh", label: t("Refresh"), icon: RefreshCw, run: actions.refresh },
-  ], [actions, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, tabShown, renameOffered, online, browseTo, browseStart, home]);
+  ], [actions, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, tabShown, renameOffered, worktreeHere, historyHere, online, browseTo, browseStart, home]);
 
   // Settings pages and groups are found by a query only, and open on the page itself, a group's
   // scrolled to and focused: the dialog reads the request as it mounts

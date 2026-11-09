@@ -18,6 +18,8 @@ import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
 import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
 import { useSetupGuide } from "./lib/useSetupGuide.ts";
 import { SessionHistory } from "./components/SessionHistory.tsx";
+import { WorktreeRequestDialog } from "./components/WorktreeDialog.tsx";
+import { worktreesStartHere } from "./lib/repositoryWorkspaces.ts";
 import { UnsentTextDialog } from "./components/UnsentText.tsx";
 import { useUnsentRecovery } from "./lib/useUnsentRecovery.ts";
 import { sessionHistoryAgent, sessionHistoryListAgent, sessionHistorySourcePane } from "./lib/sessionHistory.ts";
@@ -259,7 +261,7 @@ export function App() {
   // a diff's line notes go to its own pane: none while this window only watches that pane
   const diffPaneObserving = usePaneObserving(diffViewing?.paneId ? paneStorageId(diffViewing.machineId, diffViewing.paneId) : null);
   const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, setSettingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
-  const { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newTab, setNewTab, sessionHistory, setSessionHistory } = useNewSessionState({ initialLink });
+  const { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newTab, setNewTab, sessionHistory, setSessionHistory, worktreeFor, setWorktreeFor } = useNewSessionState({ initialLink, watching: auth?.role === "watch" });
   const { connected, setConnected, connectedBefore, setConnectedBefore, paneLost, outputStopped, setOutputStopped, reportedBy, setReportedBy } = useConnectionChip();
   const { notifications, setNotifications, pushOn, setPushOn, pushOnRef } = useNotificationState();
   // the shared settings and pins, the same in every browser of this server, once the app is in
@@ -617,6 +619,14 @@ export function App() {
         setDrawerOpen(false);
         setSessionHistory({ machineId: found.machineId, workspaceId: found.workspace.workspace_id, agent, paneId, askingPaneId, selectedPaneId: selected });
       },
+      openWorktree: (mode) => {
+        const found = newTabTarget();
+        // the workspaces the sidebar and the palette offer worktrees for (lib/repositoryWorkspaces.ts)
+        const machine = machinesRef.current.find((candidate) => candidate.id === found?.machineId);
+        if (!found || machine?.state !== "connected" || !worktreesStartHere(found.machineId, found.workspace)) return;
+        setDrawerOpen(false);
+        setWorktreeFor({ machineId: found.machineId, machineName: machine.name, workspace: found.workspace, mode });
+      },
       openPalette,
       agentStarted: (machineId, paneId) => lenses.startedAgent(lensOwner(machineId, paneId), window.matchMedia?.("(pointer: coarse)").matches === true),
       openFind: () => {
@@ -803,10 +813,11 @@ export function App() {
     else revealFiles();
   };
   const filesDialog = (docked: boolean): ReactNode => selectedPane && (
-    <FilesDialog docked={docked} covered={docked && filesCovered} machineName={selectedMachine?.name} panelStart={docked ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined}
+    <FilesDialog docked={docked} covered={docked && filesCovered} panelStart={docked ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined}
       start={selectedPane.foreground_cwd ?? selectedPane.cwd ?? ""} paneId={selectedPane.pane_id} viewing={(viewing !== null && !fileDocked) || diffViewing !== null} onOpenFile={viewFile}
       onOpenDiff={(comparison, file) => openDiff({ machineId: selectedMachineId, paneId: selectedPane.pane_id, directory: selectedPane.foreground_cwd ?? selectedPane.cwd ?? null, ...comparison, path: file.path, oldPath: file.old_path })}
       onBrowseFolders={(path) => actions.openPalette(folderQueryFor(path, null))}
+      machineName={selectedMachineId !== LOCAL_MACHINE || machines.length > 1 ? selectedMachine?.name : undefined}
       onClose={() => setFilesOpen(false)} />
   );
 
@@ -1316,6 +1327,11 @@ export function App() {
       {viewing !== null && !fileDocked && <MachineContext.Provider value={viewing.machineId}>
         <FileViewer key={fileViewerKey(viewing)} path={viewing.path} paneId={viewing.paneId} onClose={closeFile} onOpen={(path) => openFile({ ...viewing, path, presentation })} onKind={reportFileKind} onTogglePresentation={toggleFilePresentation} keyboardActive={!settingsOpen} editable={fileEditable} />
       </MachineContext.Provider>}
+      {worktreeFor && <WorktreeRequestDialog request={worktreeFor} onClose={() => setWorktreeFor(null)} onOpenPane={(paneId) => { setWorktreeFor(null); selectTarget(worktreeFor.machineId, paneId); }} onOpened={(opened) => {
+        setWorktreeFor(null);
+        if (opened.agent_started === true) actions.agentStarted(worktreeFor.machineId, opened.pane_id);
+        selectTarget(worktreeFor.machineId, opened.pane_id);
+      }} />}
       {unsentFor && <UnsentTextDialog machines={machines} target={unsentFor} canRecover={unsentFor.pane.agent != null} onClose={closeUnsent} onRecover={recover} />}
       <CommandPalette key={selectedMachineId} machines={sidebarMachines} onSelect={selectTarget} open={paletteOpen} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} snapshot={snapshot} online={selectedMachine?.state === "connected"} selectedPaneId={selectedPaneId}
         // a peek shows the terminal: its toggle says Switch to chat, which ends the peek

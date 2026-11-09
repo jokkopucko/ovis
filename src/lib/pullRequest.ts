@@ -46,7 +46,7 @@ export function mergeBlockedWord(t: Translate, view: PullRequestView): string | 
   }
 }
 
-/** `pc`: the remote PC's name the words are prefixed with; none for this PC */
+/** `pc`: the PC's name the words are prefixed with (another PC, or this one among several); none for this PC alone */
 export function pullRequestErrorMessage(t: Translate, error: unknown, pc?: string): string {
   const pcPrefix = pc ? `[${pc}] ` : "";
   if (!(error instanceof ApiError)) return `${pcPrefix}${t("The pull request could not be loaded.")}`;

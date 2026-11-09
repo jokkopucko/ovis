@@ -105,6 +105,8 @@
 .pane-divider:focus-visible::before { background: var(--accent-tint); }
 .pane-canvas-error { position: absolute; z-index: var(--z-modal); top: var(--space-2); right: var(--space-2); max-width: min(30rem, 90%); padding: var(--space-2); background: var(--bg-elevated); color: var(--status-blocked); border: var(--hairline) solid var(--border); }
 .pane-rename-form { display: flex; flex-direction: column; gap: var(--space-3); }
+/* the shared dialog field, its caption above the input; the body's padding already spaces it */
+.pane-rename-form .field { margin-bottom: 0; }
 @media (pointer: coarse) {
   .pane-frame-head { height: var(--touch-target); }
   .pane-frame-menu { min-width: var(--touch-target); height: var(--touch-target); }

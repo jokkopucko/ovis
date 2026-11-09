@@ -389,6 +389,9 @@ const BASE: Record<string, string> = {
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "リレーをオンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新しいタブ",
+  "New worktree": "新しいワークツリー",
+  "Open worktree…": "ワークツリーを開く…",
+  "Earlier sessions…": "以前のセッション…",
   "Rename tab": "タブの名前を変更",
   "Zoom pane": "ペインをズーム",
   "Unzoom pane": "ズームを解除",

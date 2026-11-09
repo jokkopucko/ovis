@@ -62,6 +62,11 @@ export interface AppActions {
    */
   /** `paneId`: the pane the list is asked for from (a Claude list is that pane's store); else the selected pane, else the first in tab order */
   openSessionHistory: (target?: { machineId: string; workspaceId: string; agent?: string | null; scope?: "pane" | "workspace"; paneId?: string }) => void;
+  /**
+   * New worktree / Open worktree… for the selected pane's workspace, as its row menu opens them
+   * (components/WorktreeDialog.tsx): nothing unless that workspace is a repository's main checkout
+   */
+  openWorktree?: (mode: "create" | "open") => void;
   /** the palette, blank or opened on `query` (a `>` prefix keeps the actions alone) */
   openPalette: (query?: string) => void;
   /** A pane this page started an agent in opens in an agent's lens, whatever its first snapshot says. */

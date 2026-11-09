@@ -17,7 +17,7 @@ import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
 import { ApiError } from "../lib/api.ts";
 import { AddAgentPanel } from "./AddAgentPanel.tsx";
 import { AgentPicker, rememberAgent, rememberedAgent } from "./AgentPicker.tsx";
-import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
+import { MachineContext, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useT } from "../lib/i18n.ts";
 import { homeRelative } from "../lib/paletteFolders.ts";
 import { latestRead, READ_AGAIN_MS, READ_AGAIN_TIMES, readAgainUntil } from "../lib/latestRead.ts";
@@ -78,6 +78,19 @@ function writeWorktreeDraft(key: string, draft: WorktreeDraft | null): void {
 
 /** herdr's own words about a refused worktree (a branch that exists, a folder that is no repository) */
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
+
+/** what the palette asked a worktree dialog for (App): New worktree or Open worktree… on a PC's workspace */
+export interface WorktreeRequest { machineId: string; machineName?: string; workspace: WorkspaceInfo; mode: WorktreeDialogMode }
+
+/**
+ * The palette's worktree dialog, on the request's own PC. A request for another workspace or mode is
+ * a new dialog: what was typed for one repository is never kept, or saved, as another's draft.
+ */
+export function WorktreeRequestDialog({ request, onClose, onOpened, onOpenPane }: { request: WorktreeRequest; onClose: () => void; onOpened: (opened: WorktreeOpened) => void; onOpenPane: (paneId: string) => void }) {
+  return <MachineContext.Provider value={request.machineId}>
+    <WorktreeDialog key={`${request.machineId}\n${request.workspace.workspace_id}\n${request.mode}`} mode={request.mode} workspace={request.workspace} machineName={request.machineName} onClose={onClose} onOpened={onOpened} onOpenPane={onOpenPane} />
+  </MachineContext.Provider>;
+}
 
 export function WorktreeDialog({ mode, workspace, machineName, onClose, onOpened, onOpenPane }: Props) {
   const t = useT();
@@ -215,9 +228,13 @@ export function WorktreeDialog({ mode, workspace, machineName, onClose, onOpened
     if (pending) return;
     setPending(status);
     setError(null);
+    // the draft as it was sent: one typed after it (this repository's dialog opened again meanwhile) stays
+    const sent = mode === "create" ? worktreeDrafts.get(draftKey) : undefined;
     try {
       const result = await request();
-      if (mode === "create") writeWorktreeDraft(draftKey, null);
+      if (mode === "create" && worktreeDrafts.get(draftKey) === sent) writeWorktreeDraft(draftKey, null);
+      // a dialog replaced meanwhile (the palette asked for another workspace) leaves the checkout to the sidebar
+      if (!mounted.current) return;
       if (result.agent_started === false && result.error) {
         setMade(result);
         setError(result.error.message);
@@ -226,6 +243,7 @@ export function WorktreeDialog({ mode, workspace, machineName, onClose, onOpened
       }
       onOpened(result);
     } catch (reason: unknown) {
+      if (!mounted.current) return;
       setError(reason instanceof ApiError && reason.code === "repository_without_commits" ? t("This repository has no commits yet. Make its first commit, then a worktree.") : said(reason));
       setPending(null);
     }

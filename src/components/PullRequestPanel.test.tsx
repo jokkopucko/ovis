@@ -134,3 +134,19 @@ test("names a remote PC by its name, not its id, and prefixes the PC's own gh wo
   expect(textOf(renderer!.root.findByProps({ className: "pull-request-heading" }))).toBe("Build box · /repo");
   expect(textOf(renderer!.root.findByProps({ role: "alert" }))).toBe("[Build box] HTTP 502: bad gateway");
 });
+
+test("names the PC by its name, not its id, where one is given", async () => {
+  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => {
+    return Response.json({ error: { code: "gh_signed_out", message: "not signed in" } }, { status: 409 });
+  }, globalThis.fetch));
+  await act(async () => {
+    renderer = create(createElement(SettingsProvider, {
+      children: createElement(MachineContext.Provider, {
+        value: "4f1c2d9e-0b7a-4c55-9a39-2f6d1e8b7c10",
+        children: createElement(PullRequestPanel, { paneId: "fixture", directory: "/repo", machineName: "Office PC" }),
+      }),
+    }));
+  });
+  expect(textOf(renderer!.root.findByProps({ className: "pull-request-heading" }))).toBe("Office PC · /repo");
+  expect(textOf(renderer!.root.findByProps({ role: "alert" }))).toContain("[Office PC] GitHub CLI (gh) on this PC is not signed in.");
+});

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionHistoryAgent } from "../../shared/protocol.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { NewTabTarget } from "../components/NewSessionDialog.tsx";
+import type { WorktreeRequest } from "../components/WorktreeDialog.tsx";
 import type { CreateDraft } from "./deepLink.ts";
 import { useRecentResumes } from "./useRecentResumes.ts";
 import { forgetSessionHistoryProbesOfPcsAway } from "./useSessionHistoryOffered.ts";
@@ -11,7 +12,7 @@ export function useNewSessionMachine() {
   return { newSessionMachineId, setNewSessionMachineId };
 }
 
-export function useNewSessionState({ initialLink }: { initialLink: { create?: CreateDraft | null } | null }) {
+export function useNewSessionState({ initialLink, watching = false }: { initialLink: { create?: CreateDraft | null } | null; watching?: boolean }) {
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   // the New workspace dialog in the address (lib/deepLink.ts): the fields a link filled for this
   // opening, and what the fields say now
@@ -23,7 +24,11 @@ export function useNewSessionState({ initialLink }: { initialLink: { create?: Cr
   const [newTab, setNewTab] = useState<NewTabTarget | null>(null);
   // the earlier sessions of a workspace's folder (components/SessionHistory.tsx), while open
   const [sessionHistory, setSessionHistory] = useState<{ machineId: string; workspaceId: string; agent: SessionHistoryAgent; paneId: string | null; askingPaneId: string | null; selectedPaneId: string | null } | null>(null);
-  return { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newTab, setNewTab, sessionHistory, setSessionHistory };
+  // the palette's New worktree / Open worktree… (the workspace row menu keeps its own, Sidebar), while open
+  const [worktreeFor, setWorktreeFor] = useState<WorktreeRequest | null>(null);
+  // worktrees are not offered to a watching device: one open when this device turns into one closes
+  useEffect(() => { if (watching) setWorktreeFor(null); }, [watching]);
+  return { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newTab, setNewTab, sessionHistory, setSessionHistory, worktreeFor, setWorktreeFor };
 }
 
 export function useSessionHistoryList({ machines, sessionHistory, setSessionHistory, setNewSessionOpen, setNewPrefill, setNewFields }: {
