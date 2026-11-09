@@ -39,8 +39,9 @@ import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/pr
  * when it ran past its timeout), by the session or by a subagent. One ends with the
  * `<task-notification>` of its task id, in any transcript of the session, or with the answer
  * of the `TaskStop` (`KillShell` in older Claude Code) that stopped it, which no notice follows.
- * It lives in the Claude process that started it, as a running agent does. A `Workflow` run counts
- * as one such command: its call answers at once with a task id, and the same notice ends it.
+ * It lives in the Claude process that started it, as a running agent does. A `Workflow` run or a
+ * `Monitor` counts as one such command: its call answers at once with a task id, and the same
+ * notice ends it, so a turn waits on it as on a suite.
  */
 const READ_BUDGET = 8 * 1024 * 1024;
 /** how much of a parent transcript is read the first time: older notices are not found */
@@ -212,6 +213,8 @@ interface Commands {
   seq: number;
   /** the last few ends of each id, oldest first: an id used again ends once in each lifetime (claudeSubagentState) */
   ends: Map<string, CommandTold[]>;
+  /** the `/loop` wakeup set and not fired yet, by its `ScheduleWakeup` call: a session has one at a time */
+  wakeup?: string;
 }
 /** An end a transcript told of: `call`, the `Bash` call its notice names (none for a stop) */
 type CommandTold = { at: number; status: OmoTask["status"]; call: string | null; seq?: number; source?: Commands };
@@ -219,8 +222,9 @@ const ENDS_PER_ID = 4;
 const noCommands = (): Commands => ({ calls: new Map(), launches: new Map(), ends: new Map(), seq: 0 });
 const TITLE_LENGTH = 120;
 
+const BACKGROUND_TOOLS = ["Bash", "Monitor", "ScheduleWakeup"];
 /** Whether a line may say something of a background command, before it is parsed: the answers of every other call are passed over. */
-const commandLine = (line: string): boolean => line.includes('"name":"Bash"') || line.includes('"backgroundTaskId"') || line.includes('"local_workflow"') || line.includes('"task_id"') || line.includes('"shell_id"');
+const commandLine = (line: string): boolean => BACKGROUND_TOOLS.some((name) => line.includes(`"name":"${name}"`)) || line.includes('"backgroundTaskId"') || line.includes('"local_workflow"') || line.includes('"timeoutMs"') || line.includes('"scheduledFor"') || line.includes('"scheduled_task_fire"') || line.includes('"task_id"') || line.includes('"shell_id"');
 
 function commandEnds(result: Row | null, at: number, notices: readonly TaskNotification[]): CommandEnd[] {
   const ends: CommandEnd[] = [];
@@ -238,22 +242,38 @@ function scanCommands(commands: Commands, entry: Row, at: number | null, notices
   const content = row(entry["message"])?.["content"];
   const blocks = (Array.isArray(content) ? content : []).flatMap((value): Row[] => { const block = row(value); return block === null ? [] : [block]; });
   for (const block of blocks) {
-    if (block["type"] !== "tool_use" || block["name"] !== "Bash" || typeof block["id"] !== "string") continue;
+    if (block["type"] !== "tool_use" || !BACKGROUND_TOOLS.includes(block["name"] as string) || typeof block["id"] !== "string") continue;
     const input = row(block["input"]);
-    const title = text(input?.["description"]) ?? text(input?.["command"]);
+    const title = text(input?.["description"]) ?? text(input?.["command"]) ?? text(input?.["reason"]);
     if (title !== null) remember(commands.calls, block["id"], title.slice(0, TITLE_LENGTH), 512);
   }
   const failed = blocks.some((block) => block["type"] === "tool_result" && block["is_error"] === true);
   const result = failed ? null : row(entry["toolUseResult"]);
   const workflow = result?.["taskType"] === "local_workflow" && result["status"] === "async_launched";
-  const launched = workflow ? result["taskId"] : result?.["backgroundTaskId"];
+  // a Monitor's answer names its task and carries its `timeoutMs`
+  const monitor = typeof result?.["timeoutMs"] === "number";
+  const launched = workflow || monitor ? result?.["taskId"] : result?.["backgroundTaskId"];
   if (typeof launched === "string" && AGENT_ID.test(launched)) {
     const call = blocks.find((block) => block["type"] === "tool_result" && typeof block["tool_use_id"] === "string")?.["tool_use_id"] as string | undefined;
     const title = workflow ? text(result["workflowName"]) : call === undefined ? undefined : commands.calls.get(call);
     remember(commands.launches, launched, { at, title: title ?? "Background command", call: call ?? null, seq }, MAX_NAMES);
     if (call !== undefined) commands.calls.delete(call);
   }
-  for (const end of commandEnds(result, at, notices)) {
+  // a /loop wakeup starts the next turn by itself when due: its fire, a newer one and a stop end the one set before
+  const scheduled = result?.["scheduledFor"];
+  const fired = entry["type"] === "system" && entry["subtype"] === "scheduled_task_fire" && entry["taskKind"] === "loop";
+  const ends = commandEnds(result, at, notices);
+  if ((fired || typeof scheduled === "number") && commands.wakeup !== undefined) {
+    ends.push({ id: commands.wakeup, at, status: "completed", call: null });
+    commands.wakeup = undefined;
+  }
+  const wakeupCall = blocks.find((block) => block["type"] === "tool_result")?.["tool_use_id"];
+  if (typeof scheduled === "number" && scheduled > 0 && typeof wakeupCall === "string" && AGENT_ID.test(wakeupCall)) {
+    remember(commands.launches, wakeupCall, { at, title: commands.calls.get(wakeupCall) ?? "Wakeup", call: wakeupCall, seq }, MAX_NAMES);
+    commands.calls.delete(wakeupCall);
+    commands.wakeup = wakeupCall;
+  }
+  for (const end of ends) {
     const told = commands.ends.get(end.id) ?? [];
     // the same notice comes in more than one carrier: once is enough
     if (told.some((known) => known.at === end.at && known.status === end.status && known.call === end.call)) continue;
@@ -463,6 +483,16 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
         parent.restAt = stamp(entry["timestamp"]) === null ? null : end;
         if (parent.restAt !== null) parent.turnOpen = false;
+      }
+    } catch { /* a line caught half written is read again */ }
+  } else if (line.includes('"subtype":"scheduled_task_fire"') && !line.includes('"isSidechain":true')) {
+    // a /loop wakeup's fire begins the turn it resumes, before that turn writes its prompt: the rest before it is gone
+    try {
+      const entry = row(JSON.parse(line));
+      if (entry?.["type"] === "system" && entry["taskKind"] === "loop") {
+        parent.echo = null;
+        parent.restAt = null;
+        openTurn(parent, end, stamp(entry["timestamp"]));
       }
     } catch { /* a line caught half written is read again */ }
   } else if (user && line.includes('"isCompactSummary":true')) {

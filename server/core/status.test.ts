@@ -377,6 +377,20 @@ describe("Claude rest evidence regressions (#2072)", () => {
     expect(h.pending.current(h.pane.pane_id)).toBe("working");
   });
 
+  it("keeps working when a /loop wakeup fires before its turn writes anything else", async () => {
+    const h = await workingClaude();
+    h.rest(); h.poll();
+    expect(h.last().status).toBe("done");
+    // When the wakeup fires with herdr still at working from the spinner, before the resumed turn's prompt.
+    appendFileSync(h.path, line({ type: "system", subtype: "scheduled_task_fire", taskKind: "loop", taskId: "591b6f5a", timestamp: new Date(at + 4000).toISOString() }));
+    h.poll();
+    h.pending.enqueue("owner", h.pane.pane_id, 1, "queued", null, { agent: "claude", terminalId: "test", session: h.pane.agent_session.value });
+    // Then the turn before's rest no longer stands: the pane is working and its queue holds.
+    expect(h.last().status).toBe("working");
+    expect(h.pending.current(h.pane.pane_id)).toBe("working");
+    expect(h.pending.next(h.pane.pane_id)).toBeNull();
+  });
+
   it("retains raw working evidence across collector snapshot replay", async () => {
     const h = await workingClaude();
     h.rest(); h.poll();

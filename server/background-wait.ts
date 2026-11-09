@@ -3,17 +3,17 @@ import type { AgentStatus } from "../shared/protocol.ts";
 /** How long a turn's end is still held once its work ended: Claude goes on with the notice in about 2 s. */
 export const WAIT_GRACE_MS = 60_000;
 /**
- * The longest a turn's end is held. ponytail: nothing in a transcript tells a turn that waits on
+ * The longest one rest is held. ponytail: nothing in a transcript tells a turn that waits on
  * its suite from one that left a dev server running, so a turn that only started a server is
- * held this long before it reads DONE and alerts.
+ * held this long after its last rest before it reads DONE and alerts.
  */
 export const WAIT_LIMIT_MS = 30 * 60_000;
 
 interface Pane {
   statusSeen: boolean;
   busy: boolean;
-  /** Observed rests, independent of delayed prompt discovery; the first after a prompt owns its budget. */
-  rests: number[];
+  /** The last observed rest, independent of delayed prompt discovery: one at or after the prompt owns the budget. */
+  restAt: number | null;
   promptAt: number | null;
   /** the running subagents and background commands its turn started (server/claude-subagents.ts) */
   turnRunning: number;
@@ -34,8 +34,9 @@ interface Pane {
  * So a pane at rest whose turn's work runs, or ended less than WAIT_GRACE_MS ago, is waiting:
  * the sidebar says so in place of DONE, and the alerts take it for working (`alertStatus`,
  * shared/notify-policy.ts), so a turn that goes on is one turn, alerted once when it ends. Work
- * that ended before the turn did holds nothing. The limit starts at the first rest after the
- * person's prompt, not at each automatic resume. A resting baseline starts no hold.
+ * that ended before the turn did holds nothing. The limit starts again at each rest: a long run
+ * of turns, each resumed by its CI run's, deploy's or suite's notice, reads DONE only once it
+ * stops. A resting baseline starts no hold.
  *
  * An OmO pane is held the same way (index.ts `omoChanged`), on the count of its session's pending
  * and running tasks: OmO's records name the session, not the turn, that started a task. It is held
@@ -57,7 +58,7 @@ export class BackgroundWait {
     } else if (pane.busy) {
       // `done` and `idle` are one rest: a finish seen is not a new one
       pane.busy = false;
-      pane.rests.push(this.now());
+      pane.restAt = this.now();
     }
     return this.settle(pane);
   }
@@ -97,7 +98,7 @@ export class BackgroundWait {
   reset(paneId: string): void {
     const pane = this.panes.get(paneId);
     if (!pane) return;
-    pane.rests = [];
+    pane.restAt = null;
     pane.promptAt = null;
     pane.turnRunning = 0;
     pane.endedAt = null;
@@ -105,15 +106,15 @@ export class BackgroundWait {
   }
 
   /**
-   * reset, keeping the rests observed from `since` on: another agent's lifetime ended there, and the one that
+   * reset, keeping the rest observed from `since` on: another agent's lifetime ended there, and the one that
    * followed was seen rest before its tracker knew its session. Its counts come afresh from that tracker.
    */
   resetBefore(paneId: string, since: number): void {
     const pane = this.panes.get(paneId);
     if (!pane) return;
-    const rests = pane.rests.filter((at) => at >= since);
+    const restAt = pane.restAt !== null && pane.restAt >= since ? pane.restAt : null;
     this.reset(paneId);
-    pane.rests = rests;
+    pane.restAt = restAt;
   }
 
   forget(paneId: string): void {
@@ -122,17 +123,15 @@ export class BackgroundWait {
 
   private pane(paneId: string): Pane {
     let pane = this.panes.get(paneId);
-    if (!pane) this.panes.set(paneId, pane = { statusSeen: false, busy: false, rests: [], promptAt: null, turnRunning: 0, endedAt: null, waiting: false, capped: true });
+    if (!pane) this.panes.set(paneId, pane = { statusSeen: false, busy: false, restAt: null, promptAt: null, turnRunning: 0, endedAt: null, waiting: false, capped: true });
     return pane;
   }
 
   private settle(pane: Pane): boolean {
     const now = this.now();
     const limit = pane.capped ? this.limits.limit : Infinity;
-    // Keep one expired rest: deleting all of them would renew an old prompt's budget on resume.
-    while (pane.rests.length > 1 && now - pane.rests[1]! >= limit) pane.rests.shift();
-    const restAt = pane.rests.find((at) => pane.promptAt === null || at >= pane.promptAt);
-    const waiting = !pane.busy && restAt !== undefined && now - restAt < limit
+    const restAt = pane.restAt !== null && (pane.promptAt === null || pane.restAt >= pane.promptAt) ? pane.restAt : null;
+    const waiting = !pane.busy && restAt !== null && now - restAt < limit
       && (pane.turnRunning > 0 || (pane.endedAt !== null && now - pane.endedAt < this.limits.grace));
     const changed = waiting !== pane.waiting;
     pane.waiting = waiting;

@@ -67,21 +67,23 @@ describe("BackgroundWait", () => {
     expect(waits.waiting("p1")).toBe(false);
   });
 
-  it("does not extend the first rest deadline when a notice resumes a turn with a dev server left", () => {
+  it("gives each rest its own deadline when a notice resumes a turn and it rests on what still runs", () => {
     const time = clock();
     const waits = new BackgroundWait(time.now);
     waits.status("p1", "working");
     waits.running("p1", 2);
     waits.status("p1", "done");
     time.pass(WAIT_LIMIT_MS - 1000);
+    // one ended and its notice resumed the turn, which rests on the other: a deploy, or a dev server left
     waits.running("p1", 1);
     waits.status("p1", "working");
     waits.status("p1", "done");
     time.pass(1000);
+    expect(waits.tick()).toEqual([]);
+    expect(waits.waiting("p1")).toBe(true);
+    time.pass(WAIT_LIMIT_MS - 1000);
     expect(waits.tick()).toEqual(["p1"]);
     expect(waits.waiting("p1")).toBe(false);
-    waits.status("p1", "working");
-    expect(waits.status("p1", "done")).toBe(false);
   });
 
   it("holds a turn that ended while what it started runs, and lets go once Claude goes on with it", () => {
@@ -131,7 +133,7 @@ describe("BackgroundWait", () => {
     expect([waits.waiting("p1"), waits.waiting("p2")]).toEqual([false, false]);
   });
 
-  it("lets go at the limit and grants a new budget only to a new prompt", () => {
+  it("lets go at the limit, takes no status seen meanwhile for a new rest, and holds a new prompt's", () => {
     const time = clock();
     const waits = new BackgroundWait(time.now);
     waits.status("p1", "working");
@@ -148,7 +150,7 @@ describe("BackgroundWait", () => {
     expect(waits.status("p1", "done")).toBe(true);
   });
 
-  it("associates delayed prompts with their first observed rest, not discovery or automatic resumes", () => {
+  it("associates delayed prompts with the rests observed before discovery, the last one owning the deadline", () => {
     const time = clock();
     const waits = new BackgroundWait(time.now);
     waits.status("p1", "working");
@@ -165,7 +167,7 @@ describe("BackgroundWait", () => {
     waits.status("p1", "working");
     waits.status("p1", "done");
     waits.running("p1", 1, prompt);
-    time.pass(WAIT_LIMIT_MS - 11);
+    time.pass(WAIT_LIMIT_MS - 1);
     expect(waits.waiting("p1")).toBe(true);
     expect(waits.tick()).toEqual([]);
     time.pass(1);
@@ -175,7 +177,8 @@ describe("BackgroundWait", () => {
     time.pass(WAIT_LIMIT_MS);
     waits.status("p1", "done");
     waits.running("p1", 1, prompt);
-    expect(waits.waiting("p1")).toBe(false);
+    // an automatic resume that rests again on the prompt's work is held anew
+    expect(waits.waiting("p1")).toBe(true);
     // A new prompt later than every observed rest cannot borrow any old transition or grace.
     time.pass(1);
     waits.running("p1", 0, time.now());
