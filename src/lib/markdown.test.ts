@@ -7,7 +7,7 @@ import { FILE_LINK_COUNT, FILE_LINK_LIMIT, linkFilePaths } from "../components/F
 import { HighlightedCode } from "../components/HighlightedCode.tsx";
 import { OpenFileContext } from "./filePaths.ts";
 import { SettingsProvider } from "./settings.ts";
-import { FOLD_CODE_AFTER_LINES, FOLDED_CODE_LINES, foldCode, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, shownText, trimUrl, type InlineNode, type ListBlock } from "../../shared/markdown.ts";
+import { FOLD_CODE_AFTER_LINES, FOLD_OUTPUT_CHARS, FOLDED_CODE_LINES, foldCode, foldToolOutput, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, shownText, trimUrl, type InlineNode, type ListBlock } from "../../shared/markdown.ts";
 
 describe("parseMarkdown", () => {
   it("renders inline and display math while leaving fenced code untouched", async () => {
@@ -383,6 +383,15 @@ describe("foldCode", () => {
     expect(fold?.head.split("\n")).toHaveLength(FOLDED_CODE_LINES);
     expect(fold?.head.startsWith("line 1\n")).toBe(true);
     expect(fold?.head.endsWith(`line ${FOLDED_CODE_LINES}`)).toBe(true);
+  });
+});
+
+describe("foldToolOutput", () => {
+  it("folds one very long line by its length, never between the halves of an emoji", () => {
+    const output = `${"a".repeat(FOLD_OUTPUT_CHARS - 1)}😀${"b".repeat(5000)}`;
+    const fold = foldToolOutput(output);
+    expect(fold).toEqual({ head: "a".repeat(FOLD_OUTPUT_CHARS - 1), lines: null });
+    expect(output.startsWith(fold?.head ?? "")).toBe(true);
   });
 });
 

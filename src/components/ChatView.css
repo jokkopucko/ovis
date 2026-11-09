@@ -1986,9 +1986,17 @@ ol.markdown-list {
   font-size: var(--fs-xs);
 }
 
-.chat-tool-io.is-whole {
-  max-height: 60vh;
-  overflow: auto;
+/* a call's output folds by lines (ToolOutputText) instead of scrolling inside its box: the chat is
+   the only vertical scroller */
+.chat-tool-io.chat-tool-result {
+  max-height: none;
+  overflow: visible;
+}
+
+/* a folded output's tail, kept for the browser's find (hidden=until-found hides it by
+   content-visibility, which a block takes): no room until a match unfolds it */
+.chat-tool-result-tail {
+  display: block;
 }
 
 /* Skills remain discoverable when the work rows are folded. */

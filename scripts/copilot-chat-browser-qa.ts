@@ -99,6 +99,8 @@ console.log("fixture ready");`);
   if (await head.getAttribute("aria-expanded") !== "true") await head.click();
   await log.locator(".work-row-head").first().click();
   await log.locator(".chat-tool-more").click();
+  // a long whole output opens folded to its head: its own Show all unfolds it
+  await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/COPILOT_OUTPUT_END/).waitFor();
   await log.locator(".work-row-head").nth(1).click();
   await log.getByText("Proceed with this choice?").waitFor();

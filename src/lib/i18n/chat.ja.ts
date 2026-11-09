@@ -27,6 +27,7 @@ export const CHAT_JA: Record<string, string> = {
   "Copy code": "コードをコピー",
   "Show less": "折りたたむ",
   "Show all {n} lines": "{n} 行すべて表示",
+  "Show all {size} characters": "{size} 文字すべて表示",
   "Empty task": "空のタスク",
   "Couldn't copy. Select the text and copy it manually.": "コピーできませんでした。テキストを選択して手動でコピーしてください。",
   "Input": "入力",

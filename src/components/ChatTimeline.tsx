@@ -149,7 +149,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
     const focusChanged = () => setFocusKey(rowFor(document.activeElement));
     const focusOut = () => queueMicrotask(focusChanged);
     const interaction = (event: Event) => {
-      const control = event.target instanceof Element ? event.target.closest("summary, .work-block-head, .work-row-head, .chat-tool-more") : null;
+      const control = event.target instanceof Element ? event.target.closest("summary, .work-block-head, .work-row-head, .chat-tool-more, .chat-tool-result-more") : null;
       // a pending work block's head opens nothing
       if (control === null || control.closest(".work-block.is-pending")) return;
       // captured before the row's own handler: what it shows now is what the click changes

@@ -27,6 +27,7 @@ export const CHAT_ZH: Record<string, string> = {
   "Copy code": "复制代码",
   "Show less": "收起",
   "Show all {n} lines": "显示全部 {n} 行",
+  "Show all {size} characters": "显示全部 {size} 个字符",
   "Empty task": "空任务",
   "Couldn't copy. Select the text and copy it manually.": "无法复制。请选中文本并手动复制。",
   "Input": "输入",

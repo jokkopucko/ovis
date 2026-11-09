@@ -44,11 +44,12 @@ export function CodeFileName({ name, open }: { name: string; open: (path: string
 /**
  * `text` with the file paths in it as links to the viewer (a tool's output, a log in a code
  * block): `/tmp/shot/t0.png (1600, 1000)` opens the picture. Plain where nothing can open one.
+ * With `end`, only the text before it (a folded output's head), a path that end cuts left as text.
  */
-export function linkFilePaths(text: string, open: ((path: string) => void) | null): ReactNode {
-  if (open === null || text.length > FILE_LINK_LIMIT) return text;
-  const parts = splitFilePaths(text);
-  if (parts.length === 1 && typeof parts[0] === "string") return text;
-  if (parts.filter((part) => typeof part !== "string").length > FILE_LINK_COUNT) return text;
+export function linkFilePaths(text: string, open: ((path: string) => void) | null, end = text.length): ReactNode {
+  if (open === null || text.length > FILE_LINK_LIMIT) return text.slice(0, end);
+  const parts = splitFilePaths(text, end);
+  if (parts.length === 1 && typeof parts[0] === "string") return parts[0];
+  if (parts.filter((part) => typeof part !== "string").length > FILE_LINK_COUNT) return text.slice(0, end);
   return parts.map((part, index) => typeof part === "string" ? part : <FilePathLink key={index} path={part.path} code={false} open={open} />);
 }

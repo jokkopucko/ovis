@@ -38,6 +38,16 @@ describe("file paths in chat text", () => {
     expect(paths("docs/결과2.html")).toEqual(["docs/결과2.html"]);
   });
 
+  it("splits only the text before an end, and leaves a path that end cuts as text", () => {
+    const text = "see src/a.ts and src/thing.tsx now";
+    const cut = text.indexOf("src/thing.tsx") + "src/thing.ts".length;
+    // the path the end cuts is found in the whole text: the preview's "src/thing.ts" is no file of its own
+    expect(splitFilePaths(text, cut)).toEqual(["see ", { path: "src/a.ts" }, " and src/thing.ts"]);
+    // an end past every path splits as the whole text does, in that text's bounds
+    expect(splitFilePaths(text, text.indexOf(" now"))).toEqual(["see ", { path: "src/a.ts" }, " and ", { path: "src/thing.tsx" }]);
+    expect(splitFilePaths(text, 4)).toEqual(["see "]);
+  });
+
   it("leaves words, versions and bare names as text", () => {
     expect(paths("and/or, e.g. v1.2.3, 1.0/2.5, README.md, TCP/IP")).toEqual([]);
   });

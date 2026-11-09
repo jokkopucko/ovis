@@ -50,11 +50,15 @@ try {
   if (await head.getAttribute("aria-expanded") !== "true") await head.click();
   await log.locator(".work-row-head").click();
   await log.locator(".chat-tool-more").click();
+  // a long whole output opens folded to its head: its own Show all unfolds it
+  await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/FIRST_END/).waitFor();
   appendFileSync(path, output("UPDATED ".repeat(900) + "UPDATED_END"));
   await log.locator(".chat-tool-more").waitFor();
   assert.equal(await log.getByText(/FIRST_END/).count(), 0, "a changed ref must clear React's retained whole output");
   await log.locator(".chat-tool-more").click();
+  // the new output opens folded too, whatever the one before it was
+  await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/UPDATED_END/).waitFor();
   appendFileSync(path, output("short replacement"));
   await log.getByText("short replacement", { exact: true }).waitFor();

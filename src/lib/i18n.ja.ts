@@ -422,7 +422,7 @@ const BASE: Record<string, string> = {
   "Selected": "選択中",
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text · {destination}": "未送信のテキスト · {destination}",
-  "Text you had not sent when herdr restarted. A new herdr gives pane IDs out again, so it waits here rather than in a pane it was not written for. Nothing here is sent.": "再起動前に送信されなかったテキストです。対象のペインを確認してから入力欄に入れてください。",
+  "Text you had not sent before herdr restarted. Copy it and paste it where you need it. Nothing here is sent.": "再起動前に送信されなかったテキストです。コピーして必要な場所に貼り付けてください。自動では送信されません。",
   "Put in message box adds this text to {destination}. Nothing is sent.": "「入力欄に入れる」を押すと {destination} にテキストが入ります。送信はしません。",
   "Put in message box": "入力欄に入れる",
   "Adds the text to this pane's message box. Nothing is sent.": "このペインの入力欄にテキストを追加します。送信はしません。",

@@ -89,7 +89,7 @@ export function UnsentTextDialog({ machines, target, canRecover, onRecover, onCl
       <div ref={surface} className="modal unsent-modal" role="dialog" aria-modal="true" aria-labelledby="unsent-title">
         <header className="modal-header"><h2 className="modal-title" id="unsent-title" title={dialogTitle}>{dialogTitle}</h2></header>
         <div className="modal-body">
-          <p className="unsent-lead">{canRecover ? t("Put in message box adds this text to {destination}. Nothing is sent.", { destination }) : t("Text you had not sent when herdr restarted. A new herdr gives pane IDs out again, so it waits here rather than in a pane it was not written for. Nothing here is sent.")}</p>
+          <p className="unsent-lead">{canRecover ? t("Put in message box adds this text to {destination}. Nothing is sent.", { destination }) : t("Text you had not sent before herdr restarted. Copy it and paste it where you need it. Nothing here is sent.")}</p>
           <ul className="unsent-list">
             {allItems.map((item) => {
               const isDiscarded = discardedIds.has(item.id);

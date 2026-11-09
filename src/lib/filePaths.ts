@@ -78,18 +78,21 @@ function* pathMatches(text: string): Generator<{ index: number; 0: string; 1: st
 }
 
 /** Text split into plain runs and the file paths in it. */
-export function splitFilePaths(text: string): (string | { path: string })[] {
+export function splitFilePaths(text: string, end = text.length): (string | { path: string })[] {
   const parts: (string | { path: string })[] = [];
   let offset = 0;
   for (const match of pathMatches(text)) {
     const index = match.index;
+    // only the text before `end` is split (a folded output's head), its paths found in the whole
+    // text: a path the end cuts stays text, as a cut `src/a.tsx` is no `src/a.ts`
+    if (index + match[0].length > end) break;
     // a version number or a domain is not a path: one of its segments must hold a letter
     if (!/\p{L}/u.test(match[1]!.replace(LINE_SUFFIX, "").replace(/\.[A-Za-z0-9]{1,8}$/, ""))) continue;
     if (index > offset) parts.push(text.slice(offset, index));
     parts.push({ path: match[1]! });
     offset = index + match[0].length;
   }
-  if (offset < text.length) parts.push(text.slice(offset));
+  if (offset < end) parts.push(text.slice(offset, end));
   return parts;
 }
 

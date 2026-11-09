@@ -43,6 +43,13 @@
   justify-content: space-between;
 }
 
+/* nothing to tell: no band, only the (empty) live region */
+.conversation-search-footer.is-empty {
+  min-height: 0;
+  padding: 0;
+  border-top: 0;
+}
+
 .conversation-search-status {
   min-width: 0;
   margin: 0;

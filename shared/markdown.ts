@@ -479,6 +479,29 @@ export function foldCode(value: string): { head: string; lines: number } | null 
   return { head: lines.slice(0, FOLDED_CODE_LINES).join("\n"), lines: lines.length };
 }
 
+/**
+ * Past this many characters an output folds even in few lines: one long line wraps into hundreds on
+ * a phone. About 20 wrapped lines on a phone, as the line fold shows.
+ */
+export const FOLD_OUTPUT_CHARS = 1000;
+
+/**
+ * The folded head of a long output: a code block's line fold (foldCode), its head cut to FOLD_OUTPUT_CHARS;
+ * `lines` is null when only the length folds it. Null when it shows whole.
+ */
+export function foldToolOutput(output: string): { head: string; lines: number | null } | null {
+  const byLines = foldCode(output);
+  const head = byLines?.head ?? output;
+  if (head.length <= FOLD_OUTPUT_CHARS) return byLines;
+  // at a line's end when one is near, else mid-line
+  const end = head.lastIndexOf("\n", FOLD_OUTPUT_CHARS);
+  let cut = end > FOLD_OUTPUT_CHARS / 2 ? end : FOLD_OUTPUT_CHARS;
+  // never between the two halves of a character outside the BMP (an emoji): half of one draws as a replacement glyph
+  const last = head.charCodeAt(cut - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  return { head: head.slice(0, cut), lines: byLines?.lines ?? null };
+}
+
 /** Quotes nest by one call each: past this many levels, what is left is read as plain lines. */
 const MAX_QUOTE_DEPTH = 32;
 
