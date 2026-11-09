@@ -546,6 +546,9 @@ const BASE: Record<string, string> = {
   "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",
   "In your account": "已加入你的账户",
   "Devices added: {count}": "已添加的设备：{count}台",
+  "Plan · {plan}": "方案 · {plan}",
+  "{used}/{max} PCs": "{used}/{max} 台电脑",
+  "{used} / {cap} relay data": "中继流量 {used} / {cap}",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

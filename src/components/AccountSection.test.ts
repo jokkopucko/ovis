@@ -1,6 +1,9 @@
 import { expect, it } from "bun:test";
 
-import { probeUntilReachable, reachabilityProbe, REPROBE_MS } from "./AccountSection.tsx";
+import { AccountService } from "../lib/account/service.ts";
+import { memoryAccountStore, memoryLock, type AccountSession } from "../lib/account/store.ts";
+import { translate } from "../lib/i18n.ts";
+import { accountLimitsOf, formatAccountLimits, formatRelayBytes, probeUntilReachable, reachabilityProbe, REPROBE_MS } from "./AccountSection.tsx";
 
 // the relay tab offers the relay's own pairing while the account service cannot be reached (ConnectPhoneDialog's RelayTab)
 it("counts an answer the service could give as reachable, and a server error or no answer as not", async () => {
@@ -35,4 +38,53 @@ it("asks an account service that did not answer again, sooner first, until it an
   stop();
   expect(next).toBeNull();
   expect(asked).toBe(1);
+});
+
+it("reads the limits for the sign-in the section shows, and none once another account signed in", async () => {
+  const session = (account: string): AccountSession => ({ service: "https://account.test", account, provider: "github", access_token: `at_${account}`, refresh_token: `rt_${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: account });
+  const store = memoryAccountStore();
+  // the service answers for whichever account the token belongs to
+  const fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const account = new Headers(init?.headers).get("authorization")?.replace("Bearer at_", "") ?? "";
+    return Response.json({ plan: `plan of ${account}`, pcs_max: 3 });
+  };
+  const service = new AccountService({ store, fetch: fetch as typeof globalThis.fetch, lock: memoryLock() });
+  const shown = session("acct_a");
+  await store.set("session", shown);
+  expect(await accountLimitsOf(service, shown)).toEqual({ plan: "plan of acct_a", pcs_max: 3 });
+  await store.set("session", session("acct_b"));
+  expect(await accountLimitsOf(service, shown)).toBeNull();
+});
+
+it("drops a limits answer that arrives after the sign-in it was asked for ended in another tab", async () => {
+  const session = (account: string): AccountSession => ({ service: "https://account.test", account, provider: "github", access_token: `at_${account}`, refresh_token: `rt_${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: account });
+  for (const meanwhile of [session("acct_b"), undefined]) {
+    const store = memoryAccountStore();
+    const shown = session("acct_a");
+    await store.set("session", shown);
+    // another tab signs in as someone else, or signs out, while the request is on its way
+    const fetch = async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      await store.set("session", meanwhile);
+      return Response.json({ plan: "plan of acct_a", pcs_max: 3 });
+    };
+    const service = new AccountService({ store, fetch: fetch as typeof globalThis.fetch, lock: memoryLock() });
+    expect(await accountLimitsOf(service, shown)).toBeNull();
+  }
+});
+
+it("formats account limits with server-provided plan name, PCs used/max, and optional relay data", () => {
+  const t = (key: string, vars?: Record<string, string | number>) => translate("en", key, vars);
+  expect(formatRelayBytes(500)).toBe("500 B");
+  expect(formatRelayBytes(2048)).toBe("2 KB");
+  expect(formatRelayBytes(5 * 1024 * 1024)).toBe("5 MB");
+  expect(formatRelayBytes(5 * 1024 * 1024 * 1024)).toBe("5 GB");
+
+  expect(formatAccountLimits(t, { plan: "personal", pcs_max: 3 }, 1)).toEqual({
+    label: "Plan · Personal",
+    summary: "1/3 PCs",
+  });
+  expect(formatAccountLimits(t, { plan: "personal", pcs_max: 7, pcs_used: 3, data_cap_bytes: 50 * 1024 * 1024 * 1024, data_used_bytes: Math.round(4.2 * 1024 * 1024 * 1024) }, 1)).toEqual({
+    label: "Plan · Personal",
+    summary: "3/7 PCs · 4.2 GB / 50 GB relay data",
+  });
 });

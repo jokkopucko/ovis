@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import { desktopSignIn } from "./desktop.ts";
 import { startDeviceSignIn } from "./deviceSignIn.ts";
-import { AccountService, offeredProviders, SignedOutError } from "./service.ts";
+import { AccountService, offeredProviders, parseAccountLimits, SignedOutError } from "./service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "./signin.ts";
 import type { AccountProvider, AccountStore } from "./store.ts";
 import { memoryAccountStore, memoryLock } from "./store.ts";
@@ -212,5 +212,29 @@ describe("sign-in methods", () => {
     })).rejects.toBeInstanceOf(SignedOutError);
     expect(await store.get("session")).toBeUndefined();
     expect((await fake.fetch(new Request(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${linked?.access_token}` } }))).status).toBe(401);
+  });
+});
+
+describe("the account's limits", () => {
+  it("reads them from the session's own service, and none when it reports none", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
+    await expect(service.limits()).rejects.toMatchObject({ status: 404 });
+    fake.setLimits("acct_1", { plan: "personal", pcs_max: 3, data_cap_bytes: 5_000, data_used_bytes: 500, data_metering: "on" });
+    expect(await service.limits()).toEqual({ plan: "personal", pcs_max: 3, data_cap_bytes: 5_000, data_used_bytes: 500 });
+  });
+
+  it("drops used data while metering is off, and refuses a malformed answer", () => {
+    expect(parseAccountLimits({ plan: "personal", pcs_max: 3, data_cap_bytes: 5_000, data_used_bytes: 1_000, data_metering: "off" })).toEqual({ plan: "personal", pcs_max: 3, data_cap_bytes: 5_000 });
+    expect(parseAccountLimits({ plan: "", pcs_max: 3 })).toBeNull();
+    expect(parseAccountLimits({ plan: "personal", pcs_max: -1 })).toBeNull();
+    expect(parseAccountLimits(null)).toBeNull();
+  });
+
+  it("keeps the limits when the plan name is long, shortening only the name", () => {
+    expect(parseAccountLimits({ plan: "p".repeat(40), pcs_max: 3 })).toEqual({ plan: `${"p".repeat(31)}…`, pcs_max: 3 });
   });
 });

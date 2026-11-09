@@ -93,6 +93,7 @@ export class FakeAccountService {
   private readonly mailboxes = new Map<string, Mail[]>();
   private readonly challenges = new Map<string, { server_id: string; expected: string; expires: number }>();
   private readonly admissionList: FakeAdmission[] = [];
+  private readonly accountLimits = new Map<string, Record<string, unknown>>();
   /** Where the service sees every request come from (Cloudflare's `request.cf`); unknown unless a test says. */
   requestPlace: AccountPlace = { country: null, city: null };
   /** False acts as an account service from before "Who is asking", whose link page start refuses `label` and `os`. */
@@ -110,6 +111,12 @@ export class FakeAccountService {
     this.tokens.set(token, { account, provider: "test", family, expires: Number.POSITIVE_INFINITY });
     this.signedInAt.set(family, this.now());
     return token;
+  }
+
+  /** Sets the limits `GET /v1/account/limits` answers for `account`. */
+  setLimits(account: string, limits: Record<string, unknown> | null): void {
+    if (limits === null) this.accountLimits.delete(account);
+    else this.accountLimits.set(account, limits);
   }
 
   /** Who the next sign-in with `provider` turns out to be; unset, `acct_<provider>`. */
@@ -376,6 +383,10 @@ export class FakeAccountService {
     }
     if (path === "/v1/identities" && request.method === "GET") {
       return json({ identities: [...this.identityList.get(account) ?? []].map(([provider, { added_at }]) => ({ provider, added_at })) });
+    }
+    if (path === "/v1/account/limits" && request.method === "GET") {
+      const limits = this.accountLimits.get(account);
+      return limits ? json(limits) : problem(404, "not_found", "Unknown request");
     }
     const recent = this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) <= REAUTH_MS;
     if ((path === "/v1/identities/link" && request.method === "POST") || (path.startsWith("/v1/identities/") && request.method === "DELETE")) {

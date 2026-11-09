@@ -1246,13 +1246,36 @@ const DEMO_RELAY_APP = "https://app.ovis.sh";
 /** 32 made-up key bytes, in the canonical base64 the offer's validator accepts */
 const DEMO_RELAY_PUBLIC_KEY = btoa(String.fromCharCode(...Array.from({ length: 32 }, (_, index) => (index * 37 + 11) & 0xff)));
 /** `?demo_relay=on` opens the demo with the relay already online, as a PC that turned it on before */
-let demoRelayOnline = new URLSearchParams(location.search).get("demo_relay") === "on";
+const DEMO_RELAY_PARAM = new URLSearchParams(location.search).get("demo_relay");
+const DEMO_RELAY_PASS = new URLSearchParams(location.search).get("demo_relay_pass");
+let demoRelayOnline = DEMO_RELAY_PARAM === "on" || DEMO_RELAY_PASS !== null;
 let demoRelayIdentities = 1;
 const demoRelayServerId = (): string => `${demoRelayIdentities.toString(16).padStart(4, "0")}5e1f1d0ff3ab1e0ff3ab1e5e1f1d`;
 /** direct connections on the PC's network: on by default; the demo listens nowhere, and names a made-up home address while the relay is on */
 let demoRelayDirect = true;
-const demoRelayStatus = (): RelayStatus => ({ phase: demoRelayOnline ? "online" : "off", relay: DEMO_RELAY, app: DEMO_RELAY_APP, sessions: 0, blocked: null, error: null,
-  direct: { on: demoRelayDirect, carriers: demoRelayDirect && demoRelayOnline ? ["ws://192.168.0.10:7319"] : [] } });
+function demoRelayPass(): RelayStatus["pass"] | undefined {
+  switch (DEMO_RELAY_PASS) {
+    // passes needed from a month on: the reminder names that date
+    case "grace": return { state: "no_account", relay: "missing", enforce_at: new Date(Date.now() + 30 * 86_400_000).toISOString(), refused: false };
+    case "required": return { state: "no_account", relay: null, enforce_at: null, refused: true };
+    case "not-listed": return { state: "not_listed", relay: null, enforce_at: null, refused: true };
+    case "limit": return { state: "limit", relay: null, enforce_at: null, refused: true };
+    // passes needed since yesterday: the data limit holds now
+    case "data-limit": return { state: "ok", relay: "ok", enforce_at: new Date(Date.now() - 86_400_000).toISOString(), refused: false, new_sessions: false };
+    default: return undefined;
+  }
+}
+const demoRelayStatus = (): RelayStatus => {
+  const pass = demoRelayOnline ? demoRelayPass() : undefined;
+  const refused = pass?.refused === true;
+  return {
+    phase: !demoRelayOnline ? "off" : refused ? "error" : "online",
+    relay: DEMO_RELAY, app: DEMO_RELAY_APP, sessions: 0, blocked: null,
+    error: refused ? "The Ovis relay needs an Ovis account." : null,
+    direct: { on: demoRelayDirect, carriers: demoRelayDirect && demoRelayOnline ? ["ws://192.168.0.10:7319"] : [] },
+    ...(pass ? { pass } : {}),
+  };
+};
 /** POST /api/relay/offer: the pending code inside an offer for the fictional identity, as the server reuses it */
 function demoRelayOffer(): Response {
   if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);

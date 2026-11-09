@@ -208,4 +208,8 @@ export const DEVICES_JA: Record<string, string> = {
   "Phones and devices": "スマホ・デバイス",
   "Let this PC be reached from anywhere": "外部からこの PC への接続を許可",
   "No address a phone can open: type the code instead.": "スマートフォンで開けるアドレスがありません。コードを入力してください。",
+  "Sign in to keep using the Ovis relay after {date}. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "{date} 以降も Ovis リレーを使い続けるにはサインインしてください。同じ Wi-Fi、Tailscale、自前のリレーはアカウントなしでそのまま使えます。",
+  "Sign-in will be required for the Ovis relay. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "Ovis リレーにはサインインが必要になります。同じ Wi-Fi、Tailscale、自前のリレーはアカウントなしでそのまま使えます。",
+  "This account has reached its PC limit on the Ovis relay. Remove a PC you no longer use, or connect over the same Wi-Fi or Tailscale.": "このアカウントは Ovis リレーの PC 上限に達しました。使っていない PC を外すか、同じ Wi-Fi または Tailscale で接続してください。",
+  "This account has reached its relay data limit for new connections. Existing sessions stay open, or connect over the same Wi-Fi or Tailscale.": "このアカウントは新規接続のリレーデータ上限に達しました。接続中のセッションはそのまま続くほか、同じ Wi-Fi または Tailscale で接続できます。",
 };

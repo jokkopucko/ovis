@@ -899,6 +899,8 @@ export interface HealthInfo {
   web_ui?: { boot_id: string | null; revision: string | null };
   /** Absent only on a server that predates the token gate. */
   auth?: HealthAuth;
+  /** authenticated only; absent from an older server */
+  relay?: RelayStatus;
   /** present only while this server is reachable beyond this PC with no token and nothing paired */
   lan_exposure?: LanExposure;
   /** present only while lan_exposure is not: the relay's direct carrier listens on this PC's network, for relay-paired devices only */

@@ -49,6 +49,19 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   console.log(`PASS relay direct ${tag}`);
 }
 
+/** `?demo_relay_pass=grace` and `=data-limit` each show their relay notice over the pane. */
+async function notices(browser: Browser, origin: string): Promise<void> {
+  for (const [fixture, kind] of [["grace", "sign-in-grace"], ["data-limit", "data-limit"]] as const) {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+    await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "en" }));
+    const page = await context.newPage();
+    await page.goto(`${origin}?demo_relay_pass=${fixture}`);
+    await page.locator(`[data-testid="relay-notice"][data-relay-notice="${kind}"]`).waitFor({ timeout: 15_000 });
+    await context.close();
+    console.log(`PASS relay notice ${fixture}`);
+  }
+}
+
 const app = mkdtempSync(join(tmpdir(), "ovis-relay-direct-demo-"));
 try {
   await buildDemoApp(app);
@@ -73,6 +86,7 @@ try {
     try {
       const origin = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
       for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) await run(browser, origin, width, theme);
+      await notices(browser, origin);
     } finally { await browser.close(); }
   } finally { server.stop(true); }
 } finally {

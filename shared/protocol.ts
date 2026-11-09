@@ -609,6 +609,19 @@ export interface RelayStatus {
   };
 }
 
+/**
+ * The account service's GET /v1/account/limits, as Settings → Account reads it: the account's plan
+ * name, PC slot limit, and optional relay data allowance as reported by the account service.
+ */
+export interface AccountLimits {
+  readonly plan: string;
+  readonly pcs_max: number;
+  readonly pcs_used?: number;
+  readonly data_cap_bytes?: number;
+  readonly data_used_bytes?: number | null;
+  readonly until?: number | null;
+}
+
 /** POST /api/devices/pair's answer to a request that accepts JSON: the device's own credential. */
 export interface DevicePairToken {
   readonly token: string;

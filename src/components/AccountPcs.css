@@ -197,6 +197,21 @@
   gap: var(--space-2);
 }
 
+.settings-row.account-limits-row {
+  flex-wrap: wrap;
+  row-gap: var(--space-1);
+}
+
+.settings-row.account-limits-row > .account-limits-summary {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-inline-start: auto;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Settings → Account: the account's ways to sign in, each with its provider's mark */
 .account-method-list {
   display: flex;

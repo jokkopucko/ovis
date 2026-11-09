@@ -4,6 +4,7 @@
  * edge; a token is never logged or put in an error's text.
  */
 import { accountLabel, accountOsOf, type AccountAsker, type AccountOs } from "../../../shared/account-asker.ts";
+import type { AccountLimits } from "../../../shared/protocol.ts";
 import { newRecordId, type AccountRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
@@ -169,6 +170,27 @@ export async function failure(response: Response): Promise<AccountServiceError> 
   return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`);
 }
 
+export function parseAccountLimits(value: unknown): AccountLimits | null {
+  if (!isRecord(value)) return null;
+  const { plan, pcs_max, pcs_used, data_cap_bytes, data_used_bytes, data_metering, until } = value;
+  if (typeof plan !== "string" || plan.trim() === "") return null;
+  if (typeof pcs_max !== "number" || !Number.isSafeInteger(pcs_max) || pcs_max < 0) return null;
+  if (pcs_used !== undefined && pcs_used !== null && (typeof pcs_used !== "number" || !Number.isSafeInteger(pcs_used) || pcs_used < 0)) return null;
+  if (data_cap_bytes !== undefined && data_cap_bytes !== null && (typeof data_cap_bytes !== "number" || !Number.isSafeInteger(data_cap_bytes) || data_cap_bytes < 0)) return null;
+  if (data_used_bytes !== undefined && data_used_bytes !== null && (typeof data_used_bytes !== "number" || !Number.isSafeInteger(data_used_bytes) || data_used_bytes < 0)) return null;
+  if (until !== undefined && until !== null && (typeof until !== "number" || !Number.isFinite(until))) return null;
+  const metered = data_metering === undefined || data_metering === "on";
+  return {
+    // a long name is shortened, never a reason to drop the limits
+    plan: plan.trim().length > 32 ? `${plan.trim().slice(0, 31)}…` : plan.trim(),
+    pcs_max,
+    ...(typeof pcs_used === "number" ? { pcs_used } : {}),
+    ...(typeof data_cap_bytes === "number" ? { data_cap_bytes } : {}),
+    ...(metered && typeof data_used_bytes === "number" ? { data_used_bytes } : {}),
+    ...(until !== undefined ? { until: until ?? null } : {}),
+  };
+}
+
 function parsePc(value: unknown): DirectoryPc | null {
   if (!isRecord(value) || typeof value.server_id !== "string" || !SERVER_ID.test(value.server_id)) return null;
   if (typeof value.label !== "string" || typeof value.added_at !== "string") return null;
@@ -290,6 +312,12 @@ export class AccountService {
         : { country: null, city: null };
       return [{ key: entry.key, label, server_id: entry.server_id, at: entry.at, os: accountOsOf(entry.os), ...place }];
     });
+  }
+
+  /** The account's plan and limits (`GET /v1/account/limits`); null when the service does not report them. */
+  async limits(): Promise<AccountLimits | null> {
+    const body = await this.call("GET", "/v1/account/limits");
+    return parseAccountLimits(body);
   }
 
   /** The account's sign-in methods, one per provider. */

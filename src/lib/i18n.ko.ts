@@ -542,6 +542,9 @@ const BASE: Record<string, string> = {
   "{name} is ready to open on this device.": "이제 이 기기에서 {name}에 연결할 준비가 됐습니다.",
   "In your account": "계정에 추가됨",
   "Devices added: {count}": "추가된 기기: {count}대",
+  "Plan · {plan}": "플랜 · {plan}",
+  "{used}/{max} PCs": "PC {used}/{max}대",
+  "{used} / {cap} relay data": "릴레이 데이터 {used} / {cap}",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

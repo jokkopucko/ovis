@@ -208,4 +208,8 @@ export const DEVICES_KO: Record<string, string> = {
   "Phones and devices": "폰·기기",
   "Let this PC be reached from anywhere": "외부에서 이 PC 연결 허용",
   "No address a phone can open: type the code instead.": "폰이 열 수 있는 주소가 없습니다. 코드를 직접 입력하세요.",
+  "Sign in to keep using the Ovis relay after {date}. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "{date} 이후에도 Ovis 릴레이를 계속 쓰려면 로그인하세요. 같은 Wi-Fi, Tailscale, 직접 운영하는 릴레이는 계정 없이 계속 작동합니다.",
+  "Sign-in will be required for the Ovis relay. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "Ovis 릴레이에는 로그인이 필요해집니다. 같은 Wi-Fi, Tailscale, 직접 운영하는 릴레이는 계정 없이 계속 작동합니다.",
+  "This account has reached its PC limit on the Ovis relay. Remove a PC you no longer use, or connect over the same Wi-Fi or Tailscale.": "이 계정이 Ovis 릴레이 PC 한도에 도달했습니다. 더 이상 쓰지 않는 PC를 제거하거나 같은 Wi-Fi 또는 Tailscale로 연결하세요.",
+  "This account has reached its relay data limit for new connections. Existing sessions stay open, or connect over the same Wi-Fi or Tailscale.": "이 계정이 새 연결에 대한 릴레이 데이터 한도에 도달했습니다. 열린 세션은 유지되며, 같은 Wi-Fi 또는 Tailscale로 연결할 수 있습니다.",
 };

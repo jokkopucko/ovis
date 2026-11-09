@@ -544,6 +544,9 @@ const BASE: Record<string, string> = {
   "{name} is ready to open on this device.": "このデバイスで {name} を開く準備ができました。",
   "In your account": "アカウントに追加済み",
   "Devices added: {count}": "追加したデバイス: {count}台",
+  "Plan · {plan}": "プラン · {plan}",
+  "{used}/{max} PCs": "PC {used}/{max}台",
+  "{used} / {cap} relay data": "リレーデータ {used} / {cap}",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
