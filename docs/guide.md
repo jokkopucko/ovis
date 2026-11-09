@@ -888,10 +888,20 @@ PC's panes are then the app's. One server serves one runtime, chosen as it start
    Herdr app is installed or its core runs.
 
 Ovis needs an `hc` speaking
-protocol generation 1 (checked with 0.1.14 and 0.1.17), and finds it the way the Herdr app does:
-`OVIS_HC_BIN`, then the `PATH`, then your login shell's `PATH`, then the usual install places
-(`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, mise, Nix and cargo), taking `herdr-core`
-before `hc` in each. A candidate counts only when `--version` says `hc …`, since some window
+protocol generation 1 (checked with 0.1.14 and 0.1.17), and looks for it in `OVIS_HC_BIN`, then
+the usual install places (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, mise, Nix and
+cargo), then the `PATH`, then your login shell's `PATH`, taking `herdr-core` before `hc` in each.
+On Linux and macOS a candidate found there is run only when it and every folder on the way to it
+belong to you or root and nobody else can write them; a path you set in `OVIS_HC_BIN` is run as
+you named it. Two exceptions: a folder further up may be writable by anyone when it is sticky
+(like `/tmp`), since nobody can then rename or replace what is yours in it; and on macOS, folders
+under Homebrew's `/opt/homebrew` and `/usr/local` may be writable by the `admin` group, as
+Homebrew leaves them, so another administrator of that Mac could change an `hc` found there.
+Group write by your own private group counts as yours only when `/etc/nsswitch.conf` takes
+accounts from local files alone. On a PC whose accounts also come from a directory service (sss, as on
+Fedora and RHEL by default), an installer-made `~/.local/bin` with umask 002 is group-writable and
+so is passed over: run `chmod g-w ~/.local/bin`, or set `OVIS_HC_BIN` to the `hc` you trust. When
+nothing is found, the error names each `hc` passed over and the rule it failed. A candidate counts only when `--version` says `hc …`, since some window
 managers ship an unrelated `hc`. Looking runs nothing but `--version`: every other hc command
 starts a core when none runs. When no candidate answers, Ovis does not start and says where it
 looked, rather than run an `hc` that may not be herdr-core's.

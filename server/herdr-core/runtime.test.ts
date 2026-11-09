@@ -29,11 +29,14 @@ afterEach(() => {
   else process.env["OVIS_HC_BIN"] = previousHcBin;
 });
 
+/** where a stand-in hc is found at all: discovery runs one only when every folder above it is safe, which a shared TMPDIR need not be */
+const checkedTmp = platform === "win32" ? tmpdir() : "/tmp";
+
 it.skipIf(platform === "win32")("runs the hc it found, not an unrelated one named first", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "ovis-hc-found-"));
+  const dir = mkdtempSync(join(checkedTmp, "ovis-hc-found-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });
   const script = (name: string, output: string) => {
-    mkdirSync(join(dir, "bin"), { recursive: true });
+    mkdirSync(join(dir, "bin"), { recursive: true, mode: 0o755 });
     writeFileSync(join(dir, "bin", name), `#!/bin/sh\nprintf '%s\\n' '${output}'\n`, { mode: 0o755 });
     return join(dir, "bin", name);
   };
@@ -52,14 +55,14 @@ it.skipIf(platform === "win32")("runs the hc it found, not an unrelated one name
 
 /** a stand-in hc in `folder` that answers --version with `says` */
 function hcIn(dir: string, folder: string, says: string): string {
-  mkdirSync(join(dir, folder), { recursive: true });
+  mkdirSync(join(dir, folder), { recursive: true, mode: 0o755 });
   const path = join(dir, folder, "herdr-core");
   writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${says}'\n`, { mode: 0o755 });
   return path;
 }
 
 it.skipIf(platform === "win32")("finds a moved hc again where only the login shell's PATH shows it, as the start did", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "ovis-hc-moved-"));
+  const dir = mkdtempSync(join(checkedTmp, "ovis-hc-moved-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });
   const old = hcIn(dir, "old", "hc 0.1.17");
   let login = join(dir, "old");
@@ -80,7 +83,7 @@ it.skipIf(platform === "win32")("finds a moved hc again where only the login she
 });
 
 it.skipIf(platform === "win32")("never runs a file the search did not just verify: one that fails --version is passed over", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "ovis-hc-replaced-"));
+  const dir = mkdtempSync(join(checkedTmp, "ovis-hc-replaced-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });
   const old = hcIn(dir, "old", "hc 0.1.17");
   hcIn(dir, "other", "hc 0.1.16");
@@ -111,6 +114,18 @@ it.skipIf(platform === "win32")("starts nothing, and runs no other hc, when none
   process.env["OVIS_RUNTIME"] = "herdr-core";
   await expect(startRuntime(join(dir, "state"), async () => null)).rejects.toThrow(/no herdr-core found/);
   expect(existsSync(join(dir, "state"))).toBe(false);
+});
+
+it.skipIf(platform === "win32")("names each hc it passed over, and why, when none is found", async () => {
+  const dir = mkdtempSync(join(checkedTmp, "ovis-hc-refused-"));
+  cleanup = () => { chmodSync(join(dir, "open"), 0o755); rmSync(dir, { recursive: true, force: true }); };
+  const refused = hcIn(dir, "open", "hc 0.1.17");
+  chmodSync(join(dir, "open"), 0o777);
+  process.env["OVIS_RUNTIME"] = "herdr-core";
+  const start = startRuntime(join(dir, "state"), (onRefused) => findHc({ env: { PATH: join(dir, "open") }, home: dir, loginShellPath: async () => null, usualDirs: [], ...(onRefused ? { onRefused } : {}) }));
+  const error = await start.then(() => null, (failure: unknown) => failure as Error);
+  expect(error?.message).toContain(`${refused}: ${join(dir, "open")} is writable by everyone`);
+  expect(error?.message).toContain("OVIS_HC_BIN");
 });
 
 it.skipIf(platform === "win32")("tightens an existing state directory and socket on every start", async () => {

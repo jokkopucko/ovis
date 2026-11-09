@@ -600,9 +600,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     // this PC's relay ID, for a PC that lists it over SSH: a device turns its alerts off by it (shared/machines.ts pcAlertKey)
     const serverId = access.level === "full" && access.via !== "open" ? ctx.services.relay.serverId() : undefined;
     // what this PC has of the Herdr app's runtime, for Settings: never waited for, no path in it.
-    // Only a driving owner is told: a session name can name a project, which a watching device or a
-    // stranger on an open install has no need to read
-    const owner = access.level === "full" && access.role === "drive" && access.via !== "open";
+    // Only a driving owner is told: a session name can name a project, which a watching device, a
+    // stranger on an open install or a Portal visitor (who may not switch it) has no need to read
+    const owner = access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal";
     // the connection server that reaches this PC with its bridge token shows its move badge from them
     const herdr_runtime = owner || bridgeAuthorized ? options.runtimeService?.facts() : undefined;
     // the boot id lets the launcher know its own new bridge without waiting on herdr (server/supervisor.ts);
@@ -628,8 +628,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute(pathname);
     if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
     if (!updateRequestAllowed(request)) return jsonResponse({ error: { code: "forbidden", message: "a runtime switch must come from this app's own page" } }, 403);
-    // the same boundary as the facts: only a driving owner, never a watching device or a stranger on an open install
-    if (!(access.level === "full" && access.role === "drive" && access.via !== "open")) return jsonResponse({ error: { code: "forbidden", message: "only a device that drives this PC can switch its runtime" } }, 403);
+    // only a driving owner, never a watching device, a stranger on an open install or a Portal visitor
+    // (the move's own boundary, moveDriver below)
+    if (!(access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal")) return jsonResponse({ error: { code: "forbidden", message: "only a device that drives this PC can switch its runtime" } }, 403);
     if (!options.runtimeService) return jsonResponse({ error: { code: "runtime_locked", message: "this server cannot switch its runtime" } }, 409);
     let body: unknown;
     try { body = await request.json(); } catch { return badRequest("invalid_json", "send { \"runtime\": \"herdr\" | \"herdr-core\" }"); }
