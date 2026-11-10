@@ -111,7 +111,7 @@
   --font-mono: "Symbols Nerd Font Mono", "JetBrains Mono Web", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "D2Coding", monospace;
   /* Settings → Appearance → Interface font size: the chosen body size over the density's (lib/settings.ts
      writes it on <html>). Every size below is the scale at 1, except --fs-input: the floor under which
-     iOS Safari zooms a focused field stays a floor */
+     iOS Safari zooms a focused field stays a floor (.input and .select take it only while armed on iOS) */
   --ui-scale: 1;
   --fs-2xs: calc(11px * var(--ui-scale));
   --fs-xs: calc(12px * var(--ui-scale));
@@ -3128,6 +3128,19 @@ button {
   }
 }
 
+/* an iPad home-screen app in a window (iPadOS 26) has the window's controls over its top-left corner
+   (lib/viewport.ts marks it and sizes --window-controls-w from the page zoom), so the header's first
+   button moves clear of them */
+:root[data-window-controls] .app-header {
+  padding-left: calc(var(--window-controls-w, 72px) + env(safe-area-inset-left, 0px));
+}
+
+@media (min-width: 769px) {
+  :root[data-window-controls] .app:not(.sidebar-collapsed) .header-side {
+    padding-left: calc(var(--window-controls-w, 72px) + env(safe-area-inset-left, 0px));
+  }
+}
+
 /* ---------- primitives ---------- */
 
 .icon-button {
@@ -3624,7 +3637,16 @@ button {
   border-radius: var(--radius-md);
   color: var(--text-strong);
   font: inherit;
-  font-size: var(--fs-input);
+  /* a field follows the interface size like the label beside it; on iOS, lib/viewport.ts arms it to
+     at least --fs-input for the focus (a text field from the press before it, a select as it takes
+     it), which is when Safari decides whether to zoom the page; a larger interface size stays as it is */
+  --field-fs: var(--fs-md);
+  font-size: var(--field-fs);
+}
+
+.input[data-armed],
+.select[data-armed] {
+  font-size: max(var(--fs-input), var(--field-fs));
 }
 
 .tab-strip .tab-strip-rename {
@@ -3666,7 +3688,7 @@ button {
 @media (min-width: 641px) {
   .input,
   .select {
-    font-size: var(--fs-sm);
+    --field-fs: var(--fs-sm);
   }
 }
 

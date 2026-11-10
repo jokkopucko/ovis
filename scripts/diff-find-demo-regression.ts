@@ -7,7 +7,8 @@
  * viewer; a binary file leaves Find off; no request leaves the page while searching, and the
  * terminal's own find never opens. At 1440 and on a phone (390, DPR 3, touch), light and dark, and
  * in Korean on the phone; with UI_EVIDENCE_DIR set, each state is captured there as
- * `diff-find-<width>-<theme>[-ko]-<state>.png`.
+ * `diff-find-<width>-<theme>[-ko]-<state>.png`. On an iPad (1180 and 820, touch, the platform iPadOS
+ * reports) the focused query is at least 16px, the size under which Safari zooms the page into a field.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -267,6 +268,54 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
   }
 }
 
+/**
+ * An iPad in its wide layout (#3483): the query a tap on the header's Find focuses, or a tap on the query itself,
+ * is 16px while it has the focus, the size from which Safari does not zoom the page into a field, and the
+ * interface's size again once the focus leaves. An interface size over 16px is kept as it is. Chromium stands
+ * in for Safari here: the platform and its touch points are the ones iPadOS reports, and the size is what
+ * Safari would read; its zoom itself is not exercised.
+ */
+async function checkIpad(browser: Browser, origin: string, width: 1180 | 820, uiFontSize: number | null): Promise<void> {
+  const label = `iPad ${width}px${uiFontSize === null ? "" : ` at a ${uiFontSize}px interface`}`;
+  const context = await browser.newContext({ viewport: { width, height: width === 1180 ? 820 : 1180 }, deviceScaleFactor: 2, hasTouch: true });
+  try {
+    await context.addInitScript((uiFontSize) => {
+      Object.defineProperty(Navigator.prototype, "platform", { configurable: true, get: () => "MacIntel" });
+      Object.defineProperty(Navigator.prototype, "maxTouchPoints", { configurable: true, get: () => 5 });
+      if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", ...(uiFontSize === null ? {} : { uiFontSize }) }));
+    }, uiFontSize);
+    const page = await context.newPage();
+    page.setDefaultTimeout(20_000);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => { if (message.type() === "error") errors.push(`console: ${message.text()}`); });
+    await page.clock.install();
+    await page.goto(origin);
+    await pastDemoTurn(page);
+    await openDiff(page, false, "src/money.ts");
+    await rows(page);
+    const query = page.locator(".repo-diff-find input");
+    const size = () => query.evaluate((input) => getComputedStyle(input).fontSize);
+    const rest = uiFontSize === null ? "14px" : `${uiFontSize}px`;
+    assert.equal(await page.evaluate(() => getComputedStyle(document.body).fontSize), rest, `${label}: the interface's body size`);
+    const armed = uiFontSize === null ? "16px" : `${uiFontSize}px`;
+    await page.locator(".repo-diff-group .repo-diff-action").first().tap();
+    await query.waitFor();
+    assert.equal(await query.evaluate((input) => input === document.activeElement), true, `${label}: Find gives the query the focus`);
+    assert.equal(await size(), armed, `${label}: the query Find focuses`);
+    await shot(page, `ipad-${width}${uiFontSize === null ? "" : `-${uiFontSize}px`}`, "focused");
+    await query.evaluate((input: HTMLElement) => input.blur());
+    assert.equal(await size(), rest, `${label}: the interface size once the focus leaves`);
+    await query.tap();
+    assert.equal(await query.evaluate((input) => input === document.activeElement), true, `${label}: a tap gives the query the focus`);
+    assert.equal(await size(), armed, `${label}: the query a tap focuses`);
+    assert.deepEqual(errors, [], `${label}: no errors`);
+    console.log(`PASS ${label}: the focused Find in diff query is ${armed}, ${rest} at rest`);
+  } finally {
+    await context.close();
+  }
+}
+
 const app = mkdtempSync(join(tmpdir(), "herdr-diff-find-demo-"));
 let server: ReturnType<typeof Bun.serve> | undefined;
 let browser: Browser | undefined;
@@ -289,7 +338,8 @@ try {
   for (const [width, theme, language] of [[1440, "dark", "en"], [1440, "light", "en"], [390, "dark", "en"], [390, "light", "en"], [390, "light", "ko"], [390, "dark", "ko"]] as const) {
     await check(browser, origin, width, theme, language);
   }
-  console.log("diff find: demo OK (count, steps, wrap, ring and paint, scope hint, literal text, Escape order, no patch, no requests, Korean)");
+  for (const [width, uiFontSize] of [[1180, null], [820, null], [1180, 20]] as const) await checkIpad(browser, origin, width, uiFontSize);
+  console.log("diff find: demo OK (count, steps, wrap, ring and paint, scope hint, literal text, Escape order, no patch, no requests, Korean, the iPad's field size)");
 } finally {
   await browser?.close();
   server?.stop(true);
