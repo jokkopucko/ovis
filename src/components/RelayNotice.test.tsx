@@ -1,9 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { translate } from "../lib/i18n.ts";
-import { relayNoticeFromStatus, relayNoticeOf } from "../lib/relayNotice.ts";
+import { relayNoticeFromStatus, relayNoticeOf, useRelayNotice, type RelayNoticeInfo } from "../lib/relayNotice.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { RelayNotice, relayNoticeText } from "./RelayNotice.tsx";
 
@@ -104,6 +105,59 @@ describe("relayNoticeFromStatus before the announced date", () => {
     expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now)).toBeNull();
   });
 
+  it("does not read the refused flag as a refusal before the date while the global link is down for another reason", () => {
+    // a regional relay's refusal set the flag; the global link, whose status this is, dropped for the network
+    const down = { ...baseRelay, phase: "error", error: "Relay connection lost; reconnecting.", error_code: "relay_unreachable" } as const;
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "no_account", relay: "missing", enforce_at: future, refused: true } }, false, now))
+      .toEqual({ kind: "sign-in-grace", enforceAt: future });
+    // no notice, and not "no notice needed" either: the link has not said whether the relay refuses this PC
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: true } }, true, now)).toBeUndefined();
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now)).toBeUndefined();
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "limit", relay: null, enforce_at: "soon", refused: true } }, true, now)).toBeUndefined();
+    // nor beside a key the relay refused for good, or a relay that did not start
+    for (const error_code of ["server_key_refused", "start_failed"] as const) {
+      expect(relayNoticeFromStatus({ ...down, error_code, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now)).toBeUndefined();
+    }
+  });
+
+  it("says nothing of a refusal before the date while the global link is still trying", () => {
+    // after a refusal the link looks again, and a link that dropped reconnects: either reads "connecting", flag set
+    const trying = { ...baseRelay, phase: "connecting", error_code: null } as const;
+    expect(relayNoticeFromStatus({ ...trying, pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: true } }, true, now)).toBeUndefined();
+    expect(relayNoticeFromStatus({ ...trying, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now)).toBeUndefined();
+    expect(relayNoticeFromStatus({ ...trying, pass: { state: "limit", relay: null, enforce_at: "soon", refused: true } }, true, now)).toBeUndefined();
+    // the reminder that names the date needs no refusal, and shows meanwhile
+    expect(relayNoticeFromStatus({ ...trying, pass: { state: "no_account", relay: "missing", enforce_at: future, refused: true } }, false, now))
+      .toEqual({ kind: "sign-in-grace", enforceAt: future });
+    // with no flag there is nothing to wait for: a link that connects refuses nothing
+    expect(relayNoticeFromStatus({ ...trying, pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: false } }, true, now)).toBeNull();
+    // and past the date the flag alone is the refusal, whatever the link does
+    const after = Date.parse("2030-03-01T00:00:00.000Z");
+    expect(relayNoticeFromStatus({ ...trying, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, after)).toEqual({ kind: "pc-limit", enforceAt: null });
+  });
+
+  it("reads a refusal before the date from the global link's own word of the pass", () => {
+    for (const error_code of ["pass_required", "pass_not_listed", "pass_limit", "pass_unavailable", "pass_refused", "pass_unsupported"] as const) {
+      const refused = { ...baseRelay, phase: "error", error: "The Ovis relay needs a signed-in account (relay pass required).", error_code } as const;
+      expect(relayNoticeFromStatus({ ...refused, pass: { state: "no_account", relay: null, enforce_at: future, refused: true } }, false, now))
+        .toEqual({ kind: "sign-in-required", enforceAt: null });
+      expect(relayNoticeFromStatus({ ...refused, pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: true } }, true, now))
+        .toEqual({ kind: "not-listed", enforceAt: null });
+      expect(relayNoticeFromStatus({ ...refused, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now))
+        .toEqual({ kind: "pc-limit", enforceAt: null });
+    }
+    // an older server names no code: its error beside the flag is read as a refusal, as the cases above without one are
+  });
+
+  it("reads the flag beside any error as a refusal once the date has passed, as before", () => {
+    const after = Date.parse("2030-03-01T00:00:00.000Z");
+    const down = { ...baseRelay, phase: "error", error: "Relay connection lost; reconnecting.", error_code: "relay_unreachable" } as const;
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "no_account", relay: null, enforce_at: future, refused: true } }, false, after))
+      .toEqual({ kind: "sign-in-required", enforceAt: null });
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, after))
+      .toEqual({ kind: "pc-limit", enforceAt: null });
+  });
+
   it("keeps the data limit for the date even when the relay refused this PC", () => {
     expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "ok", relay: "ok", enforce_at: future, refused: true, new_sessions: false } }, true, now)).toBeNull();
   });
@@ -132,6 +186,102 @@ describe("relayNoticeFromStatus before the announced date", () => {
       .toEqual({ kind: "pc-limit", enforceAt: null });
     expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "no_account", relay: null, enforce_at: "soon", refused: true } }, false, now))
       .toEqual({ kind: "sign-in-required", enforceAt: null });
+  });
+});
+
+interface ProbeProps { scope: string; notice: RelayNoticeInfo | null | undefined; seen: { dismissed: boolean; dismiss: () => void }[] }
+
+function Probe({ scope, notice, seen }: ProbeProps) {
+  seen.push(useRelayNotice(scope, notice));
+  return null;
+}
+
+describe("a dismissed relay notice before the announced date", () => {
+  const now = Date.parse("2030-01-01T00:00:00.000Z");
+  const future = "2030-02-01T00:00:00.000Z";
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  let records: Map<string, string>;
+  let renderer: ReactTestRenderer | undefined;
+
+  beforeEach(() => {
+    for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    records = new Map();
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => void records.set(key, value), removeItem: (key: string) => void records.delete(key) },
+    } });
+  });
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    descriptors.clear();
+  });
+
+  /** a page load on the PC, signed in: a fresh mount that reads only what storage kept, then each status answer in turn */
+  async function load(status: RelayStatus) {
+    const seen: ProbeProps["seen"] = [];
+    const read = (answer: RelayStatus) => relayNoticeFromStatus(answer, true, now);
+    await act(async () => { renderer?.unmount(); renderer = create(createElement(Probe, { scope: "", notice: read(status), seen })); });
+    return { latest: () => seen.at(-1)!, answer: async (next: RelayStatus) => { await act(async () => { renderer!.update(createElement(Probe, { scope: "", notice: read(next), seen })); }); } };
+  }
+
+  // the global relay refused this PC for its pass; then the link looks again (every 30 minutes, and whenever a pass
+  // comes), which reads "connecting" for the attempt with the flag still standing
+  const cases: { kind: RelayNoticeInfo["kind"]; pass: NonNullable<RelayStatus["pass"]>; error_code: NonNullable<RelayStatus["error_code"]> }[] = [
+    { kind: "not-listed", pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: true }, error_code: "pass_not_listed" },
+    { kind: "pc-limit", pass: { state: "limit", relay: null, enforce_at: future, refused: true }, error_code: "pass_limit" },
+  ];
+
+  it.each(cases)("stays dismissed while the PC looks again and is refused again: $kind", async ({ kind, pass, error_code }) => {
+    const refused: RelayStatus = { ...baseRelay, phase: "error", error: "The Ovis relay needs a signed-in account (relay pass required).", error_code, pass };
+    const trying: RelayStatus = { ...baseRelay, phase: "connecting", error_code: null, pass };
+    expect(relayNoticeFromStatus(refused, true, now)).toEqual({ kind, enforceAt: null });
+    const page = await load(refused);
+    expect(page.latest().dismissed).toBe(false);
+    await act(async () => { page.latest().dismiss(); });
+    expect(page.latest().dismissed).toBe(true);
+    // the attempt says nothing yet: there is no notice to show, and the dismissal made is kept (scope "" and the kind)
+    await page.answer(trying);
+    expect(records.get("ovis:relay-notice-dismissed")).toBe(JSON.stringify([` ${kind}`]));
+    await page.answer(refused);
+    expect(page.latest().dismissed).toBe(true);
+    // an attempt that fails on the network first is retried, in error and connecting by turns, before the relay answers
+    await page.answer(trying);
+    await page.answer({ ...baseRelay, phase: "error", error: "Relay connection lost; reconnecting.", error_code: "relay_unreachable", pass });
+    await page.answer(trying);
+    await page.answer(refused);
+    expect(page.latest().dismissed).toBe(true);
+    // and a load that lands in the attempt forgets nothing either
+    await load(trying);
+    expect((await load(refused)).latest().dismissed).toBe(true);
+  });
+
+  it.each(cases)("comes back once the relay let the PC in and refuses it again: $kind", async ({ pass, error_code }) => {
+    const refused: RelayStatus = { ...baseRelay, phase: "error", error: "The Ovis relay needs a signed-in account (relay pass required).", error_code, pass };
+    const page = await load(refused);
+    await act(async () => { page.latest().dismiss(); });
+    await page.answer({ ...baseRelay, phase: "connecting", error_code: null, pass });
+    // let in: the relay's `sync` clears the flag, and the state the notice told of is over
+    await page.answer({ ...baseRelay, error_code: null, pass: { ...pass, state: "ok", relay: "ok", refused: false } });
+    await page.answer(refused);
+    expect(page.latest().dismissed).toBe(false);
+  });
+
+  it("forgets the dismissal once the global relay lets the PC in while only a regional relay's flag stands", async () => {
+    const { pass, error_code } = cases[0]!;
+    const refused: RelayStatus = { ...baseRelay, phase: "error", error: "The Ovis relay needs a signed-in account (relay pass required).", error_code, pass };
+    const page = await load(refused);
+    await act(async () => { page.latest().dismiss(); });
+    // online with the flag set: the flag is a regional relay's, and the global one refuses nothing
+    expect(relayNoticeFromStatus({ ...baseRelay, error_code: null, pass }, true, now)).toBeNull();
+    await page.answer({ ...baseRelay, error_code: null, pass });
+    await page.answer(refused);
+    expect(page.latest().dismissed).toBe(false);
   });
 });
 

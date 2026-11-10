@@ -8,6 +8,7 @@
   longer running" after that PC restarted.
 - Adding a PC over SSH that runs its own Ovis on herdr-core asks which to use in two more cases, both
   on a PC where this app's bridge runtime is not installed yet: when that Ovis is an older one that
-  does not list herdr sessions (the herdr there is offered beside it), and when herdr's socket there
-  is only what a stopped herdr left. Before, the PC was set up as a herdr PC without asking, and in
-  the second case a new herdr was started beside its Ovis.
+  does not list herdr sessions and the dialog names no session (herdr's default session there is
+  offered beside it), and when herdr's socket there is only what a stopped herdr left. Before, the
+  PC was set up as a herdr PC without asking, and in the second case a new herdr was started beside
+  its Ovis.

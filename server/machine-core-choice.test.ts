@@ -265,6 +265,21 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
       expect(installs).toBe(1);
       expect(startedWith).toMatchObject({ herdr_socket: bridge.socket_path });
       expect(startedWith?.start_new_herdr).toBeUndefined();
+      // A session named in the dialog gets no such row. Chosen, the row would be that session's socket, and the PC would
+      // be saved with the socket: after that PC restarts, its bridge would say the session no longer runs instead of
+      // starting it. Named, the session connects as before the card existed: the approval of what its setup installs
+      // there, then a bridge started for the session by its name, which starts it when absent
+      const typed = await add({ destination: "fixture-typed", session: "work" });
+      expect(typed.phase).toBe("approval");
+      expect(typed.action_required ?? null).toBeNull();
+      expect(typed.found_ovis).toBeUndefined();
+      expect(typed.found_herdr_sessions).toBeUndefined();
+      manager.action(typed.id, { action: "approve" });
+      await reached(typed, ["failed", "connected"]);
+      expect(installs).toBe(2);
+      expect(startedWith).toMatchObject({ session: "work" });
+      expect(startedWith?.herdr_socket).toBeUndefined();
+      expect(startedWith?.start_new_herdr).toBeUndefined();
       return;
     }
     if (outcome === "default herdr chosen") {

@@ -1620,8 +1620,10 @@ export class MachineManager {
           // Nothing could list them (the Ovis that answered is an older one, which names none): the socket is offered as
           // the session it is, so that PC's Ovis is not passed over without a word. Chosen, it is a chosen socket like any
           // other: the bridge started for it checks it and starts no herdr in its place. Not beside an Ovis that does not
-          // answer: that PC connects as before
-          if (answered && !listedHere) sessions.set(expectedSocket, { socket_path: expectedSocket, ...(session ? { session } : {}), label: session ?? "Default session" });
+          // answer: that PC connects as before. Nor for a session named in the dialog: only the default session's socket
+          // is saved as herdr to start (job.defaultSocket), so the named one's row would save the PC with that socket, and
+          // after that PC restarts its bridge would say the session no longer runs instead of starting it by its name
+          if (!session && answered && !listedHere) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
         }
         if (sessions.has(expectedSocket)) throw await offer(choice);
       }
