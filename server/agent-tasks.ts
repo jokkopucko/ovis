@@ -23,12 +23,15 @@ import type { HerdrPane } from "../shared/protocol.ts";
  * is a gone process's (START_SLACK_MS as in claude-subagents.ts). A timer due within TIMER_LIMIT_MS
  * is held until it is due, past the hold's limit: it surely resumes the turn, and a command may be a
  * server. Only its process fires it, so while one is held its pane is looked up again each RESOLVE_MS,
- * and a pane whose session can no longer be looked up holds nothing. Each file is read on from where
- * the last read stopped.
+ * and a pane whose session can no longer be looked up holds nothing: not on one lookup that failed,
+ * which herdr being busy or a process read timing out gives too, but on the next, which the poll asks
+ * RETRY_MS later whatever the pane holds. Each file is read on from where the last read stopped.
  */
 const POLL_MS = 2000;
 /** how long a pane's session is trusted before it is looked up again: the agent may have restarted there */
 const RESOLVE_MS = 30_000;
+/** how long after a lookup that failed the pane is asked again: every snapshot would ask, and two failures in one moment say no more than one */
+const RETRY_MS = 10_000;
 const START_SLACK_MS = 60_000;
 /** a timer past due by this much fired in a process that is gone */
 const DUE_GRACE_MS = 120_000;
@@ -139,11 +142,27 @@ export interface AgentTaskDeps {
   now?: () => number;
 }
 
+/**
+ * Whether herdr reports for `pane` the session `known` was looked up by. A grok session is found by
+ * the id herdr reports, so another id is another session's file; an agy one is found by the pane's
+ * process, whatever the pane says of a session.
+ */
+function sameSession(known: HerdrPane, pane: HerdrPane): boolean {
+  return pane.agent !== "grok" || known.agent_session?.value === pane.agent_session?.value;
+}
+
 export class AgentTaskStatus {
   private readonly panes = new Map<string, Tracked>();
   private readonly resolving = new Set<string>();
+  /** the panes a status asked for while a lookup of theirs was under way: should that one fail, the status gets its own */
+  private readonly asked = new Map<string, HerdrPane>();
   /** bumped each time a pane is let go, so a lookup that was under way then is dropped */
   private readonly lifetimes = new Map<string, number>();
+  /**
+   * the panes whose last lookup failed, for which agent and when: kept until one finds the session or
+   * the pane leaves. Not a status's lookup of a pane with no session: that one holds no snapshot off
+   */
+  private readonly failed = new Map<string, { agent: TaskAgent; at: number }>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
 
@@ -163,41 +182,70 @@ export class AgentTaskStatus {
     return this.panes.get(paneId)?.running ?? 0;
   }
 
-  /** Whether the pane's session is not known, or was looked up long enough ago to look again. */
+  /** Whether the pane's session is not known, or was looked up, found or not, long enough ago to look again. */
   stale(paneId: string): boolean {
     const tracked = this.panes.get(paneId);
-    return tracked === undefined || this.now() - tracked.resolvedAt >= RESOLVE_MS;
+    return tracked === undefined || (this.now() - tracked.resolvedAt >= RESOLVE_MS && !this.failedLately(paneId, tracked.agent));
   }
 
   forget(paneId: string): void {
     this.endLifetime(paneId);
     this.panes.delete(paneId);
+    this.failed.delete(paneId);
+    this.asked.delete(paneId);
   }
 
   /** A snapshot's panes: an agy or grok one is looked up, any other is let go. */
   async refresh(panes: readonly HerdrPane[]): Promise<void> {
     const ids = new Set(panes.filter((pane) => isTaskAgent(pane.agent)).map((pane) => pane.pane_id));
     for (const paneId of [...this.panes.keys()]) if (!ids.has(paneId)) this.letGo(paneId);
-    await Promise.all(panes.map((pane) => this.track(pane)));
+    for (const kept of [this.failed, this.asked]) for (const paneId of [...kept.keys()]) if (!ids.has(paneId)) kept.delete(paneId);
+    await Promise.all(panes.map((pane) => this.track(pane, true)));
   }
 
-  /** Look the pane's session up, unless it was a moment ago. */
-  async track(pane: HerdrPane): Promise<void> {
+  /**
+   * Look the pane's session up, unless it was a moment ago. `spaced`, as a snapshot's lookup is: nor
+   * a session that was not found less than RETRY_MS ago. A status of the pane does ask for that one
+   * at once: a turn that ends on a task is held only once its session is known. So one that asks
+   * while a lookup is under way is asked for again should that lookup fail: it began before the status.
+   */
+  async track(pane: HerdrPane, spaced = false): Promise<void> {
     const agent = pane.agent;
     if (!isTaskAgent(agent)) return;
     const known = this.panes.get(pane.pane_id);
-    if ((known?.agent === agent && this.now() - known.resolvedAt < RESOLVE_MS) || this.resolving.has(pane.pane_id)) return;
+    // a session that is known stands for RESOLVE_MS, and for RETRY_MS after a lookup that failed, whoever
+    // asks; another agent there is looked up now, and so is another session herdr reports for it
+    const recent = known === undefined ? spaced && this.failedLately(pane.pane_id, agent) : known.agent === agent && sameSession(known.pane, pane) && !this.stale(pane.pane_id);
+    if (recent) return;
+    if (this.resolving.has(pane.pane_id)) {
+      if (!spaced) this.asked.set(pane.pane_id, pane);
+      return;
+    }
     this.resolving.add(pane.pane_id);
     const lifetime = this.lifetimes.get(pane.pane_id);
     let found: { path: string; started: number | null; owner: string | null } | null;
     try { found = await this.deps.resolve({ ...pane, agent }); } catch { found = null; } finally { this.resolving.delete(pane.pane_id); }
+    const asked = this.asked.get(pane.pane_id);
+    this.asked.delete(pane.pane_id);
     if (this.lifetimes.get(pane.pane_id) !== lifetime) return;
     const current = this.panes.get(pane.pane_id);
-    // the process is gone or its session cannot be read: what it ran, a timer too, holds nothing
     if (found === null) {
-      if (current !== undefined) this.letGo(pane.pane_id);
+      // the process is gone or its session cannot be read: what it ran, a timer too, holds nothing. One
+      // failure does not tell that (herdr was busy, a process read timed out), so what the pane holds is
+      // dropped on the second in a row, and at once when it is another agent's or another session's:
+      // what the pane holds was never that one's
+      const again = this.failed.get(pane.pane_id)?.agent === agent;
+      if (current !== undefined && (again || current.agent !== agent || !sameSession(current.pane, pane))) this.letGo(pane.pane_id);
+      // kept, the pane is asked for again by the poll, as herdr reports it now
+      else if (current !== undefined) current.pane = { ...pane, agent };
+      // a status's lookup of a pane with no session is not remembered: the snapshot after a turn's end
+      // asks too, as its finish alert may be due before RETRY_MS is over
+      if (spaced || current !== undefined) this.failed.set(pane.pane_id, { agent, at: this.now() });
+      // the same gates stand for it: a pane kept through this failure is not asked for twice in one moment
+      if (asked !== undefined) await this.track(asked);
       return;
     }
+    this.failed.delete(pane.pane_id);
     if (current !== undefined && current.agent === agent && current.path === found.path && current.owner === found.owner) {
       current.resolvedAt = this.now();
       current.pane = { ...pane, agent };
@@ -216,8 +264,9 @@ export class AgentTaskStatus {
       if (only !== undefined && paneId !== only) continue;
       readOn(tracked);
       const count = taskCount(tracked, tracked.started, this.now());
-      // a timer is held past the hold's limit only while its process lasts: no event tells that of a pane at rest
-      if (!count.capped && this.now() - tracked.resolvedAt >= RESOLVE_MS) void this.track(tracked.pane).catch(() => undefined);
+      // a timer is held past the hold's limit only while its process lasts: no event tells that of a pane at rest.
+      // Nor does any bring the lookup after one that failed, which keeps what the pane holds or lets it go
+      if ((!count.capped || this.failed.has(paneId)) && this.now() - tracked.resolvedAt >= RESOLVE_MS) void this.track(tracked.pane).catch(() => undefined);
       const told = `${count.running}:${count.turnRunning}:${count.promptAt}:${count.capped}`;
       if (told === tracked.told) continue;
       tracked.told = told;
@@ -230,6 +279,12 @@ export class AgentTaskStatus {
     // only a lookup under way needs to see the change; with none, the pane leaves no entry behind
     if (this.resolving.has(paneId)) this.lifetimes.set(paneId, (this.lifetimes.get(paneId) ?? 0) + 1);
     else this.lifetimes.delete(paneId);
+  }
+
+  /** Whether the pane's last lookup, for this agent, failed less than RETRY_MS ago. */
+  private failedLately(paneId: string, agent: TaskAgent): boolean {
+    const failure = this.failed.get(paneId);
+    return failure !== undefined && failure.agent === agent && this.now() - failure.at < RETRY_MS;
   }
 
   private letGo(paneId: string): void {

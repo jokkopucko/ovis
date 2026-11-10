@@ -343,6 +343,56 @@ describe("the status hub's agy tasks", () => {
       expect(h.alerts.at(-1)).toBe("done");
     } finally { for (const stub of stubs) stub.mockRestore(); }
   });
+
+  it("holds an agy turn that ended on its task though its session was not found a moment before, and through one lookup that fails after (#3502)", async () => {
+    const path = join(root, "agy-late-transcript.jsonl");
+    const step = (type: string, status: string, offset: number, content: string) => line({ step_index: offset, source: type === "USER_INPUT" ? "USER_EXPLICIT" : "MODEL", type, status, created_at: new Date(at + offset).toISOString(), content });
+    writeFileSync(path, step("USER_INPUT", "DONE", 0, "deploy it") + step("GENERIC", "RUNNING", 10, "Tool is running as a background task with task id: s2/task-2\nTask Description: gh run watch 1"));
+    const h = hub();
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue(null);
+    // the lookups a snapshot or a status begins are not waited for by either
+    const begun: Promise<void>[] = [];
+    const track = h.status.taskAgents.track.bind(h.status.taskAgents);
+    const stubs = [store, spyOn(processStart, "processStartUpperBoundAsync").mockResolvedValue(null), spyOn(h.status.taskAgents, "track").mockImplementation((...args) => { const done = track(...args); begun.push(done); return done; })];
+    const looked = async () => { await h.settle(); await Promise.all(begun.splice(0)); };
+    // one moment: every lookup below falls inside the time a snapshot waits before it asks again
+    setSystemTime(Date.now());
+    try {
+      const agy = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent_status: "idle", agent: "agy" };
+      h.herdrSays(agy);
+      handlers.onBaseline([agy]);
+      await h.snapshot();
+      await looked();
+      h.herdrSays({ ...agy, agent_status: "working" });
+      handlers.onStatus("w1:p1", "working", "agy");
+      await looked();
+      expect(store).toHaveBeenCalledTimes(2);
+      // the session is there by now, and the next snapshot does not ask for it yet
+      store.mockResolvedValue({ root, session: "s2", path, pid: 1, started: "x" });
+      await h.snapshot();
+      await looked();
+      expect(store).toHaveBeenCalledTimes(2);
+      // the turn's end does, so the turn is held on the task it started
+      h.herdrSays(agy);
+      handlers.onStatus("w1:p1", "idle", "agy");
+      await looked();
+      expect(store).toHaveBeenCalledTimes(3);
+      expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+      expect(h.alerts.at(-1)).toBe("working");
+      // the session is looked up again once that lookup is old: one that fails then ends no wait and alerts nothing
+      const alerted = h.alerts.length;
+      store.mockResolvedValue(null);
+      setSystemTime(Date.now() + 30_000);
+      await h.snapshot();
+      await looked();
+      expect(store).toHaveBeenCalledTimes(4);
+      expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+      expect(h.alerts).toHaveLength(alerted);
+    } finally {
+      setSystemTime();
+      for (const stub of stubs) stub.mockRestore();
+    }
+  });
 });
 
 describe("Claude rest evidence regressions (#2072)", () => {

@@ -62,6 +62,13 @@ describe("AgentTaskStatus", () => {
   const roots: string[] = [];
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
   const pane = (agent: string | null): HerdrPane => ({ pane_id: "p1", agent } as HerdrPane);
+  /** Waits for the lookups begun since it was last called: a poll does not wait for the one it begins. */
+  function lookups(status: AgentTaskStatus): () => Promise<void> {
+    const begun: Promise<void>[] = [];
+    const track = status.track.bind(status);
+    status.track = (...args: Parameters<AgentTaskStatus["track"]>) => { const done = track(...args); begun.push(done); return done; };
+    return async () => { await Promise.all(begun.splice(0)); };
+  }
 
   it("reads a session's file on from where it stopped, starts again on another session, and lets a pane go", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
@@ -168,44 +175,315 @@ describe("AgentTaskStatus", () => {
     expect(status.countOf("p1")).toBe(0);
   });
 
-  it("drops a pane's tasks and timers once its session cannot be looked up, and looks a timer's pane up again by itself", async () => {
+  it("drops a timer's pane once its session cannot be looked up twice in a row, looking it up again by itself", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
     roots.push(root);
     const path = join(root, "a.jsonl");
     writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1, "Timer: 2h, Prompt: x"))}\n`);
-    let found: { path: string; started: null; owner: string } | null = { path, started: null, owner: "1:boot:100" };
-    let lookups = 0;
+    const live = { path, started: null, owner: "1:boot:100" };
+    let found: typeof live | null = live;
+    let asked = 0;
     const told: TaskCount[] = [];
-    let dropped = Promise.withResolvers<void>();
     let now = T0 + 2 * 60_000;
-    const status = new AgentTaskStatus({
-      resolve: async () => { lookups += 1; return found; },
-      onChange: (_, c) => { told.push(c); if (c.running === 0) dropped.resolve(); },
-      onReset: () => undefined,
-      now: () => now,
-    });
+    const status = new AgentTaskStatus({ resolve: async () => { asked += 1; return found; }, onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => now });
+    const looked = lookups(status);
     await status.track(pane("agy"));
     expect(told).toEqual([count(1, 1, T0, false)]);
-    // the agy process is gone (or its session unreadable): its timer will not fire, so nothing of it is held
+    // the agy process is gone (or its session unreadable): its timer will not fire. A pane at rest on a
+    // timer gets no event that would look it up: the poll does, once its lookup is old
     found = null;
-    now += 30_000;
-    await status.track(pane("agy"));
-    expect(told.at(-1)).toEqual(count(0, 0, null));
-    expect(status.countOf("p1")).toBe(0);
-    // a pane at rest on a timer gets no event that would look it up: the poll does, once its lookup is old
-    found = { path, started: null, owner: "1:boot:100" };
-    await status.track(pane("agy"));
+    now += 29_999;
+    status.poll();
+    expect(asked).toBe(1);
+    now += 1;
+    status.poll();
+    await looked();
+    expect(asked).toBe(2);
+    // one lookup that failed drops nothing, and the polls that follow do not ask again at once
+    expect(told).toHaveLength(1);
     expect(status.countOf("p1")).toBe(1);
-    dropped = Promise.withResolvers<void>();
-    found = null;
+    now += 9_999;
     status.poll();
-    expect(lookups).toBe(3);
-    now += 30_000;
+    await looked();
+    expect(asked).toBe(2);
+    // the next one fails too, 40 s after the last that found it: nothing of the pane is held
+    now += 1;
     status.poll();
-    await dropped.promise;
-    expect(lookups).toBe(4);
+    await looked();
+    expect(asked).toBe(3);
     expect(told.at(-1)).toEqual(count(0, 0, null));
     expect(status.countOf("p1")).toBe(0);
+    // let go, the pane is asked for again as any whose session was not found, and held again once it is
+    found = live;
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(3);
+    now += 10_000;
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(4);
+    expect(told.at(-1)).toEqual(count(1, 1, T0, false));
+  });
+
+  it("keeps what a pane holds through one lookup that failed, and takes a miss after a good lookup for a first one", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "a.jsonl");
+    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1, "Timer: 2h, Prompt: x"))}\n`);
+    const live = { path, started: null, owner: "1:boot:100" };
+    let found: typeof live | null = live;
+    let asked = 0;
+    const told: TaskCount[] = [];
+    const resets: string[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async () => { asked += 1; return found; }, onChange: (_, c) => told.push(c), onReset: (id) => resets.push(id), now: () => now });
+    await status.track(pane("agy"));
+    expect(told).toEqual([count(1, 1, T0, false)]);
+    // herdr was busy, or a process read timed out: the timer's process still runs, and its hold stands
+    found = null;
+    now += 30_000;
+    await status.track(pane("agy"));
+    expect(asked).toBe(2);
+    expect(told).toHaveLength(1);
+    expect(status.countOf("p1")).toBe(1);
+    // nobody asks again for ten seconds: a second failure in the same moment would tolerate nothing
+    expect(status.stale("p1")).toBe(false);
+    await status.track(pane("agy"));
+    await status.refresh([pane("agy")]);
+    status.poll();
+    expect(asked).toBe(2);
+    // found again as the same session: nothing was dropped or reset, and the miss is forgotten
+    found = live;
+    now += 10_000;
+    expect(status.stale("p1")).toBe(true);
+    await status.track(pane("agy"));
+    expect(asked).toBe(3);
+    found = null;
+    now += 30_000;
+    await status.track(pane("agy"));
+    expect(asked).toBe(4);
+    expect(told).toHaveLength(1);
+    expect(resets).toEqual([]);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("asks for a session that was not found only each ten seconds over the snapshots, and at once for a status of the pane", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "a.jsonl");
+    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1))}\n`);
+    let found: { path: string; started: null; owner: null } | null = null;
+    let asked = 0;
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async () => { asked += 1; return found; }, onChange: () => undefined, onReset: () => undefined, now: () => now });
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(1);
+    // every snapshot comes here, and each lookup is a herdr call and process reads
+    await status.refresh([pane("agy")]);
+    now += 9_999;
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(1);
+    now += 1;
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(2);
+    // a turn that ends within those ten seconds is held on its task only once its session is known:
+    // the status that ends it looks the pane up now (server/core/status.ts)
+    found = { path, started: null, owner: null };
+    expect(status.stale("p1")).toBe(true);
+    await status.track(pane("agy"));
+    expect(asked).toBe(3);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("asks again by itself for a pane whose lookup failed, whatever it holds", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "updates.jsonl");
+    writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, [["watch", "running", 1]]))}\n`);
+    const session = (value: string): HerdrPane => ({ ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value } } as HerdrPane);
+    const live = { path, started: null, owner: null };
+    let found: typeof live | null = live;
+    const asked: (string | undefined)[] = [];
+    const told: TaskCount[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async (looked) => { asked.push(looked.agent_session?.value); return found; }, onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => now });
+    const looked = lookups(status);
+    await status.track(session("one"));
+    expect(told).toEqual([count(1, 1, T0)]);
+    // a command is held to the hold's limit, so the poll does not look its pane up: a snapshot does
+    found = null;
+    now += 30_000;
+    await status.refresh([session("one")]);
+    expect(asked).toEqual(["one", "one"]);
+    expect(status.countOf("p1")).toBe(1);
+    // no snapshot or status may follow for a while, and the miss is not left to wait for one
+    now += 9_999;
+    status.poll();
+    await looked();
+    expect(asked).toHaveLength(2);
+    found = live;
+    now += 1;
+    status.poll();
+    await looked();
+    expect(asked).toEqual(["one", "one", "one"]);
+    // found, the miss is forgotten and the poll leaves the pane to the snapshots again
+    now += 19 * 60_000;
+    status.poll();
+    await looked();
+    expect(asked).toHaveLength(3);
+    // so a failure long after is a first one, and only the one the poll asks next lets the pane go
+    found = null;
+    await status.refresh([session("one")]);
+    expect(asked).toHaveLength(4);
+    expect(told).toHaveLength(1);
+    now += 10_000;
+    status.poll();
+    await looked();
+    expect(asked).toHaveLength(5);
+    expect(told.at(-1)).toEqual(count(0, 0, null));
+    expect(status.countOf("p1")).toBe(0);
+  });
+
+  it("takes the grok session herdr reports next at once: what the pane held was the session before's", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const file = (name: string, tasks: [string, string, number][]) => {
+      const path = join(root, name);
+      writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, tasks))}\n`);
+      return { path, started: null, owner: null };
+    };
+    const session = (value: string): HerdrPane => ({ ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value } } as HerdrPane);
+    // each session's file is found by its id, as Grok keeps the files of earlier sessions open
+    const stores: Record<string, { path: string; started: null; owner: null } | null> = { one: file("one.jsonl", [["watch", "running", 1]]), two: file("two.jsonl", [["build", "running", 1], ["serve", "running", 1]]) };
+    let busy = false;
+    const asked: (string | undefined)[] = [];
+    const told: TaskCount[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async (looked) => { asked.push(looked.agent_session?.value); return busy ? null : stores[looked.agent_session?.value ?? ""] ?? null; }, onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => now });
+    const looked = lookups(status);
+    await status.track(session("one"));
+    expect(status.countOf("p1")).toBe(1);
+    // one lookup of that session fails, herdr being busy: its count stands
+    busy = true;
+    now += 30_000;
+    await status.refresh([session("one")]);
+    expect(asked).toEqual(["one", "one"]);
+    expect(status.countOf("p1")).toBe(1);
+    // a second later herdr reports another session there: it is looked up now, inside the miss's
+    // interval, and by its own id, not held off nor asked for by the id before
+    busy = false;
+    now += 1000;
+    await status.refresh([session("two")]);
+    expect(asked).toEqual(["one", "one", "two"]);
+    expect(status.countOf("p1")).toBe(2);
+    // nor does the poll ask for the session before any more
+    now += 10_000;
+    status.poll();
+    await looked();
+    expect(asked).toHaveLength(3);
+    // with no miss before it either: the session known is not kept for RESOLVE_MS against herdr's newer word
+    now += 1000;
+    await status.refresh([session("one")]);
+    expect(asked).toEqual(["one", "one", "two", "one"]);
+    expect(status.countOf("p1")).toBe(1);
+    // and a lookup of the newer session that fails lets the one before's count go at once: it is not that session's
+    busy = true;
+    now += 1000;
+    await status.refresh([session("two")]);
+    expect(asked).toHaveLength(5);
+    expect(status.countOf("p1")).toBe(0);
+    expect(told.at(-1)).toEqual(count(0, 0, null));
+    // then asked for as any session that was not found
+    await status.refresh([session("two")]);
+    expect(asked).toHaveLength(5);
+  });
+
+  it("lets a pane go at once when the lookup that failed is another agent's there", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "a.jsonl");
+    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1))}\n`);
+    let found: { path: string; started: null; owner: null } | null = { path, started: null, owner: null };
+    let asked = 0;
+    const told: TaskCount[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async () => { asked += 1; return found; }, onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => now });
+    await status.track(pane("agy"));
+    // one lookup of agy's session failed: its count stands
+    found = null;
+    now += 30_000;
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(2);
+    expect(status.countOf("p1")).toBe(1);
+    // grok runs there now, looked up at once: agy's count and hold are not grok's to keep through a miss
+    await status.refresh([pane("grok")]);
+    expect(asked).toBe(3);
+    expect(status.countOf("p1")).toBe(0);
+    expect(told.at(-1)).toEqual(count(0, 0, null));
+    // and grok's session is asked for as any that was not found
+    await status.refresh([pane("grok")]);
+    expect(asked).toBe(3);
+    now += 10_000;
+    await status.refresh([pane("grok")]);
+    expect(asked).toBe(4);
+  });
+
+  it("gives a status that asked during a lookup that failed one of its own, and holds no snapshot off for a status's lookup of a pane with no session", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "a.jsonl");
+    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1))}\n`);
+    const live = { path, started: null, owner: null };
+    let lookup: () => Promise<typeof live | null> = async () => null;
+    let asked = 0;
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: () => { asked += 1; return lookup(); }, onChange: () => undefined, onReset: () => undefined, now: () => now });
+    // a turn's end looked the pane up and did not find its session: the snapshot that follows asks all
+    // the same, and only its own failure spaces the snapshots after it
+    await status.track(pane("agy"));
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(2);
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(2);
+    // a turn ends while a snapshot's lookup is under way, which then fails: the turn's end is not left
+    // to the snapshots, ten seconds on, when its finish alert may be due
+    now += 10_000;
+    const first = Promise.withResolvers<null>();
+    lookup = () => first.promise;
+    const snapshot = status.refresh([pane("agy")]);
+    lookup = async () => live;
+    await status.track(pane("agy"));
+    expect(asked).toBe(3);
+    first.resolve(null);
+    await snapshot;
+    expect(asked).toBe(4);
+    expect(status.countOf("p1")).toBe(1);
+    // a pane that holds something is not asked for again in the same moment: that would be its second failure
+    now += 30_000;
+    const second = Promise.withResolvers<null>();
+    lookup = () => second.promise;
+    const later = status.refresh([pane("agy")]);
+    lookup = async () => null;
+    await status.track(pane("agy"));
+    second.resolve(null);
+    await later;
+    expect(asked).toBe(5);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("forgets a lookup that failed once the pane ended or runs another agent", async () => {
+    let asked = 0;
+    const status = new AgentTaskStatus({ resolve: async () => { asked += 1; return null; }, onChange: () => undefined, onReset: () => undefined, now: () => T0 });
+    await status.refresh([pane("agy")]);
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(1);
+    // grok there now is another session to find
+    await status.refresh([pane("grok")]);
+    expect(asked).toBe(2);
+    await status.refresh([pane("claude")]);
+    await status.refresh([pane("grok")]);
+    expect(asked).toBe(3);
+    status.forget("p1");
+    await status.refresh([pane("grok")]);
+    expect(asked).toBe(4);
   });
 });
 
