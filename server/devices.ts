@@ -35,6 +35,18 @@ export class PairingRateLimitedError extends Error {
   }
 }
 
+/**
+ * The paired device a request came from is paired no more: it was revoked while the request was on its way (a relay
+ * round trip, a look-up of who asks). It gets no pairing code: a code held by a device that is already gone is one
+ * no revoke ends.
+ */
+export class DeviceGoneError extends Error {
+  readonly code = "unauthorized";
+  constructor() {
+    super("this device is no longer paired");
+  }
+}
+
 /** Canonical base64url SPKI containing a public P-256 key, never private key material. */
 function isRelayPublicKey(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
@@ -271,10 +283,11 @@ export class DeviceStore {
   private gateClosedAt: string | null = null;
   /**
    * `remote`: started through the relay, so it never lets a removed key back in; `startedBy`: the account
-   * member that started it there, whose addition the new device then is
+   * member that started it there, whose addition the new device then is; `holders`: the paired devices that
+   * started it or were handed it, on any transport. It ends when one of them is revoked (`revoke`)
    */
   /** `open`: started by a request the open LAN alone let in (access.ts `via: "open"`), so it ends when the gate closes */
-  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean } | null = null;
+  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; holders: Set<string> } | null = null;
   private codeIssues: number[] = [];
   private readonly relayFailures: Record<PairingFailurePath, { at: number[]; blockedUntil: number }> = {
     code: { at: [], blockedUntil: 0 }, account: { at: [], blockedUntil: 0 }, lan: { at: [], blockedUntil: 0 },
@@ -480,18 +493,33 @@ export class DeviceStore {
     return { code: pending.code, expires_at: new Date(pending.expires).toISOString() };
   }
 
-  /** A fresh six-digit code, replacing any code still pending. */
-  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
+  /**
+   * A fresh six-digit code, replacing any code still pending. `by`: the paired device whose request started it
+   * (null for this PC itself), which holds it from then on. One that is paired no more by now starts nothing
+   * (DeviceGoneError), and the code pending stays as it was.
+   */
+  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; by?: string | null } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
     this.assertWritable();
+    const { by = null, ...how } = from;
+    for (const id of [by, how.startedBy]) if (id !== null && !this.has(id)) throw new DeviceGoneError();
     this.pruneUnconfirmedFirstPairs(now);
     this.codeIssues = this.codeIssues.filter((at) => now - at < PAIRING_WINDOW_MS);
     if (this.codeIssues.length >= 10) throw new PairingRateLimitedError(Math.ceil(((this.codeIssues[0] ?? now) + PAIRING_WINDOW_MS - now) / 1000));
     this.codeIssues.push(now);
     const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-    this.pending = { code, expires: now + CODE_TTL_MS, attempts: 0, ...from };
+    this.pending = { code, expires: now + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)) };
     const started = { code, expires_at: new Date(this.pending.expires).toISOString() };
     for (const listener of this.codeStarts) listener();
     return started;
+  }
+
+  /**
+   * The paired device `id` is handed the code pending (a relay offer it asked for carries it): it holds it too.
+   * Called before the code leaves this PC: a device that is paired no more by now is handed nothing (DeviceGoneError).
+   */
+  holdPairing(id: string): void {
+    if (!this.has(id)) throw new DeviceGoneError();
+    this.pending?.holders.add(id);
   }
 
   /**
@@ -791,6 +819,9 @@ export class DeviceStore {
     this.save(next, gate);
     this.devices = next;
     this.gateClosedAt = gate;
+    // A code the device started or was handed goes with it. Whoever it passed the code to would otherwise pair after
+    // it was removed, on a PC in no account with nobody approving (a member's code already needs its member)
+    if (this.pending?.holders.has(id)) this.endPairing();
     const listeners = this.revocations.get(id);
     this.revocations.delete(id);
     for (const close of listeners ?? []) close();
@@ -1111,10 +1142,14 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
       const remote = access.level === "full" && access.via === "relay";
       // its starter is recorded as the new device's adder; on a PC in an account that starter must stay a member
       const startedBy = remote ? access.device?.id ?? null : null;
+      // the paired device that asks, through the relay or at this PC's own address: the code goes when it is revoked
+      const by = access.level === "full" ? access.device?.id ?? null : null;
       const open = access.level === "full" && access.via === "open";
-      return jsonResponse(store.startPairing(Date.now(), { remote, startedBy, memberRequired: remote && store.account() !== null, ...(open ? { open } : {}) }), 200, { "cache-control": "no-store" });
+      return jsonResponse(store.startPairing(Date.now(), { remote, startedBy, memberRequired: remote && store.account() !== null, by, ...(open ? { open } : {}) }), 200, { "cache-control": "no-store" });
     } catch (error) {
       if (error instanceof PairingRateLimitedError) return jsonResponse({ error: { code: error.code, message: error.message } }, 429, { "retry-after": String(error.retryAfter), "cache-control": "no-store" });
+      // revoked since this request was let in: answered as its next request will be
+      if (error instanceof DeviceGoneError) return jsonResponse({ error: { code: error.code, message: error.message } }, 401, { "cache-control": "no-store" });
       throw error;
     }
   }
@@ -1148,9 +1183,10 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
   setRequestRoute("/api/devices/:device_id");
   if (!/^[0-9a-f]{16}$/.test(id)) return badRequest("invalid_device", "no such device");
   if (request.method === "DELETE") {
-    // `x-ovis-unless-account`: the caller removes the device because that account does not vouch for it (`ovis add`,
+    // `x-ovis-unless-account`: the caller removes the device because it is no member of that account (`ovis add`,
     // of a device its code let in). One that became a member of it since the caller read the list stays. The check
-    // and the revoke are one step here, so no link comes between them
+    // and the revoke are one step here, so no link comes between them. Membership is what the row says: a first
+    // member linked itself and named its account, which nothing here proves (docs/account.md, rule 4)
     const unless = request.headers.get("x-ovis-unless-account");
     if (unless !== null && store.isMemberOf(id, unless)) return jsonResponse({ error: { code: "account_member", message: "that device is a member of the account by now" } }, 409);
     if (!store.revoke(id, access.level === "full" && access.device ? { device_id: access.device.id, label: access.device.label } : "pc")) return jsonResponse({ error: { code: "not_found", message: "no such device" } }, 404);

@@ -1,9 +1,13 @@
+import { DeviceGoneError } from "../devices.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { updateRequestAllowed } from "../update-api.ts";
 
-/** Drive authority and the outer origin gate are shared with Portal in dispatch.ts. */
-export async function handleRelayRequest(request: Request, pathname: string, context: ServerContext): Promise<Response> {
+/**
+ * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
+ * the request came from, null for this PC itself: it holds the pairing code an offer or a typed code gives it.
+ */
+export async function handleRelayRequest(request: Request, pathname: string, context: ServerContext, caller: string | null = null): Promise<Response> {
   const service = context.services.relay;
   const reply = (body: unknown, status = 200) => jsonResponse(body, status, { "cache-control": "no-store" });
   const fail = (code: string, message: string, status: number) => reply({ error: { code, message } }, status);
@@ -57,12 +61,12 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (service.status().phase === "off" || service.status().blocked) return fail("relay_off", "Start the relay before pairing.", 409);
         // While connecting, a client the offer reaches waits at the relay for this PC; in error nothing may answer it.
         if (service.status().phase === "error") return fail("relay_offline", "The relay is not reachable; wait until it is online before pairing.", 409);
-        return reply(service.offer());
+        return reply(service.offer(caller));
       case "/api/relay/code": {
         setRequestRoute("/api/relay/code");
         if (service.status().phase === "off" || service.status().blocked) return fail("relay_off", "Start the relay before pairing.", 409);
         if (service.status().phase === "error") return fail("relay_offline", "The relay is not reachable; wait until it is online before pairing.", 409);
-        const code = await service.pairCode();
+        const code = await service.pairCode(caller);
         if (code === null) return fail("code_unavailable", "Pairing with a typed code works through Ovis's relay only; scan the QR code instead.", 409);
         return reply(code);
       }
@@ -109,5 +113,9 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       }
       default: return fail("method_not_allowed", "Unknown relay action.", 405);
     }
-  } catch (error) { return errorResponse(error); }
+  } catch (error) {
+    // the device that asked for an offer or a code was revoked while its request was on its way: it is handed none
+    if (error instanceof DeviceGoneError) return fail(error.code, error.message, 401);
+    return errorResponse(error);
+  }
 }

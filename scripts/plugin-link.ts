@@ -117,6 +117,12 @@ const SWEEP_MS = 4_000;
  * brings that account's other devices in meanwhile.
  */
 const CLEAR_ROUNDS = 4;
+/**
+ * How often one such read is tried when this PC does not answer it, and how long between two tries, before the
+ * devices count as unreadable: what may still be paired is then not known, and is said so.
+ */
+const CLEAR_READS = 3;
+const CLEAR_RETRY_MS = 500;
 /** The terminal's other screen: what is drawn there is gone, scrollback and all, once it is left. */
 const SCREEN_ON = "\x1b[?1049h";
 const SCREEN_OFF = "\x1b[?1049l";
@@ -823,8 +829,12 @@ interface Joining {
  * in the account that signed in, with that account's other devices in, and names the device that added it.
  *
  * The code admits whoever holds it, through the relay or at this PC's own address, so every device that came since
- * the first code is one it let in. Only one that is a member of the account that signed in here is vouched for (that
- * account's key signed its link); any other is named and asked about, and removed unless the person types keep,
+ * the first code is one it let in. One whose row names the account that signed in here is taken as that account's:
+ * it is not asked about. That is the device's own word, not a proof: the first member of an account on a PC links
+ * itself, by a record its own key signed, and names its account in it (docs/account.md, rule 4), and the account
+ * service keeps no device keys to check that against (rule 7). A changed client that learned the account's id could
+ * so pass as its device (docs/account.md, "What this does not protect against"). Any other device is named and asked
+ * about, and removed unless the person types keep,
  * whether or not this PC joined that account meanwhile by another device. Nothing else keeps one: a run that ends
  * with such a device unanswered for (Ctrl+C, a SIGTERM, the terminal closing, the 30 minutes, an error) removes it.
  * A PC that ended in another account than the one that signed in was put there by a device the code let in, which
@@ -932,11 +942,14 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     const decoded = decodeOffer(offer.url);
     if (decoded === null) throw new LocalError("The relay's pairing link did not parse.");
     shown = decoded.code ?? null;
+    offered = true;
     card = { url: offer.url, typed: typed?.code ?? null, refused, serverId: typed?.server_id ?? decoded.server_id, until: Math.min(typed === null ? Infinity : Date.parse(typed.expires_at), Date.parse(offer.expires_at)) };
     draw();
   };
   // a device got in, or this PC joined an account: from then on no code is shown again, whatever becomes of that device
   let over = false;
+  // a code was shown: from then on a device may have paired with it
+  let offered = false;
   // when each device that came since `known` was first seen
   const seen = new Map<string, number>();
   // the ones the person answered for: kept, or removed (`unremoved`: one of those could not be)
@@ -948,7 +961,8 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   /**
    * The devices the code let in that nobody vouched for: not in `known`, not answered for, and no member of the
    * account that signed in. A row tells its own account, so one that linked itself counts as a member from the list
-   * alone, also when the account was read before it did. A member of any other account is vouched for by nobody here.
+   * alone, also when the account was read before it did. That account is what the device named when it linked
+   * itself, which nothing here can check (see above). A member of any other account is vouched for by nobody here.
    */
   const unvouched = (list: readonly Device[]): Device[] => list.filter((device) => !known.has(device.id) && !settled.has(device.id) && device.account !== joining.signedIn);
   /**
@@ -971,31 +985,55 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     }
     return outcomes;
   };
+  /** The devices, asked for again a few times when this PC does not answer (within `within`, as the run ends); else why not. */
+  const listed = async (within?: AbortSignal): Promise<Device[] | { readonly unread: string }> => {
+    for (let attempt = 1; ; attempt++) {
+      try { return await devices(within); } catch (error) {
+        if (within === undefined && signal.aborted) throw error;
+        const unread = error instanceof Error ? error.message : String(error);
+        if (attempt >= CLEAR_READS) return { unread };
+        try { await wait(CLEAR_RETRY_MS, within ?? signal); } catch (stopped) {
+          if (within === undefined) throw stopped;
+          return { unread };
+        }
+      }
+    }
+  };
   /**
    * Removes every device nobody vouched for, without a question, looking again until none is left: one that took the
    * code just before it was taken back shows only now, and a member of another account brings that account's other
-   * devices in meanwhile. `from`: the devices as just read; null reads them, and falls back on those of the last look.
+   * devices in meanwhile. `from`: the devices as just read; null reads them. `open`: why it cannot be told that none
+   * is left, null when the last read showed none. The devices could not be read (`unread`; those of the last look
+   * are removed all the same), or more kept coming than it looks again for (`more`).
    */
-  const clear = async (from: readonly Device[] | null, within?: AbortSignal): Promise<Outcome[]> => {
+  const clear = async (from: readonly Device[] | null, within?: AbortSignal): Promise<{ readonly outcomes: Outcome[]; readonly open: { readonly unread: string } | "more" | null }> => {
     const outcomes: Outcome[] = [];
     const tried = new Set<string>();
     let list = from;
-    for (let round = 0; round < CLEAR_ROUNDS; round++) {
+    let open: { readonly unread: string } | "more" | null = null;
+    for (let round = 0; ; round++) {
       if (list === null) {
-        try { list = await devices(within); } catch (error) {
-          if (within === undefined && signal.aborted) throw error;
-          // a PC that does not answer just now: what was done so far stands, and the first round tries the last look's
+        const read = await listed(within);
+        if (Array.isArray(read)) {
+          list = read;
+          open = null;
+        } else {
+          open = read;
           if (round > 0) break;
           list = strays;
         }
       }
       const targets = unvouched(list).filter((device) => !tried.has(device.id));
       if (targets.length === 0) break;
+      if (round >= CLEAR_ROUNDS) {
+        open = "more";
+        break;
+      }
       for (const device of targets) tried.add(device.id);
       outcomes.push(...await remove(targets, within));
       list = null;
     }
-    return outcomes;
+    return { outcomes, open };
   };
   // the person is asked what becomes of those. `key`: which devices, and whether this PC is in an account; `alone`:
   // each came through the relay and left this PC in no account. `shownAt`: when the question first was on the screen
@@ -1004,6 +1042,9 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   let reply: string | null = null;
   let added = false;
   let enrollingSaid = false;
+  // devices were removed on the person's answer with this PC in no account: what the run ends with once a look
+  // taken after that removal still finds it in none
+  let parting: string | null = null;
   // the PC's own server did not answer the last look, or gave no code
   let away = false;
   let codeless = false;
@@ -1038,7 +1079,13 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
    * minutes, an error): they are removed, the ones still in their 15 seconds or never asked about among them. Only
    * the word keep keeps a device nobody vouched for. What is said of it; it never throws.
    */
-  const sweep = async (): Promise<string> => removals(await clear(null, AbortSignal.timeout(SWEEP_MS)), true);
+  const sweep = async (): Promise<string> => {
+    const { outcomes, open } = await clear(null, AbortSignal.timeout(SWEEP_MS));
+    // before any code was shown nothing paired with one: a PC that does not answer then leaves nothing to warn of
+    const left = open === null || !offered ? ""
+      : `${open === "more" ? " More devices paired with this PC while these were removed" : ` The devices paired with this PC could not be read as the run ended (${open.unread})`}: one that paired since the code was shown may still be paired. Open Settings → Devices and PCs on this PC and revoke any device there that is not yours.`;
+    return `${removals(outcomes, true)}${left}`;
+  };
   /** The run ends unfinished: the code goes back and the devices nobody kept go, then `text` is said, with what went. */
   const stop = async (text: string): Promise<number> => {
     const ended = await retract();
@@ -1078,18 +1125,24 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           // Another account than the one that signed in: a device the code let in put this PC there, or brought a
           // device paired before to do it. Whoever came since the first code goes, with no question: nobody here
           // vouches for that account, and this PC is out of it again once its members here are gone
-          const outcomes = await clear(list);
+          const { outcomes, open } = await clear(list);
           const said = `This PC joined another Ovis account (${shortId(account)})${label === null ? "" : `, added by ${label}`}, not the one you signed in to (${shortId(joining.signedIn)}).${removals(outcomes, false)}`;
-          // where that leaves this PC
-          let left: string | null;
-          let rows: readonly Device[];
-          try {
-            left = (await joining.status()).account;
-            rows = await devices();
-          } catch (error) {
-            if (signal.aborted || !(error instanceof AwayError || error instanceof LocalError)) throw error;
-            // what was removed is said all the same: the next run tells where this PC is
-            say(`${said} Whether this PC is still in that account could not be read just now (${error.message}). Run ovis add again to see.\n`);
+          // where that leaves this PC. When its devices or its account cannot be read, more of that account's devices
+          // may be paired than were removed: that is said, with the way to end them, rather than left to the next run
+          let unread = open !== null && open !== "more" ? open.unread : null;
+          let left: string | null = account;
+          let rows: readonly Device[] = [];
+          if (unread === null) {
+            try {
+              left = (await joining.status()).account;
+              rows = await devices();
+            } catch (error) {
+              if (signal.aborted || !(error instanceof AwayError || error instanceof LocalError)) throw error;
+              unread = error.message;
+            }
+          }
+          if (unread !== null) {
+            say(`${said} What is paired with this PC now could not be read (${unread}): devices of that account may still be paired. Open Settings → Devices and PCs on this PC and choose Revoke all if that account is not yours.\n`);
             return 1;
           }
           // a device of the account that signed in, paired before, whose link the other account kept out: it got in
@@ -1101,7 +1154,11 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           if (left === null) {
             // its relay pass is asked under the account that signed in, whatever a member of the other one named
             await joining.name();
-            say(`${said} This PC is in no account again. Run ovis add again, and scan the code with a device signed in to the account you signed in to here.\n`);
+            // more kept pairing than was looked again for: the last of them is paired still, and the next run would
+            // take it for one this PC had before
+            say(open === "more"
+              ? `${said} This PC is in no account again, but more devices paired with it while these were removed, and one may still be paired. Open Settings → Devices and PCs on this PC and revoke any device there that is not yours, then run ovis add again.\n`
+              : `${said} This PC is in no account again. Run ovis add again, and scan the code with a device signed in to the account you signed in to here.\n`);
             return 1;
           }
           // held there by a device paired before this run, or by one that could not be removed. Its relay pass is not
@@ -1110,6 +1167,14 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           const unlisted = await joining.unlist();
           say(`${said} This PC is still in that account${holders.length === 0 ? "" : `, by ${labels(holders)}, paired before this run`}. ${unlisted ? "It was taken off the list of the account you signed in to." : "It could not be taken off the list of the account you signed in to; remove it there."} If that account is not yours, open Settings → Devices and PCs on this PC and choose Revoke all.\n`);
           return 1;
+        }
+        // the look after a removal that left this PC in no account: still in none, and nobody left to ask about
+        if (parting !== null) {
+          if (account !== null) parting = null;
+          else if (strays.length === 0) {
+            say(parting);
+            return 1;
+          }
         }
         added = account !== null;
         // in the account, while the device that added it still brings in the account's other devices
@@ -1184,8 +1249,16 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           }
           for (const device of asked.devices) if (!joined.has(device.id)) settled.add(device.id);
           strays = unvouched(list);
-          if (account === null && joined.size === 0) {
-            out(asked.alone ? `Sign in on ${asked.devices.length === 1 ? "that device" : "one of those devices"}, then run ovis add again.\n` : "This PC is in no account yet. Run ovis add again.\n");
+          const parted = asked.alone ? `Sign in on ${asked.devices.length === 1 ? "that device" : "one of those devices"}, then run ovis add again.\n` : "This PC is in no account yet. Run ovis add again.\n";
+          if (!keep) {
+            // Nothing ends on the look taken before a removal. A device that paired, or an account this PC joined,
+            // between that look and the DELETE shows only in the next one, which comes at once: the removed device
+            // may have linked itself and brought its account's devices in, or passed a code on, as it went
+            parting = account === null && joined.size === 0 ? parted : null;
+            continue;
+          }
+          if (account === null) {
+            out(parted);
             return 1;
           }
         }

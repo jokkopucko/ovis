@@ -552,14 +552,14 @@ export class RelayService {
    * A code to type on the device being paired (server/relay/pair-code.ts), replacing any showing; null
    * when this PC's relay has none (it is not Ovis's own).
    */
-  async pairCode(): Promise<{ code: string; expires_at: string; server_id: string } | null> {
+  async pairCode(by: string | null = null): Promise<{ code: string; expires_at: string; server_id: string } | null> {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     const relay = this.options.pairCodeRelay ?? (this.relay === GLOBAL_RELAY ? GLOBAL_RELAY : null);
     if (relay === null) return null;
     // the typed code's host carries a pass as the links do: only one its own service's passes go to this relay
     this.pairCodes ??= new RelayPairCodes({ relay, devices: this.services.devices, offer: (code) => this.offerFor(code), identity: () => this.identity!, connect: this.options.connect,
       pass: () => this.passFor(relay) });
-    return { ...await this.pairCodes.mint(), server_id: this.identity.server_id };
+    return { ...await this.pairCodes.mint(by), server_id: this.identity.server_id };
   }
 
   /** Takes the code showing off the relay. */
@@ -567,9 +567,13 @@ export class RelayService {
     this.pairCodes?.cancel();
   }
 
-  offer(): { url: string; expires_at: string } {
+  /** `by`: the paired device that asked, null for this PC itself. It holds the code the offer carries, started here or pending already. */
+  offer(by: string | null = null): { url: string; expires_at: string } {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
-    const pairing = this.services.devices.activePairing() ?? this.services.devices.startPairing();
+    const devices = this.services.devices;
+    const pairing = devices.activePairing() ?? devices.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by });
+    // before the code leaves this PC: a device revoked by now is handed none (DeviceGoneError)
+    if (by !== null) devices.holdPairing(by);
     return {
       url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key,
         relay: this.advertised, code: pairing.code, ...offerName() }, this.app),

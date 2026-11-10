@@ -129,6 +129,13 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   directly on the PC (any window there with drive access, as before), or by a drive account member
   through the relay (`403 account_required` for any other relay device, `read_only` for a watch
   device). A PC in no account keeps letting any driving relay device start one, as before.
+- **A pairing code ends with the device that holds it.** A paired device holds a code it started
+  (`POST /api/devices/pair/start`, through the relay or at the PC's own address) or was handed
+  (`POST /api/relay/offer`, `POST /api/relay/code`). Revoking that device, on the PC or by an
+  account `remove`, ends the code and the typed code bound to it: whoever the device passed the
+  code to cannot pair after it is gone. A device revoked while its request for a code is on its
+  way starts none and is handed none (`401 unauthorized`). A code the PC itself started is held
+  by no device.
 - **A code the PC's own terminal prints admits whoever scans it**, with no approval on the PC:
   `bun scripts/plugin.ts add` ends in one QR code, and a signed-in device that scans it links
   itself as the PC's first member, so the PC joins that device's account. The code is therefore
@@ -511,7 +518,9 @@ is what authenticates the PC.
 - `DELETE /api/devices/{id}` with the header `x-ovis-unless-account: {account}` removes the device
   only while it is no member of that account, and answers `409 account_member` when it is; the
   check and the removal are one step. `ovis add` removes a device its code let in this way, so one
-  that linked itself to the account that signed in since the list was read stays.
+  that linked itself to the account that signed in since the list was read stays. Membership is
+  what the row says, which for an account's first member on a PC is that device's own claim
+  ([What this does not protect against](#what-this-does-not-protect-against)).
 
 ## Account service API
 
@@ -772,6 +781,19 @@ with "continue only if you started this on your own PC".
   holds for a sign-in made in a browser on a PC's own address: that page's script is the PC's, so a
   compromised PC can use the sign-in kept there. Its account key is linked to no PC (a browser
   paired with a code holds a cookie), so its signatures admit nobody.
+- **A device that names an account it does not hold.** An account's first member on a PC links
+  itself: its `link` is signed by the device's own key and names the account (rule 4), and the
+  account service holds no device keys to check that against (rule 7). So `ovis add`, which takes
+  a device whose row names the signed-in account as that account's, cannot tell the owner's phone
+  from a changed client that pairs with the code and names that account's id. The id is no
+  secret on the PC: a device with drive access can read it there. Such a device is not asked
+  about, and the command ends well, naming it as the device that added the PC. What still shows
+  it: every admission is announced on every device connected to the PC, and the command prints
+  the device's name.
+- **A code a driving device has the PC itself start.** A device that drives (one the QR code of
+  `ovis add` let in, say) can have the PC start a pairing code through its loopback address from
+  a terminal pane, as the PC's own user: that code is held by no device, so it survives the
+  device's removal.
 - **Someone who gets a person to type their device code at GitHub** (device-code phishing, true of
   every RFC 8628 sign-in) gets a sign-in to that person's account: they can list, rename and remove
   its PCs in the directory, fill mailboxes, post admissions and spend the ring budget. They still

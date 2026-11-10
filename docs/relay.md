@@ -356,10 +356,16 @@ it is off, and wait until it is online.
     (`POST /api/account/relay-account`), and the command fails with **Run ovis add again**. When
     a device paired before this run holds this PC in that account, or a device could not be
     removed, the command says so, takes this PC off the list of the account that signed in and
-    names **Revoke all** in Settings → Devices and PCs. It never names the other account for the
-    relay pass.
-  - Every other device that came since the first code and is not a member of the account that
-    signed in got in by the code alone, and nobody vouched for it: the command names it and asks
+    names **Revoke all** in Settings → Devices and PCs. When this PC's devices or its account
+    cannot be read after the removal, or more devices keep pairing than the command looks again
+    for (four times), it says that one **may still be paired** and where to revoke it, also when
+    this PC is out of that account again. It never names the other account for the relay pass.
+  - A device whose row names the account that signed in is taken as that account's and is not
+    asked about. That is the device's own word, not a proof: an account's first member on a PC
+    links itself, and names its account in a record its own key signed
+    ([What this does not protect against](account.md#what-this-does-not-protect-against)).
+  - Every other device that came since the first code got in by the code alone: the command names
+    it and asks
     **Keep that device? Type keep to keep it, or press Enter to remove it:**, whether this PC is
     in no account or joined the account by another device meanwhile. One paired through the relay
     gets 15 seconds first, in which a signed-in device links itself; one paired at this PC's own
@@ -369,9 +375,16 @@ it is off, and wait until it is online.
     for a device still in its 15 seconds) remove it (`DELETE /api/devices/{id}`), and the command
     says which devices went. The removal carries `x-ovis-unless-account` with the account that
     signed in, so a device that linked itself in that very moment stays
-    ([PC API](account.md#pc-api)). With this PC in no account the command then fails with **Sign
+    ([PC API](account.md#pc-api)). A pairing code the removed device started, or was handed, ends
+    with it, so nobody pairs with that code afterwards. The command never ends on what it read
+    before a removal: it looks at this PC's account and devices once more, so a device that paired
+    or an account this PC joined while the removal was on its way is dealt with as above. With this
+    PC still in no account it then fails with **Sign
     in on that device, then run ovis add again**; with this PC in the account it ends as above,
-    and fails only when the device could not be removed. Only a line typed at least a second and
+    and fails only when the device could not be removed. As a run ends, this PC's devices are read
+    up to three times. When they cannot be read, or more keep pairing than the command looks again
+    for, it removes the devices it knew of and says that one **may still be paired**, and where to
+    revoke it (Settings → Devices and PCs on this PC). Only a line typed at least a second and
     a half after the question showed answers it. And the first line that comes after a question
     left the screen unanswered (other devices to ask about, this PC joined an account meanwhile,
     or the device became a member) answers nothing, whenever it comes and whatever it says: what

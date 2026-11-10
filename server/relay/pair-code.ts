@@ -99,7 +99,7 @@ export class RelayPairCodes {
    * A new code, replacing any code still showing. It starts a fresh six-digit code (the QR code then
    * shows the same one) and resolves once the relay holds its nameplate.
    */
-  async mint(): Promise<{ code: string; expires_at: string }> {
+  async mint(by: string | null = null): Promise<{ code: string; expires_at: string }> {
     this.cancel();
     const generation = this.generation;
     const { devices } = this.options;
@@ -124,7 +124,8 @@ export class RelayPairCodes {
       }
       let pairing: { code: string; expires_at: string };
       this.binding = true;
-      try { pairing = devices.startPairing(); }
+      // `by`: the paired device that asked for the code, which holds the six digits behind it (DeviceStore.revoke)
+      try { pairing = devices.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by }); }
       catch (error) { this.finish(current); throw error; }
       finally { this.binding = false; }
       current.bound = pairing;

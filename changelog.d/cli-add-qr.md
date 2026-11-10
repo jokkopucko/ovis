@@ -13,5 +13,7 @@
   removes it (a line that comes within a second and a half of the question, and the first line
   after the question changed, answer nothing and it is asked again). When the PC ended in another
   account than the one that signed in, every device that came since the code was shown is removed
-  without a question, and the command fails. `ovis add --approve` keeps the earlier way: the
-  adding device's request is approved in the terminal by typing its six digits.
+  without a question, and the command fails. When the PC's devices cannot be read as the run
+  ends, the command says that one may still be paired and where to revoke it. `ovis add
+  --approve` keeps the earlier way: the adding device's request is approved in the terminal by
+  typing its six digits.

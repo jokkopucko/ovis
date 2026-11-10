@@ -1903,8 +1903,34 @@ describe("ovis link, on the PC itself", () => {
     });
     expect(unread.code).toBe(1);
     expect(unread.revoked).toEqual([PHONE.id]);
-    expect(unread.out.at(-1)).toBe("This PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone paired with this PC since the code was shown and was removed. Whether this PC is still in that account could not be read just now (/api/account/status: internal error (y)). Run ovis add again to see.\n");
+    expect(unread.out.at(-1)).toBe("This PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone paired with this PC since the code was shown and was removed. What is paired with this PC now could not be read (/api/account/status: internal error (y)): devices of that account may still be paired. Open Settings → Devices and PCs on this PC and choose Revoke all if that account is not yours.\n");
+    // nor can it be told whether the account's member brought more of its devices in, when the devices cannot be read again
+    let cut = false;
+    let again = 0;
+    const blind = await scanning({
+      step: (state, looks) => { if (looks === 2) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }]; } },
+      revoke: () => { cut = true; return undefined; },
+      refuse: (path) => { if (cut && path === "/api/devices") { again++; throw new TypeError("connection refused"); } return undefined; },
+    });
+    expect(blind.code).toBe(1);
+    expect(blind.revoked).toEqual([PHONE.id]);
+    expect(again).toBe(3);
+    expect(blind.out.at(-1)).toBe("This PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone paired with this PC since the code was shown and was removed. What is paired with this PC now could not be read (/api/devices: the Ovis on this PC did not answer (connection refused)): devices of that account may still be paired. Open Settings → Devices and PCs on this PC and choose Revoke all if that account is not yours.\n");
     expect(unread.service.pcs("acct_1").length).toBe(1);
+  });
+
+  it("says that a device may still be paired when more keep pairing than it looks again for, also once the PC is out of the other account", async () => {
+    // the other account's phone goes at once, and with it the PC is in no account again; but a device pairs for
+    // each one removed (with a code that was passed on, say), and the last of them is still paired
+    let came = 0;
+    const { code, out, revoked, named } = await scanning({
+      step: (state, looks) => { if (looks === 2) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }]; } },
+      revoke: (state) => { came++; state.devices = [...state.devices, { ...DIRECT, id: `00000000000000d${came}`, label: `Stray ${came}` }]; return undefined; },
+    });
+    expect(code).toBe(1);
+    expect(revoked).toEqual([PHONE.id, "00000000000000d1", "00000000000000d2", "00000000000000d3"]);
+    expect(out.at(-1)).toBe("This PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone, Stray 1, Stray 2, Stray 3 paired with this PC since the code was shown and were removed. This PC is in no account again, but more devices paired with it while these were removed, and one may still be paired. Open Settings → Devices and PCs on this PC and revoke any device there that is not yours, then run ovis add again.\n");
+    expect(named.filter((account) => account !== "acct_1")).toEqual([]);
   });
 
   it("goes on when a device of the account that signed in links itself as the other account's devices go", async () => {
@@ -2256,6 +2282,53 @@ describe("ovis link, on the PC itself", () => {
     expect(told.code).toBe(0);
   });
 
+  it("ends on a look taken after the removal, not the one before it: what came in between is seen", async () => {
+    // asked about and removed, but as its removal was on its way it linked itself to an account of its own and
+    // brought that account's laptop in
+    const LAPTOP: Row = { id: "00000000000000e5", label: "Mallory's laptop", role: "drive", created_at: "2026-11-06T12:00:50.000Z", last_seen_at: null, current: false, via_relay: true, account: "acct_2", added_by: PHONE.id };
+    const elsewhere = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer(""); },
+      revoke: (state, id) => { if (id === PHONE.id) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }, LAPTOP]; } return undefined; },
+    });
+    expect(elsewhere.revoked).toEqual([PHONE.id, LAPTOP.id]);
+    expect(elsewhere.out.slice(-2)).toEqual([
+      "Removed.\n",
+      "This PC joined another Ovis account (acct_2), not the one you signed in to (acct_1). Mallory's laptop paired with this PC since the code was shown and was removed. This PC is in no account again. Run ovis add again, and scan the code with a device signed in to the account you signed in to here.\n",
+    ]);
+    expect(elsewhere.code).toBe(1);
+    // with this PC in the account: a device that paired as the other was removed is asked about, not passed over
+    const owner: Row = { ...OLD, account: "acct_1" };
+    const between = await scanning({
+      step: (state, looks) => { if (looks === 2) { state.account = "acct_1"; state.devices = [owner, PHONE]; } },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer(""); },
+      revoke: (state, id) => { if (id === PHONE.id) state.devices = [...state.devices, DIRECT]; return undefined; },
+    });
+    expect(between.revoked).toEqual([PHONE.id, DIRECT.id]);
+    expect(between.out.slice(-4)).toEqual([
+      "Removed.\n",
+      "Tailnet laptop paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
+      "Removed.\n",
+      "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n",
+    ]);
+    expect(between.code).toBe(0);
+    // and with this PC in no account: the run does not end while a device is left to ask about
+    const more = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer(""); },
+      revoke: (state, id) => { if (id === PHONE.id) state.devices = [...state.devices, DIRECT]; return undefined; },
+    });
+    expect(more.revoked).toEqual([PHONE.id, DIRECT.id]);
+    expect(more.out.slice(-5)).toEqual([
+      "Removed.\n",
+      "Tailnet laptop paired with this PC at its own address, not through the relay.\n",
+      "Tailnet laptop paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
+      "Removed.\n",
+      "This PC is in no account yet. Run ovis add again.\n",
+    ]);
+    expect(more.code).toBe(1);
+  });
+
   it("drops the line begun at a question that changed also when another line came in the look that changed it", async () => {
     const owner: Row = { ...OLD, account: "acct_1" };
     const NEXT = "Hako's iPhone paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ";
@@ -2387,6 +2460,74 @@ describe("ovis link, on the PC itself", () => {
       refuse: (path) => { if (halt?.signal.aborted === true && path === "/api/devices") throw new TypeError("connection refused"); return undefined; },
     });
     expect(unlisted.revoked).toEqual([PHONE.id]);
+  });
+
+  it("says that devices may still be paired when this PC's devices cannot be read as the run ends, after trying again", async () => {
+    const UNREAD = (why: string) => ` The devices paired with this PC could not be read as the run ended (${why}): one that paired since the code was shown may still be paired. Open Settings → Devices and PCs on this PC and revoke any device there that is not yours.\n`;
+    // a device took the code after the last look that was answered, then the run is stopped and this PC answers no more
+    let halt: AbortController | null = null;
+    let reads = 0;
+    const silent = await scanning({
+      step: (state, looks, _elapsed, stop) => { halt = stop; if (looks === 2) { state.devices = [OLD, PHONE]; stop.abort(); } },
+      refuse: (path) => {
+        if (halt?.signal.aborted !== true || path !== "/api/devices") return undefined;
+        reads++;
+        throw new TypeError("connection refused");
+      },
+    });
+    expect(silent.code).toBe(1);
+    expect(silent.revoked).toEqual([]);
+    // read three times before it is given up on
+    expect(reads).toBe(3);
+    expect(silent.out.at(-1)).toBe(`Stopped. Run ovis add again to add this PC.${UNREAD("connection refused")}`);
+    // one that was asked about is removed all the same, and what else may be paired is still not known
+    let asked: AbortController | null = null;
+    const named = await scanning({
+      step: (state, looks, _elapsed, stop) => { asked = stop; if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, _answer, stop) => { if (text.includes("Keep that device?")) stop.abort(); },
+      refuse: (path) => { if (asked?.signal.aborted === true && path === "/api/devices") throw new TypeError("connection refused"); return undefined; },
+    });
+    expect(named.revoked).toEqual([PHONE.id]);
+    expect(named.out.at(-1)).toBe(`\nStopped. Run ovis add again to add this PC. Hako's iPhone paired with this PC since the code was shown and was removed: nobody kept it.${UNREAD("connection refused")}`);
+    // a PC that answers the second try: the device goes, and nothing is left unknown
+    let later: AbortController | null = null;
+    let tries = 0;
+    const second = await scanning({
+      step: (state, looks, _elapsed, stop) => { later = stop; if (looks === 2) { state.devices = [OLD, PHONE]; stop.abort(); } },
+      refuse: (path) => { if (later?.signal.aborted === true && path === "/api/devices" && ++tries === 1) throw new TypeError("connection refused"); return undefined; },
+    });
+    expect(second.revoked).toEqual([PHONE.id]);
+    expect(second.out.at(-1)).toBe("Stopped. Run ovis add again to add this PC. Hako's iPhone paired with this PC since the code was shown and was removed: nobody kept it.\n");
+    // the same at the 30-minute stop
+    let late = false;
+    const stopped = await scanning({
+      step: (_state, _looks, elapsed) => { late = elapsed >= 1_798_000; },
+      refuse: (path) => { if (late && path === "/api/devices") throw new TypeError("connection refused"); return undefined; },
+    });
+    expect(stopped.out.at(-1)).toBe(`Stopped after 30 minutes. Run ovis add again.${UNREAD("/api/devices: the Ovis on this PC did not answer (connection refused)")}`);
+    // before any code was shown nothing can have paired with one: nothing is said of it
+    let early: AbortController | null = null;
+    const codeless = await scanning({
+      said: (_text, _type, _answer, stop) => { early = stop; },
+      refuse: (path, codes) => {
+        if (codes > 0) return undefined;
+        // stopped during the look before the first code, on a PC that then answers no more
+        if (path === "/api/account/status" && early !== null) early.abort();
+        if (early?.signal.aborted === true && path === "/api/devices") throw new TypeError("connection refused");
+        return undefined;
+      },
+    });
+    expect(codeless.offers).toEqual([]);
+    expect(codeless.text).not.toContain("could not be read");
+    // a member of another account that brings one more device in for each one removed: it is looked at four times
+    // more, and then said that it cannot be told that none is left
+    let brought = 0;
+    const endless = await scanning({
+      step: (state, looks, _elapsed, stop) => { if (looks === 2) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }]; stop.abort(); } },
+      revoke: (state) => { brought++; state.devices = [...state.devices, { ...PHONE, id: `00000000000000d${brought}`, label: `Mallory ${brought}`, account: "acct_2", added_by: OLD.id }]; return undefined; },
+    });
+    expect(endless.revoked).toEqual([PHONE.id, "00000000000000d1", "00000000000000d2", "00000000000000d3"]);
+    expect(endless.out.at(-1)).toBe("Stopped. Run ovis add again to add this PC. Hako's iPhone, Mallory 1, Mallory 2, Mallory 3 paired with this PC since the code was shown and were removed: nobody kept them. More devices paired with this PC while these were removed: one that paired since the code was shown may still be paired. Open Settings → Devices and PCs on this PC and revoke any device there that is not yours.\n");
   });
 
   it("removes a device that links itself to another account as the run is stopped, and keeps one that links itself to the account that signed in", async () => {
