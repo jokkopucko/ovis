@@ -4560,10 +4560,13 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
 
   /**
    * A tab running `hc attach <word>` (t3), its hc client a real process with `clientEnv`; herdr-core's
-   * answers for it and for the terminal hc resolves the word to.
+   * answers for it and for the terminal hc resolves the word to. The client has printed a line before
+   * this answers: /proc shows a process just spawned with its parent's environment until its exec, and
+   * with none for a moment after it (#3514).
    */
-  function viewer(word: string, resolved: string, claudePid: number, clientEnv: Record<string, string> = OWN) {
-    const client = Bun.spawn(["sleep", "30"], { env: { PATH: process.env["PATH"] ?? "", ...clientEnv } });
+  async function viewer(word: string, resolved: string, claudePid: number, clientEnv: Record<string, string> = OWN) {
+    const client = Bun.spawn(["bash", "-c", "echo; read -r line"], { env: { PATH: process.env["PATH"] ?? "", ...clientEnv }, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+    if ((await client.stdout.getReader().read()).done) throw new Error("the hc client stand-in ended early");
     const rpc = (async (method: string, params: { pane_id?: string }) => {
       if (method === "agent.get") return { agent: {} };
       if (params.pane_id === "t3") return { process_info: { pane_id: "t3", shell_pid: 1, foreground_processes: [{ pid: client.pid, name: "hc", argv: ["/usr/local/bin/hc", "attach", word] }] } };
@@ -4576,7 +4579,7 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
   async function viewed(word: string, resolved: string, clientEnv?: Record<string, string>) {
     const job = await claudeStandIns(1);
     const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
-    const tab = viewer(word, resolved, job.pids[0]!, clientEnv);
+    const tab = await viewer(word, resolved, job.pids[0]!, clientEnv).catch((error: unknown) => { job.stop(); store.restore(); throw error; });
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(tab.rpc);
     const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
     const core = spyOn(runtime, "coreSocketPath").mockReturnValue("/run/user/1000/herdr-core/default.sock");
