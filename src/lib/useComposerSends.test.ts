@@ -152,6 +152,8 @@ it.each([
   try {
     // a copy kept since a connection that held it: this one sends it again by its id
     new PendingMessageStore(() => saved.storage).accept(owner, message, "earlier");
+    // the bridge's held receipt proves it untyped for this page: only then is a saved held copy sent again
+    pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     expect(pendingMessages.read(owner)).toMatchObject([{ id: message.id, state: "held", serverOwned: false }]);
     await sends(pane, answer, shown, { pendingScopeRef: { current: "now" } }).actOnPending(message.id, "steer");
     if (kind === "unconfirmed") {
@@ -386,6 +388,8 @@ it("sends a held copy of an agent-only message again as agent-only", async () =>
   const submitComposerMessage = ((...args: unknown[]) => { calls.push(args); return Promise.resolve({ ok: true } as const); }) as ComposerSendsDeps["submitComposerMessage"];
   try {
     new PendingMessageStore(() => saved.storage).accept(owner, message, "earlier");
+    // the bridge's held receipt proves it untyped for this page: only then is a saved held copy sent again
+    pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     await sends(pane, { ok: true }, [], { pendingScopeRef: { current: "now" }, submitComposerMessage }).actOnPending(message.id, "steer");
     expect(calls.map((call) => call[6])).toEqual([true]);
   } finally {

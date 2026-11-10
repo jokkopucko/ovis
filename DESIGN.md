@@ -3406,20 +3406,60 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   not another attached typist. The bridge retains disconnected presentation receipts and exact
   consumed IDs for up to ten minutes, capped at 1024 each. An authorized, non-observing reattach
   with the same opaque browser resume ID and device can resume that receipt or receive its exact
-  consumed removal on the local machine only. Remote-machine relays strip the resume ID from every
-  attach because their shared bridge token carries no trusted origin-device namespace; remote
-  reconnection cannot resume presentation receipts. This conveys no input permission. The browser's saved, non-resendable
+  consumed removal. Through a remote PC's relay a controlling attach carries a resume ID scoped to
+  that server (the shared bridge token names no origin device, so the relay makes the ID its own),
+  and a watch-only attach carries none: that one resumes no presentation receipt, and neither does
+  a reconnection after this server restarted. This conveys no input permission. The browser's saved, non-resendable
   **transcript confirmation unavailable** copy remains after server restart or retention expiry;
   neither matching text nor an empty queue clears it. A changed terminal or session also makes
   confirmation unavailable. Ovis does not claim that Pi queued or consumed
   the message until the transcript proves it. Next-turn delivery and an explicit Send
-  now action claim the same server ID. Connection loss never resumes automatic input. Previously
-  held browser messages retain their explicit Send now/Discard recovery.
-  Any other follow-up's exact `sent` or `discarded` receipt is kept the same way (ten minutes, 1024,
-  same browser resume ID and device, local machine only) and replayed with `resumed: true` on its
-  browser's reattach, or to that browser's already attached successor when the Enter's reply comes
-  after the reload. It settles only that exact ID's saved copy: an uncertain copy, which ages out as
-  `dismissed`, stays unconfirmed, and nothing is typed again (#2421).
+  now action claim the same server ID. Connection loss never resumes automatic input. A message its
+  sender held on purpose (`delivery: "hold"`: Alt+Enter, or a follow-up with automatic sending off) stays
+  held, with **Send now** and **Discard**, through a lost connection, a reload, another tab and a restart
+  or update of the server: the bridge never sends it by itself, so its saved copy is held on its own word,
+  as before, and takes no receipt's end. The page knows it by the bridge holding it with no reason (every
+  hold the bridge makes by itself names one) and keeps that for the copy's life, also once a refused Send
+  now gave it a reason; a copy an older release saved held with no reason is one too, and a tab still on
+  an older bundle that saves the list without the mark does not take it from a page that has it. Only a
+  Send now that may have typed it makes it uncertain. Every other held copy (a queued follow-up held as its connection
+  closed, or one the bridge held for a reason of its own) offers **Send now** only on live proof: its own
+  live connection, or the bridge's held receipt for this browser within the receipt's window (below).
+  Saved (after a reload, in another tab, after the connection that held it ended), such a copy shows as
+  uncertain until a receipt proves it again, so it is never sent on the word of storage alone. Inside the
+  receipt's window a reload, another tab of the same browser and a remote PC on this version (its relay
+  scopes the browser's resume ID for a controlling attach) all get the receipt and show the copy held.
+  This is a deliberate change for the rest: past the ten minutes, after a restart or update of this
+  server or of the PC's own, on a remote PC that runs an older version, or through a watch-only attach
+  (which carries no resume ID), such a copy keeps only Copy and **Discard**.
+  Any other follow-up's exact `sent`, `discarded` or `held` receipt is kept the same way (ten minutes on
+  a clock that only moves forward, whatever the PC's clock is set to; at most 1024 held and discarded
+  ones; same browser resume ID and device). A `sent` one is never dropped before its ten minutes, and
+  neither is the note of a Send now that may have typed the copy, which answers every later resend of
+  it "not confirmed" and is told to no browser: a copy another tab still holds on a held receipt is
+  not typed again. A pane herdr moves under a new ID takes its receipts with it. They are replayed
+  with `resumed: true` on its
+  browser's reattach, or to that browser's already attached successor when the Enter's reply or the
+  hold comes after the reload. `sent` and `discarded` settle only that exact ID's saved copy, while
+  `held` recovers an untyped queued copy as **Held message — review and send** (**Send now** /
+  **Discard**): an uncertain copy, which ages out as `dismissed`, stays unconfirmed, and nothing is
+  typed again (#2421). `held` is kept only once the connection that queued the message is gone
+  (while it lives, it alone sends the copy), travels in the frame's own `held` field (clients that
+  predate it remove a copy for any resumed removal), and applies once, to the copy saved when it
+  comes: a later send of that copy, from any tab, is never offered again. Each held ID carries how long
+  the bridge still keeps its receipt (`held_ms`, 0 < ms <= ten minutes, else it proves nothing) and when
+  that ends on the PC's clock (`held_until`); the connection's `features` frame carries the PC's clock
+  (`server_time`). The ten minutes run from when the bridge held the copy as its connection closed, not
+  from the reconnect: a browser that returns after nine has one left. The page holds the copy until the
+  sooner of its arrival plus `held_ms` and `held_until`
+  on its own clock, on this page only (saved, the copy stays uncertain), then shows it uncertain again;
+  every read checks that time too, so a tab that slept or a Send now press past it sends nothing. The
+  proof also ends with the connection that brought it, and only with that one: a page that shows several
+  PCs keeps one PC's held copies when another PC's connection drops. A resend checks and claims the
+  receipt in the pane's serialized turn, by its original ID and for its own pane and browser only, so two
+  resends of one copy type it once. A connection that may no longer resume when it closes (read-only, a
+  revoked device) leaves no held receipt; a send of its that ends after the close still leaves its `sent`
+  receipt for that browser's next connection.
 - Not connected, the one word `Reconnecting…` (`Connecting…` before this page's first connection to
   the PC's socket) is the placeholder while the box is empty and moves into the status content once
   there is a draft (`composerStatusHint`), on a phone too; it says no more (nothing is queued, and

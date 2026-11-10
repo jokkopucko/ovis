@@ -36,10 +36,12 @@ const snapshot: ServerMessage = { type: "snapshot", features: ["submit", "pendin
 const message = (id: string, state: PendingMessage["state"] = "queued"): PendingMessage => ({ id, request_id: 1, text: "review this next", state, created_at: "2026-10-11T00:00:00Z" });
 function setup(machineId = "local", sharedStore?: PendingMessageStore) {
   const data = new Map<string, string>();
-  const store = sharedStore ?? new PendingMessageStore(() => ({ getItem: (key) => data.get(key) ?? null, setItem: (key, value) => { data.set(key, value); }, removeItem: (key) => { data.delete(key); } }));
+  /** what the page saved: another store on it reads as a page opened later does */
+  const port = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
+  const store = sharedStore ?? new PendingMessageStore(() => port);
   const socket = new FakeSocket();
   const session = new MachineSession(machineId, { socket: socket as unknown as HerdrSocket, pendingStore: store });
-  return { session, socket, store };
+  return { session, socket, store, port };
 }
 function start(session: MachineSession, socket: FakeSocket): void { session.connect(); socket.receive(snapshot); }
 const named = (herdr_lifetime: string): ServerMessage => ({ type: "snapshot", features: ["submit", "pending-input"], snapshot: { version: "test", protocol: 22, workspaces: [], tabs: [], panes: [], agents: [], layouts: [], herdr_lifetime } });
@@ -79,7 +81,7 @@ describe("PC connection ownership", () => {
     session.close();
     expect(pasteFolder("paste-folder-pc")).toBeUndefined();
   });
-  it.each(["sent", "discarded"] as const)("settles a reloaded copy after the snapshot proves an early resumed %s receipt's lifetime", (outcome) => {
+  it.each(["sent", "discarded", "held"] as const)("settles a reloaded copy after the snapshot proves an early resumed %s receipt's lifetime", (outcome) => {
     const { session, socket, store } = setup(`reload-receipt-${outcome}`);
     const owner = paneStorageId(session.machineId, "w1:p1");
     store.accept(owner, message("saved"), null);
@@ -87,11 +89,89 @@ describe("PC connection ownership", () => {
     socket.receive({ type: "features", features: ["pending-input"], connection: "reload", herdr_lifetime: "reload-herdr" });
     expect(session.scope).toBeNull();
     // Open's attach replay can finish while the server still awaits clientSnapshot().
-    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "saved", outcome, resumed: true }] });
-    expect(store.read(owner)).toHaveLength(1);
+    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], ...(outcome === "held" ? { held: ["saved"], held_ms: { saved: 60_000 }, held_until: { saved: Date.now() + 60_000 }, server_time: Date.now() } : { removed: [{ id: "saved", outcome, resumed: true }] }) });
+    expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain", serverOwned: false }]);
     socket.receive(named("reload-herdr"));
-    expect(store.read(owner)).toEqual([]);
+    expect(store.read(owner)).toMatchObject(outcome === "held" ? [{ id: "saved", state: "held", serverOwned: false }] : []);
     session.close();
+  });
+  it("keeps one PC's proven held copy held when another PC's connection drops", () => {
+    // Given a page connected to two PCs over one store, each with its own connection
+    const a = setup("pc-a"), b = setup("pc-b", a.store), store = a.store;
+    const ownerA = paneStorageId("pc-a", "w1:p1"), ownerB = paneStorageId("pc-b", "w1:p1");
+    const connect = ({ session, socket }: typeof a, lifetime: string): void => {
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: lifetime, herdr_lifetime: lifetime, server_time: Date.now() });
+      socket.receive(named(lifetime));
+    };
+    connect(a, "herdr-a");
+    connect(b, "herdr-b");
+    // a follow-up queued on each; PC B's connection drops, and its next one brings the bridge's held receipt
+    a.session.acceptPending("w1:p1", message("on-a"), a.session.epoch);
+    b.session.acceptPending("w1:p1", message("on-b"), b.session.epoch);
+    b.socket.disconnect();
+    connect(b, "herdr-b");
+    b.socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["on-b"], held_ms: { "on-b": 60_000 }, held_until: { "on-b": Date.now() + 60_000 }, server_time: Date.now() });
+    expect(store.read(ownerB)).toMatchObject([{ id: "on-b", state: "held" }]);
+    // When PC A's connection drops
+    a.socket.disconnect();
+    // Then A's own follow-up is uncertain, and B's stays held with its Send now: B's connection, which proved it, still lives
+    expect(store.read(ownerA)).toMatchObject([{ id: "on-a", state: "uncertain" }]);
+    expect(store.read(ownerB)).toMatchObject([{ id: "on-b", state: "held" }]);
+    // and B's own disconnect ends it
+    b.socket.disconnect();
+    expect(store.read(ownerB)).toMatchObject([{ id: "on-b", state: "uncertain" }]);
+    a.session.close(); b.session.close();
+  });
+  it("holds a resumed copy only until the bridge's end, whichever frame came late, and never past a later disconnect", () => {
+    let now = Date.parse("2026-11-08T00:00:00Z");
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const { session, socket, store } = setup("held-clock");
+      const owner = paneStorageId(session.machineId, "w1:p1");
+      store.accept(owner, message("saved"), null);
+      // the PC's clock is this page's; the bridge kept the receipt until bridgeEnd
+      const bridgeEnd = now + 10 * 60 * 1000;
+      session.connect();
+      // the features frame took 60 s to arrive
+      const featuresSent = now;
+      now += 60_000;
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c1", herdr_lifetime: "clock-herdr", server_time: featuresSent });
+      socket.receive(named("clock-herdr"));
+      // a held frame sent just before the end that arrives on time: held until the end, not 60 s past it
+      now = bridgeEnd - 10_000;
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 10_000 }, held_until: { saved: bridgeEnd }, server_time: now });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "held" }]);
+      now = bridgeEnd + 1;
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      // a held frame sent 5 s before the end that arrives after it: nothing to send
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 5_000 }, held_until: { saved: bridgeEnd }, server_time: bridgeEnd - 5_000 });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      // a fresh receipt holds it; the connection then drops and the next one is to a restarted bridge with none
+      now += 1_000;
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 60_000 }, held_until: { saved: now + 60_000 }, server_time: now });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "held" }]);
+      socket.disconnect();
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c2", herdr_lifetime: "clock-herdr", server_time: now });
+      socket.receive(named("clock-herdr"));
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [] });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      // the PC's clock had run ten minutes ahead on an earlier connection and is right again on this one:
+      // that earlier offset does not end this connection's fresh receipt at once
+      socket.disconnect();
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c3", herdr_lifetime: "clock-herdr", server_time: now + 10 * 60 * 1000 });
+      socket.receive(named("clock-herdr"));
+      socket.disconnect();
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c4", herdr_lifetime: "clock-herdr", server_time: now });
+      socket.receive(named("clock-herdr"));
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 60_000 }, held_until: { saved: now + 60_000 }, server_time: now });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "held" }]);
+      session.close();
+    } finally { clock.mockRestore(); }
   });
   it("settles durable reload state only after the lifetime fence exposes that herdr's storage", () => {
     withStorage(() => {
@@ -393,24 +473,34 @@ describe("PC connection ownership", () => {
     session.close();
   });
 
-  it("suspends ownership on a real disconnect before view callbacks and never revives it on reconnect", () => {
-    const { session, socket, store } = setup();
+  it("suspends ownership on a real disconnect before view callbacks and never revives it on reconnect; a hold its sender asked for stays held", () => {
+    const { session, socket, store, port } = setup();
     start(session, socket);
     const epoch = session.epoch, oldScope = session.scope;
     const owner = paneStorageId("local", "w1:p1");
     session.acceptPending("w1:p1", message("queued"), epoch);
-    session.acceptPending("w1:p1", message("held", "held"), epoch);
+    // the bridge held this one for a reason of its own, and it names the reason
+    session.acceptPending("w1:p1", { ...message("held", "held"), error: { code: "pending_turn_unconfirmed", message: "The next turn did not start in time; review and send the remaining messages explicitly" } }, epoch);
+    // its sender asked the bridge to hold this one (Alt+Enter, or automatic sending off): held, with no reason
+    session.acceptPending("w1:p1", message("asked", "held"), epoch);
+    const rows = () => store.read(owner).map(({ id, state, serverOwned }) => [id, state, serverOwned]);
     session.onDisconnect(() => {
       expect(session.scope).toBeNull();
       expect(session.epoch).toBe(epoch + 1);
-      expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["held", false]]);
+      // a row the bridge held, lost with its connection, is uncertain until a receipt proves it again;
+      // the hold its sender asked for stays held: nothing sends it but its Send now
+      expect(rows()).toEqual([["queued", "uncertain", false], ["held", "uncertain", false], ["asked", "held", false]]);
     });
     socket.disconnect();
     start(session, socket);
     expect(session.scope).not.toBe(oldScope);
+    // a bridge that restarted knows none of them and sends no receipt
     socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [] });
     session.acceptPending("w1:p1", message("queued"), epoch);
-    expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["held", false]]);
+    expect(rows()).toEqual([["queued", "uncertain", false], ["held", "uncertain", false], ["asked", "held", false]]);
+    // and a page opened after it (a reload) reads them the same from what was saved
+    expect(new PendingMessageStore(() => port).read(owner).map(({ id, state }) => [id, state]))
+      .toEqual([["queued", "uncertain"], ["held", "uncertain"], ["asked", "held"]]);
     session.close();
   });
 

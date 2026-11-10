@@ -10,6 +10,7 @@ import * as pi from "../pi.ts";
 import type { SightingFacts } from "../input-guard.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
+import { PendingInputError } from "../pending-input.ts";
 import { isDshProcess } from "../dsh.ts";
 import { SHELL_AGENTS } from "../shell-agent.ts";
 import type { TerminalSighting } from "./terminals.ts";
@@ -137,7 +138,7 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     const late = name === "settled after reattach" || name.startsWith("late ");
     const scenario = name.replace(/^late /, "");
     let now = Date.now();
-    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const clock = clocks(() => now);
     try {
       const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>(), revoked = new Set<Client>();
       const client = (deviceId: string | undefined, receiptResumeId: string | undefined, readOnly = false): Client => {
@@ -173,6 +174,438 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
       expect(removed).toEqual(["same browser", "no device", "settled after reattach"].includes(scenario) ? [{ id: item.message.id, outcome: "sent", resumed: true }] : []);
     } finally { clock.mockRestore(); }
   });
+
+/**
+ * The PC's clock and the forward-only clock the bridge times its receipts and resend records by, read from one
+ * value unless `run` gives the second its own (a PC clock that was set forward while the time that passed stood still).
+ */
+function clocks(wall: () => number, run: () => number = wall): { mockRestore: () => void } {
+  const date = spyOn(Date, "now").mockImplementation(wall), elapsed = spyOn(performance, "now").mockImplementation(run);
+  return { mockRestore: () => { date.mockRestore(); elapsed.mockRestore(); } };
+}
+
+/** A bridge with one pane `p` and tabs of one browser, for what its receipts answer after the follow-up's own connection is gone. */
+function heldCopyBridge(submit: () => Promise<void> = async () => {}) {
+  const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
+  const tab = (...panes: string[]): Client => {
+    const output: ServerMessage[] = [];
+    const owner = { data: connectionData({ deviceId: "device", readOnly: false }), getBufferedAmount: () => 0,
+      send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+    for (const pane of panes.length ? panes : ["p"]) owner.data.attached.set(pane, { keepSize: false, receiptResumeId: token });
+    clients.add(owner); frames.set(owner, output); return owner;
+  };
+  let turns: Promise<void> = Promise.resolve();
+  const typed: string[] = [];
+  const delivery = createPendingDelivery({
+    options: {}, clients, attachments: new Map(), serialize: (_pane, task) => { const run = turns.then(task); turns = run.then(() => {}, () => {}); return run; }, lastTyped: new Map(),
+    sight: () => { throw new Error("a receipt replay takes no input lease"); },
+    submitText: async (pane: string) => { await submit(); typed.push(pane); },
+    authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: ["p", "q"].map((pane) => ({ pane_id: pane, terminal_id: pane, agent: "codex", agent_status: "idle" })) }) as SessionSnapshot,
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  });
+  const identity = { agent: "codex", terminalId: "p", session: null };
+  const told = (to: Client) => frames.get(to)!.filter((frame) => frame.type === "pending-messages");
+  return {
+    tab, typed, delivery, identity, clients,
+    heldIds: (to: Client): string[] => told(to).flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []),
+    removed: (to: Client) => told(to).flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []),
+    answer: (to: Client, id: number) => frames.get(to)!.find((frame) => frame.type === "submit-result" && frame.id === id),
+    /** a tab's Send now of its saved copy of `pending` */
+    resend: (to: Client, id: number, pending: string, pane = "p") => delivery.pendingFrames.submit(to, { type: "submit", id, pane_id: pane, text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: pending }),
+    /** a queued follow-up whose own connection then closes: the bridge holds it and keeps its held receipt */
+    heldAsItsConnectionClosed: () => {
+      const first = tab();
+      const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, identity);
+      clients.delete(first); delivery.closeConnection(first);
+      return item.message.id;
+    },
+  };
+}
+
+it("carries a pane's receipts to its new ID when herdr moves it: the sent one still stops a second tab, a held one still proves a reload", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    const bridge = heldCopyBridge();
+    const id = bridge.heldAsItsConnectionClosed();
+    const one = bridge.tab(), other = bridge.tab();
+    bridge.delivery.attached(one, "p"); bridge.delivery.attached(other, "p");
+    // another follow-up of that browser, held the same way and never sent
+    const unsentOwner = bridge.tab();
+    const unsent = bridge.delivery.pending.enqueue(unsentOwner, "p", 7, "left for later", null, bridge.identity).message.id;
+    bridge.clients.delete(unsentOwner); bridge.delivery.closeConnection(unsentOwner);
+    now += 60_001; bridge.delivery.pending.expire();
+    await bridge.resend(one, 2, id);
+    expect(bridge.typed).toEqual(["p"]);
+    // herdr moves the pane to another workspace, under a new ID; a minute later the resend record is gone
+    bridge.delivery.movePendingPane("p", "q");
+    now += 60_001; bridge.delivery.pending.expire();
+    // the other tab opens the moved pane: it is told the copy was sent, and its own Send now there types nothing
+    const moved = bridge.tab("q");
+    bridge.delivery.attached(moved, "q");
+    expect(bridge.removed(moved).filter((entry) => entry.id === id)).toEqual([{ id, outcome: "sent", resumed: true }]);
+    await bridge.resend(moved, 3, id, "q");
+    expect(bridge.typed).toEqual(["p"]);
+    expect(bridge.answer(moved, 3)).toMatchObject({ ok: true });
+    // and the follow-up that was never sent is still told held under the new ID
+    expect(bridge.heldIds(moved)).toEqual([unsent]);
+  } finally { clock.mockRestore(); }
+});
+
+it("remembers a Send now that may have typed the copy for its ten minutes: a second tab's still-proven copy is refused, also past a thousand other receipts", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    let fail = true;
+    const bridge = heldCopyBridge(async () => { if (fail) throw new herdr.HerdrError("submit_changed", "Enter was not confirmed"); });
+    const id = bridge.heldAsItsConnectionClosed();
+    const one = bridge.tab(), other = bridge.tab();
+    bridge.delivery.attached(one, "p"); bridge.delivery.attached(other, "p");
+    now += 60_001; bridge.delivery.pending.expire();
+    // one tab's Send now ends without an answer that says whether Enter arrived
+    await bridge.resend(one, 2, id);
+    expect(bridge.answer(one, 2)).toMatchObject({ ok: false, code: "submit_changed" });
+    fail = false;
+    // the resend record is gone after a minute, and more than a thousand other receipts have come
+    now += 60_001; bridge.delivery.pending.expire();
+    const busy = bridge.tab();
+    for (let n = 0; n < 1100; n++) {
+      if (n > 0 && n % 400 === 0) { now += 60_001; bridge.delivery.pending.expire(); }
+      expect(bridge.delivery.pending.discard(bridge.delivery.pending.enqueue(busy, "p", 10 + n, `other ${n}`, null, bridge.identity))).toBe(true);
+    }
+    // the other tab, inside its ten minutes, sends its copy: refused as not confirmed, nothing typed
+    await bridge.resend(other, 3, id);
+    expect(bridge.answer(other, 3)).toMatchObject({ ok: false, code: "pending_uncertain" });
+    expect(bridge.typed).toEqual([]);
+    // a connection that attaches is not told the copy is settled or held: it stays not confirmed there
+    const late = bridge.tab();
+    bridge.delivery.attached(late, "p");
+    expect([bridge.removed(late).filter((entry) => entry.id === id), bridge.heldIds(late)]).toEqual([[], []]);
+  } finally { clock.mockRestore(); }
+});
+
+it("counts only held and discarded receipts against the limit: under a thousand live sent ones a new held receipt still proves a reload, and a discarded one is still told", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    const bridge = heldCopyBridge();
+    // more than a thousand follow-ups sent inside ten minutes, each leaving its sent receipt
+    const sender = bridge.tab();
+    for (let n = 0; n < 1100; n++) {
+      if (n > 0 && n % 400 === 0) { now += 60_001; bridge.delivery.pending.expire(); }
+      const item = bridge.delivery.pending.enqueue(sender, "p", 10 + n, `sent ${n}`, null, bridge.identity);
+      expect(bridge.delivery.pending.claim(item, false)).toBe(true);
+      bridge.delivery.pending.settle(item);
+    }
+    // a queued follow-up is held as its connection closes, and another the same browser discarded just before its own closed
+    const id = bridge.heldAsItsConnectionClosed();
+    const discarder = bridge.tab();
+    const dropped = bridge.delivery.pending.enqueue(discarder, "p", 2, "not after all", null, bridge.identity);
+    expect(bridge.delivery.pending.discard(dropped)).toBe(true);
+    bridge.clients.delete(discarder); bridge.delivery.closeConnection(discarder);
+    // a reload of that browser, some time later, is told both
+    now += 5_000;
+    const reload = bridge.tab();
+    bridge.delivery.attached(reload, "p");
+    expect(bridge.heldIds(reload)).toEqual([id]);
+    expect(bridge.removed(reload).filter((entry) => entry.id === dropped.message.id)).toEqual([{ id: dropped.message.id, outcome: "discarded", resumed: true }]);
+  } finally { clock.mockRestore(); }
+});
+
+it("times a sent receipt by the time that passed, not by the PC's clock: a clock set forward does not end it before the other tab's proof", async () => {
+  let wall = Date.now(), run = 1_000_000;
+  const clock = clocks(() => wall, () => run);
+  try {
+    const bridge = heldCopyBridge();
+    const id = bridge.heldAsItsConnectionClosed();
+    const one = bridge.tab(), other = bridge.tab();
+    bridge.delivery.attached(one, "p"); bridge.delivery.attached(other, "p");
+    expect(bridge.heldIds(other)).toEqual([id]);
+    wall += 60_001; run += 60_001; bridge.delivery.pending.expire();
+    await bridge.resend(one, 2, id);
+    expect(bridge.typed).toEqual(["p"]);
+    // the PC's clock is corrected forward by ten minutes; two minutes really pass
+    wall += 10 * 60 * 1000 + 120_000; run += 120_000; bridge.delivery.pending.expire();
+    const late = bridge.tab();
+    bridge.delivery.attached(late, "p");
+    // the other tab's proof still runs on its own clock: its Send now types nothing
+    await bridge.resend(other, 3, id);
+    expect(bridge.typed).toEqual(["p"]);
+    expect(bridge.removed(late).filter((entry) => entry.id === id)).toEqual([{ id, outcome: "sent", resumed: true }]);
+  } finally { clock.mockRestore(); }
+});
+
+it("keeps a held copy's sent receipt through a thousand other receipts, so a second tab's still-proven copy is not typed again", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
+    const client = (): Client => {
+      const output: ServerMessage[] = [];
+      const owner = { data: connectionData({ deviceId: "device", readOnly: false }), getBufferedAmount: () => 0,
+        send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+      owner.data.attached.set("p", { keepSize: false, receiptResumeId: token });
+      clients.add(owner); frames.set(owner, output); return owner;
+    };
+    let turns: Promise<void> = Promise.resolve();
+    let typed = 0;
+    const delivery = createPendingDelivery({
+      options: {}, clients, attachments: new Map(), serialize: (_pane, task) => { const run = turns.then(task); turns = run.then(() => {}, () => {}); return run; }, lastTyped: new Map(),
+      sight: () => { throw new Error("a receipt replay takes no input lease"); },
+      submitText: async () => { typed++; },
+      authorizeSocket: () => {},
+      clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: "idle" }] }) as SessionSnapshot,
+      omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+    });
+    const identity = { agent: "codex", terminalId: "p", session: null };
+    const heldIds = (to: Client): string[] => frames.get(to)!.flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []);
+    const resend = (to: Client, id: number, pending: string) => delivery.pendingFrames.submit(to, { type: "submit", id, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: pending });
+    // a queued follow-up, held as its connection closes; two tabs of that browser are told it is held, for ten minutes
+    const first = client();
+    const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, identity);
+    clients.delete(first); delivery.closeConnection(first);
+    const one = client(), other = client();
+    delivery.attached(one, "p"); delivery.attached(other, "p");
+    expect([heldIds(one), heldIds(other)]).toEqual([[item.message.id], [item.message.id]]);
+    // the old owner's record is gone after a minute; one tab sends the copy
+    now += 60_001; delivery.pending.expire();
+    await resend(one, 2, item.message.id);
+    expect(typed).toBe(1);
+    // more than a thousand other follow-ups come and are discarded meanwhile, each leaving its receipt
+    const busy = client();
+    for (let n = 0; n < 1100; n++) {
+      // the bridge keeps a withdrawal a minute: its own limit is passed a few hundred at a time
+      if (n > 0 && n % 400 === 0) { now += 60_001; delivery.pending.expire(); }
+      expect(delivery.pending.discard(delivery.pending.enqueue(busy, "p", 10 + n, `other ${n}`, null, identity))).toBe(true);
+    }
+    // the resend record of that send is long gone too
+    now += 60_001; delivery.pending.expire();
+    expect(now - Date.parse(item.message.created_at)).toBeLessThan(10 * 60 * 1000);
+    // the other tab still holds its copy inside its ten minutes and sends it: nothing is typed again
+    await resend(other, 3, item.message.id);
+    expect(typed).toBe(1);
+    expect(frames.get(other)!.filter((frame) => frame.type === "submit-result" && frame.id === 3)).toMatchObject([{ ok: true }]);
+    // and a connection that attaches now is still told it was sent
+    const late = client();
+    delivery.attached(late, "p");
+    expect(frames.get(late)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []).filter((entry) => entry.id === item.message.id))
+      .toEqual([{ id: item.message.id, outcome: "sent", resumed: true }]);
+  } finally { clock.mockRestore(); }
+});
+
+it.each(["read-only", "revoked"] as const)(
+  "a connection that may not resume when it closes leaves no held receipt, and still the sent receipt of a send that ends after the close: %s", (why) => {
+    const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>(), revoked = new Set<Client>();
+    const client = (readOnly = false): Client => {
+      const output: ServerMessage[] = [];
+      const owner = { data: connectionData({ deviceId: "device", readOnly }), getBufferedAmount: () => 0,
+        send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+      owner.data.attached.set("p", { keepSize: false, receiptResumeId: token });
+      clients.add(owner); frames.set(owner, output); return owner;
+    };
+    const first = client();
+    const delivery = createPendingDelivery({
+      options: {}, clients, attachments: new Map(), serialize: async (_pane, task) => task(), lastTyped: new Map(),
+      sight: () => { throw new Error("a receipt replay takes no input lease"); },
+      submitText: async () => { throw new Error("a receipt replay never types"); },
+      authorizeSocket: (owner) => { if (revoked.has(owner) || owner.data.readOnly) throw new Error(why); },
+      clientSnapshot: async () => ({ panes: [] }) as unknown as SessionSnapshot,
+      omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+    });
+    const identity = { agent: "codex", terminalId: "p", session: null };
+    // one message on its way, one the bridge holds, both taken while the connection could still resume
+    const going = delivery.pending.enqueue(first, "p", 1, "on its way", null, identity);
+    const held = delivery.pending.enqueue(first, "p", 2, "held", null, identity, true);
+    expect(delivery.pending.claim(going, false)).toBe(true);
+    // the connection turns read-only, or its device is revoked, and then closes
+    if (why === "revoked") revoked.add(first); else first.data.readOnly = true;
+    clients.delete(first); delivery.closeConnection(first);
+    // the Enter's reply comes after the close
+    delivery.pending.settle(going);
+    const resumed = client();
+    delivery.attached(resumed, "p");
+    const told = frames.get(resumed)!.filter((frame) => frame.type === "pending-messages");
+    // the same browser's next connection is told the send went, so its saved copy is settled, and is told of no held message
+    expect(told.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toEqual([{ id: going.message.id, outcome: "sent", resumed: true }]);
+    expect(told.some((frame) => "held" in frame && (frame.held as string[]).includes(held.message.id))).toBe(false);
+  });
+
+it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired", "concurrent resends after closed-owner expiry", "resend to another pane", "resend refused at its limit", "live owner's sibling tab", "held before close"] as const)(
+  "replays a held follow-up receipt only while it remains unsent and held: %s", async (scenario) => {
+    let now = Date.now();
+    const clock = clocks(() => now);
+    try {
+      const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>(), revoked = new Set<Client>();
+      const client = (deviceId: string | undefined, receiptResumeId: string | undefined, readOnly = false): Client => {
+        const output: ServerMessage[] = [];
+        const owner = { data: connectionData({ deviceId, readOnly }), getBufferedAmount: () => 0,
+          send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+        owner.data.attached.set("p", { keepSize: false, receiptResumeId });
+        clients.add(owner); frames.set(owner, output); return owner;
+      };
+      const first = client("device", token);
+      let failResend = false;
+      // one turn at a time, as the server serializes a pane's sends
+      let turns: Promise<void> = Promise.resolve();
+      const typing = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      let typed = 0;
+      const delivery = createPendingDelivery({
+        options: {}, clients, attachments: new Map(), serialize: (_pane, task) => { const run = turns.then(task); turns = run.then(() => {}, () => {}); return run; }, lastTyped: new Map(),
+        sight: () => { throw new Error("a receipt replay takes no input lease"); },
+        submitText: async () => {
+          if (scenario === "attach during resend after closed-owner expiry") { typing.resolve(); await release.promise; }
+          if (failResend) throw new herdr.HerdrError("submit_changed", "Enter was not confirmed");
+          typed++;
+        },
+        authorizeSocket: (owner) => { if (revoked.has(owner)) throw new Error("revoked"); },
+        clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: "idle" }, { pane_id: "q", terminal_id: "q", agent: "codex", agent_status: "idle" }] }) as SessionSnapshot,
+        omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+      });
+      const heldIds = (to: Client): string[] => frames.get(to)!.flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []);
+      const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, { agent: "codex", terminalId: "p", session: null }, scenario === "live owner's sibling tab" || scenario === "held before close");
+      if (scenario === "live owner's sibling tab") {
+        // the tab that holds it alone may send it while it lives: a sibling told it is held could offer it again later
+        const sibling = client("device", token);
+        delivery.attached(sibling, "p");
+        expect(item.message.state).toBe("held");
+        expect(frames.get(sibling)!.some((frame) => frame.type === "pending-messages"
+          && (frame.held?.includes(item.message.id) || frame.removed?.some((entry) => entry.id === item.message.id)))).toBe(false);
+        return;
+      }
+      if (scenario === "held after reattach") expect(delivery.pending.claim(item, false)).toBe(true);
+      if (scenario === "owner revoked") revoked.add(first);
+      const overlap = scenario === "overlapping reload" ? client("device", token) : undefined;
+      if (overlap) delivery.attached(overlap, "p");
+      clients.delete(first); delivery.closeConnection(first);
+      if (scenario === "expired") now += 10 * 60 * 1000 + 1;
+      const resumed = overlap ?? client(scenario === "wrong device" ? "other" : "device", scenario === "wrong browser" ? crypto.randomUUID() : token, scenario === "read-only");
+      if (scenario === "revoked") revoked.add(resumed);
+      if (!overlap) delivery.attached(resumed, "p");
+      if (scenario === "held after reattach") delivery.pending.settle(item, { code: "disconnected", message: "The pending message's connection closed" }, false);
+      // its own field: a client that predates it reads any resumed removal as settled
+      expect(frames.get(resumed)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toEqual([]);
+      // with how long the bridge keeps each: its whole window, as nothing waited since the close
+      for (const id of heldIds(resumed)) expect(frames.get(resumed)!.some((frame) => frame.type === "pending-messages" && frame.held_ms?.[id] === 10 * 60 * 1000)).toBe(true);
+      expect(heldIds(resumed)).toEqual(["held on close", "held before close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired",
+        "concurrent resends after closed-owner expiry", "resend to another pane", "resend refused at its limit"].includes(scenario)
+        ? [item.message.id] : []);
+      if (scenario === "resend refused at its limit") {
+        now += 60_001; delivery.pending.expire();
+        // the bridge refuses the resend before anything is typed: the copy's held receipt is still its own
+        const refuse = spyOn(delivery.pending, "resend").mockImplementation(() => { throw new PendingInputError("pending_limit", "Too many held-copy sends are still retained; try again later"); });
+        try {
+          await delivery.pendingFrames.submit(resumed, { type: "submit", id: 2, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id });
+        } finally { refuse.mockRestore(); }
+        expect(typed).toBe(0);
+        const back = client("device", token);
+        delivery.attached(back, "p");
+        expect(heldIds(back)).toEqual([item.message.id]);
+        return;
+      }
+      if (scenario === "concurrent resends after closed-owner expiry") {
+        now += 60_001; delivery.pending.expire();
+        // the same held copy sent twice at once (two tabs, or a retry), generations 0 and 1: typed once
+        const frame = (id: number, resend_generation: number) => ({ type: "submit" as const, id, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate" as const, resend_id: item.message.id, resend_generation });
+        await Promise.all([delivery.pendingFrames.submit(resumed, frame(2, 0)), delivery.pendingFrames.submit(resumed, frame(3, 1))]);
+        expect(typed).toBe(1);
+        const results = frames.get(resumed)!.filter((frame) => frame.type === "submit-result" && (frame.id === 2 || frame.id === 3));
+        expect(results.filter((frame) => frame.type === "submit-result" && frame.typed_now === true)).toHaveLength(1);
+        return;
+      }
+      if (scenario === "resend to another pane") {
+        now += 60_001; delivery.pending.expire();
+        // a send to pane q carrying p's held ID claims nothing of p's
+        resumed.data.attached.set("q", { keepSize: false, receiptResumeId: token });
+        await delivery.pendingFrames.submit(resumed, { type: "submit", id: 2, pane_id: "q", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id });
+        const back = client("device", token);
+        delivery.attached(back, "p");
+        expect(heldIds(back)).toEqual([item.message.id]);
+        // its own pane's Send now then records its sent receipt there: a replay after the resend ledger expired types nothing
+        await delivery.pendingFrames.submit(back, { type: "submit", id: 3, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id });
+        const typedBefore = typed;
+        now += 60_001; delivery.pending.expire();
+        await delivery.pendingFrames.submit(back, { type: "submit", id: 4, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id });
+        expect(typed).toBe(typedBefore);
+        return;
+      }
+      if (scenario === "resent after closed-owner expiry" || scenario === "ambiguous resend after closed-owner expiry" || scenario === "attach during resend after closed-owner expiry" || scenario === "replayed resend after its record expired") {
+        now += 60_001; delivery.pending.expire();
+        failResend = scenario === "ambiguous resend after closed-owner expiry";
+        const sent = delivery.pendingFrames.submit(resumed, {
+          type: "submit", id: 2, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id,
+        });
+        if (scenario === "attach during resend after closed-owner expiry") {
+          // a tab that attaches while the held copy is being typed is not told it is still held
+          await typing.promise;
+          const during = client("device", token);
+          delivery.attached(during, "p");
+          expect(heldIds(during)).toEqual([]);
+          release.resolve();
+        }
+        await sent;
+        if (scenario === "replayed resend after its record expired") {
+          expect(typed).toBe(1);
+          // the same frame again once its resend record expired: its sent receipt keeps it from typing twice
+          now += 60_001; delivery.pending.expire();
+          await delivery.pendingFrames.submit(resumed, {
+            type: "submit", id: 2, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id,
+          });
+          expect(typed).toBe(1);
+          // other text under that ID is not the copy that went: the receipt does not answer for it
+          await delivery.pendingFrames.submit(resumed, {
+            type: "submit", id: 3, pane_id: "p", text: "edited", payload: "edited", delivery: "immediate", resend_id: item.message.id,
+          });
+          expect(typed).toBe(2);
+        }
+        const later = client("device", token);
+        delivery.attached(later, "p");
+        const laterRemoved = frames.get(later)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []);
+        expect(laterRemoved).toEqual(failResend ? [] : [{ id: item.message.id, outcome: "sent", resumed: true }]);
+        expect(heldIds(later)).toEqual([]);
+      }
+    } finally { clock.mockRestore(); }
+  });
+
+it("keeps a held receipt's ten-minute expiry after a resend that typed nothing puts it back", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
+    const client = (): Client => {
+      const output: ServerMessage[] = [];
+      const owner = { data: connectionData({ deviceId: "device", readOnly: false }), getBufferedAmount: () => 0,
+        send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+      owner.data.attached.set("p", { keepSize: false, receiptResumeId: token });
+      clients.add(owner); frames.set(owner, output); return owner;
+    };
+    const delivery = createPendingDelivery({
+      options: {}, clients, attachments: new Map(), serialize: async (_pane, task) => task(), lastTyped: new Map(),
+      sight: () => { throw new Error("a receipt replay takes no input lease"); },
+      submitText: async () => { throw new herdr.HerdrError("agent_not_ready", "not ready"); },
+      authorizeSocket: () => {},
+      clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: "idle" }] }) as SessionSnapshot,
+      omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+    });
+    const heldIds = (to: Client): string[] => frames.get(to)!.flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []);
+    const identity = { agent: "codex", terminalId: "p", session: null } as const;
+    const first = client(), older = delivery.pending.enqueue(first, "p", 1, "older", null, identity, false);
+    clients.delete(first); delivery.closeConnection(first);
+    now += 5 * 60 * 1000;
+    const second = client(), newer = delivery.pending.enqueue(second, "p", 1, "newer", null, identity, false);
+    clients.delete(second); delivery.closeConnection(second);
+    now += 60_001; delivery.pending.expire();
+    const resumed = client();
+    delivery.attached(resumed, "p");
+    await delivery.pendingFrames.submit(resumed, {
+      type: "submit", id: 2, pane_id: "p", text: "older", payload: "older", delivery: "immediate", resend_id: older.message.id,
+    });
+    now += 5 * 60 * 1000;
+    const later = client();
+    delivery.attached(later, "p");
+    expect(heldIds(later)).toEqual([newer.message.id]);
+  } finally { clock.mockRestore(); }
+});
 
 it.each(["before close", "after close", "overlapping reload", "same live browser", "no device", "read-only", "detach", "wrong browser", "wrong device", "revoked", "expired", "pending cap", "completed cap", "confirmation budget"] as const)(
   "resumes only exact, authorized Pi presentation receipts: %s", async (when) => {

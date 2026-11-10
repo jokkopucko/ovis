@@ -77,6 +77,12 @@ const DEMO_SECURITY_FACTS: Record<string, SecuritySummary> = {
 const histories = new Map<string, DemoHistory>();
 const terminalGrids = new Map<string, { cols: number; rows: number }>();
 const heldCopyResends = new Map<string, { text: string; reply: Extract<ServerMessage, { type: "submit-result" }>; at: number }>();
+/** a closed socket's held messages, as the bridge keeps their receipts (server/core/pending.ts): told, by ID, with when each
+ * ends, to the next socket that attaches the pane within ten minutes; one sent again or discarded is no longer held */
+const HELD_RECEIPT_MS = 10 * 60 * 1000;
+const heldReceipts = new Map<string, { paneId: string; at: number }>();
+/** a pane that closes takes its held receipts with it: a later pane given its ID is another pane */
+const forgetHeldReceipts = (paneId: string): void => { for (const [id, receipt] of heldReceipts) if (receipt.paneId === paneId) heldReceipts.delete(id); };
 const demoGrid = (paneId: string) => terminalGrids.get(paneId) ?? { cols: 80, rows: 24 };
 function redrawHistory(paneId: string): void {
   for (const socket of sockets) socket.renderHistory(paneId);
@@ -334,7 +340,7 @@ function createDemoWorkspace(cwd: string, label: string, agent: string | null, w
 function closeDemoWorkspaces(ids: Set<string>): void {
   const snap = snapshot();
   for (const removed of snap.panes.filter((pane) => ids.has(pane.workspace_id))) {
-    for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it.");
+    { forgetHeldReceipts(removed.pane_id); for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it."); }
     replying.delete(removed.pane_id);
   }
   snap.panes = snap.panes.filter((pane) => !ids.has(pane.workspace_id));
@@ -1805,7 +1811,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const snap = snapshot();
     const closedLayout = snap.layouts.find((layout) => layout.tab_id === pane.tab_id);
     if (closedLayout) closeLayoutPane(closedLayout, pane.pane_id);
-    for (const socket of sockets) socket.holdPending(pane.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it.");
+    { forgetHeldReceipts(pane.pane_id); for (const socket of sockets) socket.holdPending(pane.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it."); }
     replying.delete(pane.pane_id);
     snap.panes = snap.panes.filter((candidate) => candidate.pane_id !== pane.pane_id);
     const survivingPanes = snap.panes.filter((candidate) => candidate.workspace_id === pane.workspace_id);
@@ -2064,7 +2070,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const tab = snap.tabs.find((t) => t.tab_id === body["tab_id"]);
     if (!tab) return error("tab_not_found", "no such tab", 404);
     for (const removed of snap.panes.filter((p) => p.tab_id === tab.tab_id)) {
-      for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it.");
+      { forgetHeldReceipts(removed.pane_id); for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it."); }
       replying.delete(removed.pane_id);
     }
     snap.panes = snap.panes.filter((p) => p.tab_id !== tab.tab_id);
@@ -2615,6 +2621,8 @@ class DemoSocket extends EventTarget {
           const badFraming = !queued && (text.length > framingLimit || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)
             || (message.payload !== body && message.payload !== `\u001b[200~${body}\u001b[201~`));
           const resendKey = message.resend_id === undefined ? null : JSON.stringify([message.pane_id, message.resend_id, message.resend_generation ?? 0]);
+          // sent again, it is no longer held
+          if (typeof message.resend_id === "string") heldReceipts.delete(message.resend_id);
           const previous = resendKey === null || badFraming ? undefined : heldCopyResends.get(resendKey);
           if (previous && this.mode !== "observe" && message.clear_draft === undefined) {
             // the bridge keys a resend on its normalized text, so a CRLF copy of the same message replays
@@ -2751,6 +2759,22 @@ class DemoSocket extends EventTarget {
     }
   }
 
+  /** this socket's held messages as receipts the next connection is told of (only once this one closed) */
+  private keepHeldReceipts(): void {
+    for (const [pane, pending] of this.pending) for (const item of pending) if (item.state === "held") heldReceipts.set(item.id, { paneId: pane, at: Date.now() });
+  }
+
+  /** the held receipts kept for a pane, told as the bridge tells them */
+  private tellHeldReceipts(paneId: string): void {
+    const now = Date.now();
+    for (const [id, receipt] of heldReceipts) if (now - receipt.at >= HELD_RECEIPT_MS) heldReceipts.delete(id);
+    const held = [...heldReceipts].filter(([, receipt]) => receipt.paneId === paneId);
+    if (held.length === 0) return;
+    this.push({ type: "pending-messages", pane_id: paneId, messages: [], held: held.map(([id]) => id),
+      held_ms: Object.fromEntries(held.map(([id, receipt]) => [id, receipt.at + HELD_RECEIPT_MS - now])),
+      held_until: Object.fromEntries(held.map(([id, receipt]) => [id, receipt.at + HELD_RECEIPT_MS])), server_time: now });
+  }
+
   private pendingTargetError(paneId: string): string | null {
     if (this.readyState !== 1) return "disconnected";
     if (this.mode === "observe") return "read_only";
@@ -2856,6 +2880,8 @@ class DemoSocket extends EventTarget {
       return;
     }
     this.attached.add(paneId);
+    // held receipts go on their own tick, after this socket's snapshot, as a real bridge's resumed receipts come
+    if ([...heldReceipts.values()].some((receipt) => receipt.paneId === paneId)) this.later(() => { if (this.attached.has(paneId)) this.tellHeldReceipts(paneId); }, 0);
     this.publishPending(paneId);
     this.push({ type: "input-ready", pane_id: paneId });
     // the bridge's first message for the pane, told to this attaching socket; a pane already at rest gets it typed now.
@@ -2937,6 +2963,7 @@ class DemoSocket extends EventTarget {
     if (this.readyState >= 2) return;
     this.readyState = 3;
     this.holdPending();
+    this.keepHeldReceipts();
     this.holdAsked();
     for (const timer of this.timers) clearTimeout(timer);
     sockets.delete(this);

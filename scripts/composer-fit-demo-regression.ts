@@ -207,8 +207,8 @@ try {
       });
       console.log("PASS selectable pending bubbles fit phones; explicit Send now and Discard act on IDs");
 
-      // With automatic sending turned off, a follow-up sent while the agent works is held by the PC at once:
-      // a reconnect leaves it held and sends nothing, and only Send now delivers it.
+      // With automatic sending turned off, a follow-up sent while the agent works is held by the PC at once, at its
+      // sender's request: a reconnect leaves it held and sends nothing, and only Send now delivers it.
       await withCard(browser, 390, { agent: "codex", model: "gpt-5.6", autoSend: false }, async (page) => {
         const text = "held at once follow-up";
         await page.getByRole("textbox", { name: "Message", exact: true }).fill(text);
@@ -220,23 +220,40 @@ try {
         assert.equal(await page.locator(".pending-message").getAttribute("data-state"), "held", "a reconnect leaves a held follow-up held");
         const notSent = await page.evaluate(async (paneId) => await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`)).json(), panes.api);
         assert.ok(!JSON.stringify(notSent).includes(text), "a held follow-up is not sent by the reconnect");
+        // A hold its sender asked for needs no receipt: with the page off for longer than the bridge keeps one (the same
+        // ten minutes after which the queued copy below is uncertain), it is still held, and still goes only on Send now.
+        await page.evaluate(() => { const fit = window as unknown as { fitSocket: { close: () => void }; fitOffline?: boolean }; fit.fitOffline = true; fit.fitSocket.close(); });
+        await page.clock.setSystemTime(await page.evaluate(() => Date.now()) + 10 * 60 * 1000 + 1000);
+        await page.evaluate(() => { (window as unknown as { fitOffline?: boolean }).fitOffline = false; });
+        await page.waitForFunction(() => (window as unknown as { fitSocket?: { readyState: number } }).fitSocket?.readyState === 1);
+        await page.waitForFunction(() => !(document.querySelector(".pending-message-send") as HTMLButtonElement | null)?.disabled);
+        assert.equal(await page.locator(".pending-message").getAttribute("data-state"), "held", "past the receipt's ten minutes a hold its sender asked for is still held");
+        const stillNotSent = await page.evaluate(async (paneId) => await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`)).json(), panes.api);
+        assert.ok(!JSON.stringify(stillNotSent).includes(text), "nor is it sent by that reconnect");
         await page.getByRole("button", { name: `Send now: ${text}`, exact: true }).click();
         await page.locator(".pending-message-bubble").waitFor({ state: "hidden" });
         const sent = await page.evaluate(async (paneId) => await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`)).json(), panes.api);
         assert.equal(JSON.stringify(sent).split(text).length - 1, 1, "Send now delivers it once");
       });
-      // With automatic sending on, a follow-up is queued: a confirmed hold can be sent explicitly on a new
-      // connection, and an unconfirmed queued request becomes uncertain and never offers an automatic or explicit retry.
+      // With automatic sending on, a follow-up is queued. One the bridge holds untyped as its connection closes comes
+      // back held on the bridge's receipt, sent only by an explicit Send now on the new connection. Past the receipt's
+      // ten minutes it proves nothing: the copy is uncertain and never offers an automatic or explicit retry.
       for (const held of [false, true]) await withCard(browser, 390, { agent: "codex", model: "gpt-5.6", autoSend: true }, async (page) => {
-        const text = held ? "confirmed held follow-up" : "unconfirmed follow-up";
+        const text = held ? "confirmed held follow-up" : "follow-up past its receipt";
         await page.getByRole("textbox", { name: "Message", exact: true }).fill(text);
         await page.getByRole("button", { name: "Send message", exact: true }).click();
         await page.locator(".pending-message-bubble").waitFor();
         await page.evaluate(({ held, paneId }) => {
-          const socket = (window as unknown as { fitSocket: { holdPending: (pane: string) => void; close: () => void } }).fitSocket;
-          if (held) socket.holdPending(paneId);
-          socket.close();
+          const fit = window as unknown as { fitSocket: { holdPending: (pane: string) => void; close: () => void }; fitOffline?: boolean };
+          if (held) fit.fitSocket.holdPending(paneId);
+          // the page stays off while its clock passes the receipt's ten minutes
+          else fit.fitOffline = true;
+          fit.fitSocket.close();
         }, { held, paneId: panes.api });
+        if (!held) {
+          await page.clock.setSystemTime(await page.evaluate(() => Date.now()) + 10 * 60 * 1000 + 1000);
+          await page.evaluate(() => { (window as unknown as { fitOffline?: boolean }).fitOffline = false; });
+        }
         await page.waitForFunction(() => (window as unknown as { fitSocket?: { readyState: number } }).fitSocket?.readyState === 1);
         const bubble = page.locator(".pending-message-bubble");
         await page.waitForFunction((state) => document.querySelector(".pending-message")?.getAttribute("data-state") === state, held ? "held" : "uncertain");

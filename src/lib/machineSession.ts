@@ -1,9 +1,9 @@
-import type { PendingMessage, PendingRemoval, ServerMessage } from "../../shared/protocol.ts";
+import type { PendingMessage, ServerMessage } from "../../shared/protocol.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { afterSend, afterSettled, greetingMemory, rememberGreeting } from "./greeting.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { setPasteFolder } from "./pasteFolders.ts";
-import { pendingMessages, type PendingMessageStore } from "./pendingMessages.ts";
+import { frameRemovals, pendingMessages, type PendingMessageStore, type Removal } from "./pendingMessages.ts";
 import { rememberWaitingSend, stampedBaseline, waitingBaseline, waitingKey, type WaitingBaseline } from "./sentWaiting.ts";
 import { watchPageInUse } from "./presence.ts";
 import { currentSurface } from "./telemetrySurface.ts";
@@ -27,7 +27,14 @@ export class MachineSession {
   private currentConnection: string | null = null;
   private currentEpoch = 0;
   private announcedLifetime: string | undefined;
-  private resumedReceipts: Array<{ paneId: string; lifetime: string; removal: PendingRemoval }> = [];
+  /** the least (this page's clock less the PC's) any frame of this connection carrying server_time gave: delay only raises it */
+  private offset: number | undefined;
+  private noteClock(serverTime: unknown): void {
+    if (typeof serverTime !== "number" || !Number.isFinite(serverTime)) return;
+    const seen = Date.now() - serverTime;
+    this.offset = this.offset === undefined ? seen : Math.min(this.offset, seen);
+  }
+  private resumedReceipts: Array<{ paneId: string; lifetime: string; removal: Removal }> = [];
   /** rows seen going out (`sending`), each with when and what its pane's chat held then (lib/sentWaiting.ts); a row
    * back as queued or held leaves it, so the next attempt (Send now) is timed from itself */
   private readonly going = new Map<string, { at: number; after: WaitingBaseline | null }>();
@@ -48,7 +55,13 @@ export class MachineSession {
     // Installed before view subscribers, and kept even while this PC has no mounted pane.
     this.offMessage = this.socket.on((message) => {
       if (this.closed) return;
-      if (message.type === "features") { this.announcedLifetime = message.herdr_lifetime; setPasteFolder(this.machineId, message.paste_dir); }
+      if (message.type === "features") {
+        this.announcedLifetime = message.herdr_lifetime; setPasteFolder(this.machineId, message.paste_dir);
+        // each connection reckons the PC's clock afresh: a clock that moved since an earlier one does not carry over
+        this.offset = undefined;
+        this.noteClock(message.server_time);
+      }
+      if (message.type === "pending-messages") this.noteClock(message.server_time);
       // a connection that came back to a replaced herdr, or to one it cannot prove, can say so before
       // the roster does: the earlier herdr's drafts and lenses leave the reused pane IDs before any
       // pane hears of it
@@ -61,7 +74,7 @@ export class MachineSession {
       if (message.type === "pending-messages" && this.currentScope === null && this.announcedLifetime !== undefined) {
         // Open replays attaches before the first snapshot. Keep only exact resumed receipts,
         // tagged with this connection's announced herdr, never its live queue or ordinary removals.
-        for (const removal of message.removed ?? []) if (removal.resumed === true) {
+        for (const removal of frameRemovals(message, this.offset)) if (removal.resumed === true) {
           this.resumedReceipts.push({ paneId: message.pane_id, lifetime: this.announcedLifetime, removal });
           if (this.resumedReceipts.length > 128) this.resumedReceipts.shift();
         }
@@ -96,7 +109,7 @@ export class MachineSession {
         sent = typed.length > 0;
         // the rows' words, read before the publish lets them go
         const rows = this.store.read(owner);
-        this.store.publish(owner, message.messages, message.removed ?? [], scope);
+        this.store.publish(owner, message.messages, frameRemovals(message, this.offset), scope);
         if (sent) {
           const memory = greetingMemory(owner);
           rememberGreeting(owner, afterSettled(afterSend(memory), true, memory.history));
