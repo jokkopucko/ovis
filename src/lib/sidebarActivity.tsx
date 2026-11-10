@@ -7,13 +7,15 @@ import { liveSeqs, newSeqMemory, shownStatus, type SeenRecord, type SeqMemory } 
 import { cleanSeen, loadSeen, saveSeen, seenKey, SEEN_LIMIT, subscribeSeen } from "./seenFinishes.ts";
 import { conversationFinishEvidence } from "./panePresentation.ts";
 import { fetchBridgeHealth } from "./api.ts";
+import { agentActivity, newAgentActivityMemory } from "./agentActivity.ts";
 
 export interface SidebarActivity {
   seqs(machineId: string): ReadonlyMap<string, number>;
+  recent: ReadonlyMap<string, number>;
   status(machineId: string, pane: Pick<HerdrPane, "pane_id" | "agent_status" | "background_wait" | "finish_id">): AgentStatus | undefined;
 }
 const NO_SEQS: ReadonlyMap<string, number> = new Map();
-const SidebarActivityContext = createContext<SidebarActivity>({ seqs: () => NO_SEQS, status: (_machineId, pane) => shownStatus(pane, null) });
+const SidebarActivityContext = createContext<SidebarActivity>({ seqs: () => NO_SEQS, recent: NO_SEQS, status: (_machineId, pane) => shownStatus(pane, null) });
 export const SidebarActivityProvider = SidebarActivityContext.Provider;
 export const useSidebarActivity = (): SidebarActivity => useContext(SidebarActivityContext);
 
@@ -50,6 +52,8 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
     }
     return [machine.id, liveSeqs(machine.snapshot, kept.memory)] as const;
   })), [machines]);
+  const agentMemory = useRef(newAgentActivityMemory());
+  const recent = useMemo(() => agentActivity(machines, (id) => seqsByMachine.get(id) ?? NO_SEQS, agentMemory.current), [machines, seqsByMachine]);
   const [seen, setSeen] = useState<ReadonlyMap<string, MachineSeen>>(() => new Map());
   const seenRef = useRef(seen); seenRef.current = seen;
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === "visible");
@@ -202,10 +206,11 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
 
   return useMemo<SidebarActivity>(() => ({
     seqs: (machineId) => seqsByMachine.get(machineId) ?? NO_SEQS,
+    recent,
     status: (machineId, pane) => {
       const epoch = machines.find((machine) => machine.id === machineId)?.snapshot?.finish_epoch;
       const kept = seen.get(machineId);
       return shownStatus(pane, epoch && kept?.epoch === epoch ? kept.record : null);
     },
-  }), [machines, seqsByMachine, seen]);
+  }), [machines, seqsByMachine, recent, seen]);
 }
