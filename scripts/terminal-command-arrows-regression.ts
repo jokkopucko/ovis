@@ -104,7 +104,11 @@ process.stdin.on("data", (data) => {
 `);
       try {
         // Keep cleanup and launch behind the earlier browser keystrokes on the same input stream.
-        await input.press("Control+c");
+        // Those left text on the prompt line: Cmd+Right and Cmd+Backspace (Ctrl+E, Ctrl+U) empty it as
+        // keys, read in order with the command. Ctrl+C is a signal: when the command is there before
+        // bash handles it, bash runs the line without its first byte.
+        await input.press("Meta+ArrowRight");
+        await input.press("Meta+Backspace");
         await input.pressSequentially(`node '${script.replaceAll("'", "'\\''")}'`);
         await input.press("Enter");
         await until(async () => (await paneRead({ paneId, source: "visible" })).text.includes("Owned macOS Cmd+Left"), "readline fixture must start");

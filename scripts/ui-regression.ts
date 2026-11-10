@@ -70,7 +70,7 @@ async function watchBrowserEvidence(context: BrowserContext, page: Page, scenari
  * A hook for a check that changes the roster on a page already loaded: a route cannot reach the
  * machine events the page already receives (its /api/machines/events stream or its terminal
  * socket), so `window.__rewriteMachinesFrame`, while set, rewrites each event's data before the
- * app reads it (the plan checks below). Runs in the page as an init script.
+ * app reads it (the background-tasks and plan checks below). Runs in the page as an init script.
  */
 function rewriteMachinesFrames(): void {
   const rewrite = () => (window as unknown as { __rewriteMachinesFrame?: (data: string) => string }).__rewriteMachinesFrame;
@@ -513,7 +513,35 @@ try {
     }
     await route.fulfill({ response, json: body });
   });
-  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  // this page keeps the stream it has, and the PC pushes its roster over it every five seconds: a
+  // pushed roster drops the poll in flight and replaces what a poll brought, and the next poll is
+  // 30 s away. So each pushed roster gets the rewrite the poll above gets, with the peer the page
+  // takes in the task that asks for the poll: no roster comes in between with the peer before.
+  // (A pushed roster also seeds the page's alert bookkeeping, which a polled one does not: until
+  // the reload further down, this pane counts there as working since this check.)
+  const readBackground = async (peer: typeof backgroundPeer): Promise<void> => {
+    backgroundPeer = peer;
+    await page.evaluate(([paneId, peer]) => {
+      (window as unknown as { __rewriteMachinesFrame?: (data: string) => string }).__rewriteMachinesFrame = (data) => {
+        let payload: { type?: string; machines?: { snapshot?: SessionSnapshot | null }[] };
+        try { payload = JSON.parse(data); } catch { return data; }
+        if (payload.type !== "machines") return data;
+        for (const machine of payload.machines ?? []) {
+          const pane = machine.snapshot?.panes.find((pane) => pane.pane_id === paneId);
+          if (!pane || !machine.snapshot) continue;
+          Object.assign(pane, { agent_status: "done", background_tasks: 1, background_wait: true });
+          if (peer) {
+            machine.snapshot.panes.push({ ...pane, pane_id: `${paneId}-background-peer`, agent_status: peer, background_wait: undefined });
+            const tab = machine.snapshot.tabs.find((tab) => tab.tab_id === pane.tab_id);
+            if (tab) tab.agent_status = peer === "blocked" ? "blocked" : "done";
+          }
+        }
+        return JSON.stringify(payload);
+      };
+      document.dispatchEvent(new Event("visibilitychange"));
+    }, [paneA, peer] as const);
+  };
+  await readBackground(null);
   const waitingBadge = agentRow(paneA).locator(".badge[data-status=waiting]");
   await waitingBadge.waitFor();
   assert.equal((await waitingBadge.textContent())?.trim(), "BG");
@@ -525,13 +553,11 @@ try {
   assert.deepEqual(await ring.evaluate((dot) => { const style = getComputedStyle(dot); return { hollow: style.backgroundColor === "rgba(0, 0, 0, 0)", bordered: parseFloat(style.borderTopWidth) > 0, animation: style.animationName }; }), { hollow: true, bordered: true, animation: "none" }, "the ring is hollow, bordered and still");
   await page.locator('.composer-status[data-status="waiting"] strong.visually-hidden', { hasText: "BG" }).waitFor();
   for (const peer of ["working", "done", "blocked", "idle"] as const) {
-    backgroundPeer = peer;
-    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await readBackground(peer);
     const expected = peer === "idle" ? "waiting" : peer;
     await page.locator(`.tab-strip-tab[aria-selected="true"] .tab-strip-dot[data-status="${expected}"]`).waitFor();
   }
-  backgroundPeer = null;
-  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await readBackground(null);
   if (process.env.UI_EVIDENCE_DIR) {
     const viewport = page.viewportSize()!;
     const themeBefore = await page.evaluate(() => document.documentElement.dataset.theme);
@@ -554,7 +580,11 @@ try {
     await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, themeBefore);
   }
   await unrouteBackground();
-  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  // the PC's own roster again, pushed or polled: the rewrite goes in the task that asks for the poll
+  await page.evaluate(() => {
+    delete (window as unknown as { __rewriteMachinesFrame?: unknown }).__rewriteMachinesFrame;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
   await waitingBadge.waitFor({ state: "detached" });
   console.log("PASS a pane whose turn ended on its background work reads BG in the sidebar and the composer, and its status again once it does not");
   // A pane's plan: the composer's chip (the one the background tasks have) says how far it got and

@@ -81,7 +81,9 @@ process.stdin.on("data", (data) => {
 });
 `);
     try {
-      await paneSendKeys(paneId, ["ctrl+c"]);
+      // Ctrl+E and Ctrl+U empty the prompt line as keys, read in order with the command. Ctrl+C is a
+      // signal: when the command is there before bash handles it, bash runs the line without its first byte.
+      await paneSendText(paneId, "\x05\x15");
       await paneSendText(paneId, `node ${script}`);
       await paneSendKeys(paneId, ["Enter"]);
       const deadline = Date.now() + 10_000;
