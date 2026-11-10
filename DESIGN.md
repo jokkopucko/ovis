@@ -3074,7 +3074,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - In the composer's background-task list, a running task's row is a disclosure button (the row's
   padding and hover tint, a dim caret at its end, `aria-haspopup="dialog"`, `aria-expanded` while
   its detail is open; `--touch-target` tall under a finger). Ended rows stay plain: what ended has
-  the chat's task card.
+  the chat's task card. The list only reads, so a device that only watches keeps the chip, the
+  fold of ended tasks and these rows usable while its composer locks what writes (the message box,
+  attach, the microphone, the quick replies, Send and Stop).
 - It opens one `.modal` (a sheet on a phone, 640px on a desktop) over the list, which stays open
   under the scrim: the working-tint status glyph, the task's title over its dim `agent · model`
   line (selectable, a phone's sheet header included), **Refresh** and **Close** as icon buttons.

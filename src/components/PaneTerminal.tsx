@@ -752,18 +752,6 @@ export function PaneTerminal({
     return () => paneObserving.set(key, observingMount, null);
   }, [machineId, paneId, viewOnly, inputReady, observingMount]);
 
-  useLayoutEffect(() => {
-    const stack = stackRef.current;
-    if (!stack) return;
-    const composer = stack.querySelector<HTMLElement>(".composer");
-    if (!composer) return;
-    const text = composer.querySelector<HTMLTextAreaElement>(".composer-text");
-    if (text) text.disabled = viewOnly;
-    for (const button of composer.querySelectorAll<HTMLButtonElement>(".composer-controls button:not(.bg-tasks-toggle)")) {
-      if (viewOnly) button.disabled = true;
-    }
-  });
-
   useEffect(() => {
     if (active) onRoleAckRef.current?.(observing ? "observe" : "interact");
     else {
@@ -1504,6 +1492,8 @@ export function PaneTerminal({
           suggestion={chatPrompt?.pane !== paneId && chatSuggestion?.pane === paneId ? chatSuggestion.value : null}
           restored={chatPrompt?.pane !== paneId && chatRestored?.pane === paneId ? chatRestored.value : null}
           notices={composerNotices}
+          // a device that only watches: the composer locks what writes from this role alone, in its own
+          // render. Its lists (background tasks, side conversations) only read, so their rows stay usable
           role={viewOnly ? "observe" : role}
           onOpenHistory={historyOffered ? onOpenHistory : undefined}
           greeting={greetingDue ? (

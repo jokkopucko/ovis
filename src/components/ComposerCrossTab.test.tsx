@@ -223,3 +223,13 @@ it("disables the quick replies in a watch-only view", async () => {
   await act(async () => { renderer!.update(<Composer {...props} role={undefined} />); });
   expect(renderer!.root.findAll((node) => node.type === "button" && node.props.className === "composer-quick-reply").map((button) => button.props.disabled)).toEqual(quick.map(() => false));
 });
+
+// the composer's own render is the only lock a watch-only view has: nothing outside it disables its controls
+it("locks what writes in a watch-only view, keeps the background tasks chip, and unlocks when the view takes input again", async () => {
+  const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", backgroundTasks: 1, connected: true, autoFocus: false, role: "observe", onSend: () => true, onAbort() {}, onUploadImage: async () => "" };
+  await act(async () => { renderer = create(<Composer {...props} />); });
+  const disabled = (name: string): boolean[] => renderer!.root.findAll((node) => typeof node.type === "string" && String(node.props.className ?? "").split(" ").includes(name)).map((node) => node.props.disabled === true);
+  expect({ text: disabled("composer-text"), attach: disabled("composer-attach"), stop: disabled("composer-stop"), chip: disabled("bg-tasks-toggle") }).toEqual({ text: [true], attach: [true], stop: [true], chip: [false] });
+  await act(async () => { renderer!.update(<Composer {...props} role={undefined} />); });
+  expect({ text: disabled("composer-text"), attach: disabled("composer-attach"), stop: disabled("composer-stop"), chip: disabled("bg-tasks-toggle") }).toEqual({ text: [false], attach: [false], stop: [false], chip: [false] });
+});

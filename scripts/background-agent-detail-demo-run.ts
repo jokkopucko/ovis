@@ -11,17 +11,19 @@ import { chromePath } from "./chrome-path.ts";
 // flaky-retry pane: the sheet opens from the row and closes on Escape, the scrim, a phone's Back,
 // with the focus back on the row; Refresh reads again; an answer to a read since closed or moved
 // away from is dropped; a command's row and an older bridge's rows say so instead of showing an
-// empty transcript; the sheet stays on the screen however long the transcript. The demo answers
-// every read; a patch in the page, for this script only, holds a read until released, strips the
-// bridge's `detail_kind` for the older-bridge case and answers the error cases the server would.
+// empty transcript; the sheet stays on the screen however long the transcript; a device that only
+// watches opens the list and the sheet too, also when its pane learns the role with the list open.
+// The demo answers every read; a patch in the page, for this script only, holds a read until
+// released, strips the bridge's `detail_kind` for the older-bridge case, answers the error cases the
+// server would and, for the watching cases, the role (held for the pane until released).
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-background-agent-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR || "";
 if (evidence) mkdirSync(evidence, { recursive: true });
 
-interface Case { kind?: string; strip?: boolean; role?: "watch" }
-interface Log { requests: string[]; delivered: number; frames: string[]; reads?: number }
-declare global { interface Window { bgCase: Case; bgLog: Log; bgRelease?: () => void; bgHold?: boolean } }
+interface Case { kind?: string; strip?: boolean; role?: "watch"; late?: boolean }
+interface Log { requests: string[]; delivered: number; frames: string[]; reads?: number; roleReads?: number }
+declare global { interface Window { bgCase: Case; bgLog: Log; bgRelease?: () => void; bgHold?: boolean; bgRole?: () => void } }
 
 const patch = `(() => {
   const demoFetch = window.fetch.bind(window);
@@ -30,12 +32,15 @@ const patch = `(() => {
   window.bgCase = window.bgCase || {};
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fail = (code, message, status) => json({ error: { code, message } }, status);
+  const roleReleased = new Promise((resolve) => { window.bgRole = resolve; });
   window.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
     const method = (init?.method ?? "GET").toUpperCase();
     log.requests.push(method + " " + url.pathname);
     const c = window.bgCase;
     if (c.role === "watch" && url.pathname.endsWith("/api/health")) {
+      // late: the app's gate reads the role first and is answered; every read after it, the pane's own among them, waits for the script
+      if (c.late && url.searchParams.get("scope") === "bridge" && (log.roleReads = (log.roleReads ?? 0) + 1) > 1) await roleReleased;
       const body = await (await demoFetch(input, init)).json();
       return json({ ...body, auth: { required: true, authenticated: true, role: "watch" } });
     }
@@ -203,6 +208,9 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
         await settled(page);
       };
       const note = (page: Page, text: string) => dialog(page).locator(".bg-agent-note", { hasText: text });
+      /** which of the composer's controls are disabled, by selector, with the list open */
+      const locks = (page: Page): Promise<Record<string, boolean[]>> => page.evaluate(() => Object.fromEntries([".composer-text", ".composer-attach", ".composer-action", ".bg-tasks-toggle", ".bg-task-open", ".bg-ended-toggle"]
+        .map((selector) => [selector, [...document.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>(`.composer ${selector}`)].map((node) => node.disabled)])));
 
       // the whole flow, on a desktop and on a phone, in both themes: the captures of the rest states come from here
       for (const view of part === "flow" ? [{ width: 1440, theme: "dark" }, { width: 1440, theme: "light" }, { width: 390, theme: "dark" }, { width: 390, theme: "light" }] as View[] : []) {
@@ -410,6 +418,7 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
         ["long", { kind: "long" }, null, null],
         ["many", { kind: "many" }, "The agent wrote more than this view reads.", NEXT.cut],
         ["observe", { role: "watch" }, null, null],
+        ["observe-late", { role: "watch", late: true }, null, null],
         ["error", { kind: "error" }, "Couldn't read the agent's details", NEXT.error],
         ["refresh-error", { kind: "refresh-error" }, "Couldn't read the agent's details", NEXT.error],
         ["refresh-changed", { kind: "refresh-changed" }, "The pane moved to another session", NEXT.changed],
@@ -439,6 +448,18 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
           try {
             await openList(page);
             const before = await detailReads(page);
+            if (demo.role === "watch") {
+              if (demo.late) {
+                // the pane learns that this device only watches while the list is open
+                assert.equal(await page.locator(".composer .composer-text").isDisabled(), false, `${state}: the pane has not read the role yet`);
+                await page.evaluate(() => window.bgRole?.());
+              }
+              // the pane has read the role once its message box is locked
+              await page.locator(".composer .composer-text:disabled").waitFor();
+              // A watching device's composer locks what writes. The list and its rows only read, so they stay
+              // usable however often the pane draws again (they went dead on the next draw once)
+              assert.deepEqual(await locks(page), { ".composer-text": [true], ".composer-attach": [true], ".composer-action": [true], ".bg-tasks-toggle": [false], ".bg-task-open": [false, false], ".bg-ended-toggle": [false] }, `${state}: a watching composer locks what writes and leaves the list alone`);
+            }
             await openDetail(page);
             const refreshed = state === "refresh-error" || state === "refresh-changed" || state === "session-swap";
             if (refreshed) {
