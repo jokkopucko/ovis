@@ -481,6 +481,17 @@ find_add_name() {
   fi
 }
 
+# Whether the add step that would run tells a line typed ahead from an answer. A release up to v0.5.2
+# asks about a device with [y/N] and takes the next line the terminal hands it, so a "y" and Enter
+# typed during the minutes of its sign-in would approve the first device that asks: nothing this
+# installer discards before the add starts covers those. The reader that takes a line only when it
+# was typed under the request shown, and approves only with that request's own digits, is `answerOf`
+# (scripts/plugin-link.ts), a name only releases with that reader have. Looked for in the release that
+# runs ($code): the checkout's own script hands the add on to it (find_add_name).
+add_reads_answers() {
+  grep -qs 'export function answerOf' "${code:-$root}/scripts/plugin-link.ts"
+}
+
 # The command that adds this PC, as the closing lines print it: `ovis add` through the launcher, which
 # finds the name the release knows by itself; without a launcher of ours, the script under that name.
 add_command() {
@@ -505,24 +516,54 @@ in_foreground() {
   fi
 }
 
+# Discards what is typed at the terminal and not read yet: lines typed while the installer worked, or
+# pasted after its command, would otherwise be read by the add step as the answer to what it asks
+# later (a "y" and Enter would approve the next device that asks). With perl, as the star question
+# does it; else with stty and dd: with no line editing and no waiting, a read takes what is there
+# and ends when nothing is. Fails where neither can, and the caller then reads nothing from the terminal.
+discard_typed() {
+  if command -v perl >/dev/null 2>&1; then
+    # tcflush is "0 but true", undef on failure
+    perl -MPOSIX -e 'POSIX::tcflush(0, POSIX::TCIFLUSH) or exit 1' </dev/tty >/dev/null 2>&1
+    return
+  fi
+  command -v stty >/dev/null 2>&1 && command -v dd >/dev/null 2>&1 || return 1
+  typed_settings=$(stty -g </dev/tty 2>/dev/null) || return 1
+  stty -icanon min 0 time 0 </dev/tty 2>/dev/null || return 1
+  typed_discarded=0
+  dd bs=4096 of=/dev/null </dev/tty 2>/dev/null || typed_discarded=1
+  # the terminal is given back as it was, whatever the read came to
+  stty "$typed_settings" </dev/tty 2>/dev/null || return 1
+  return "$typed_discarded"
+}
+
 # --add (or OVIS_ADD=1): ends the install by adding this PC to the account, as `ovis add` does, and
 # says in $add_result how that went (none: it did not run; done; failed). It signs in and asks y/N, so it runs only with someone to answer: at a
 # terminal that shows what it prints and can be read from (under `curl | sh` stdin is the script, so
 # the answers come from /dev/tty itself), and never under OVIS_NO_OPEN, which an install run for
 # someone else sets (the app's own SSH installer), and only in the terminal's foreground: the add reads
-# its answer there, and a background job that did would be stopped. A release from before `add` knows
+# its answer there, and a background job that did would be stopped. What was typed at the terminal
+# before the add starts is discarded first (discard_typed), and where it cannot be, the add does not
+# run: nothing typed for something else answers it. A release from before `add` knows
 # it as `link`; one from before that has neither. It asks the running app, so it runs only while the
 # app does ($add_waits says it does not: a fresh PC whose herdr this install could not start). Wherever
-# it does not run, the closing lines say what to run instead.
+# it does not run, the closing lines say what to run instead. Nor does it run on a release whose add step
+# would take a line typed ahead for its answer (add_reads_answers; $add_old says so): the closing lines
+# then say to update first.
 # Who counts as this PC is said before it starts, while the token can still be set first ($token_said).
 # Ctrl+C ends the add, not the install: what follows it is still printed.
 add_pc() {
   add_result=none
   token_said=0
   add_waits=0
+  add_old=0
   find_add_name
   [ "$add" = 1 ] || return 0
   [ -n "$add_name" ] || return 0
+  if ! add_reads_answers; then
+    add_old=1
+    return 0
+  fi
   if ! bun "$root/scripts/plugin.ts" status </dev/null 2>/dev/null | grep -q '^running'; then
     add_waits=1
     return 0
@@ -530,10 +571,15 @@ add_pc() {
   [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 0
   (exec 3<>/dev/tty) 2>/dev/null || return 0
   in_foreground || return 0
+  trap ':' INT
+  # what is typed from here on is the add step's own to tell from an answer (scripts/plugin-link.ts)
+  if ! discard_typed; then
+    trap - INT
+    return 0
+  fi
   echo
   token_line
   token_said=1
-  trap ':' INT
   add_result=done
   bun "$add_code/scripts/plugin.ts" "$add_name" </dev/tty || add_result=failed
   trap - INT
@@ -553,6 +599,8 @@ closing_lines() {
     :
   elif [ -z "$add_name" ]; then
     say "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again"
+  elif [ "$add" = 1 ] && [ "${add_old:-0}" = 1 ]; then
+    say "this Ovis release would take a line typed ahead as its answer about the device that adds this PC, so the installer does not start that step for it. Update Ovis in Settings → Updates, then run in a terminal on this PC: $(add_command)"
   elif [ "$add" = 1 ] && [ "${add_waits:-0}" = 1 ]; then
     say "the app is not running yet, so this PC was not added to your Ovis account. Once it runs, run in a terminal on this PC: $(add_command)"
   elif [ "$add" = 1 ] && [ "$add_result" = none ]; then

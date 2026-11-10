@@ -154,7 +154,12 @@ two screens instead, as in Bluetooth's numeric comparison:
    device, the same record and key a pairing with a code makes, and `AUTH_OK` follows as usual.
    On a PC without a screen, `bun scripts/plugin.ts pair --approve` in its terminal shows each
    waiting phone with its digits and asks for them: typing the six digits, or their last three,
-   approves, and anything else (a bare Enter, `y`) declines. The PC's terminal is the PC itself.
+   approves, Enter by itself declines, and anything else answers nothing and is asked again. It
+   asks as `add` does, by the same rules for which line answers which request
+   ([A PC with no screen](#a-pc-with-no-screen)), and reads the waiting requests once more before
+   it sends an approval typed as three digits. Input that is not a terminal (a pipe, `ssh` without
+   `-t`) answers nothing: the command says so and fails, and no request is declined, so each keeps
+   waiting for a run at a terminal. The PC's terminal is the PC itself.
 
 The approval may also come from a phone already linked to the owner's account, connected through
 the relay: it is shown three sets of digits and must pick the new device's
@@ -291,8 +296,10 @@ ovis link --code     # a code to type and the relay QR code, renewed until Ctrl+
 
 The installer runs `ovis add` as its last step when it is given `--add`
 (`curl -fsSL https://ovis.sh/install.sh | sh -s -- --add`), at a terminal you can answer at and
-while the app runs. On a PC where it has just installed herdr the app is not up yet: start herdr,
-then run `ovis add`, as its last lines say.
+while the app runs. What was typed in that terminal while the installer worked is discarded before
+the step starts, so it answers nothing the step asks; where the installer cannot discard it, it
+prints the command instead. On a PC where it has just installed herdr the app is not up yet: start
+herdr, then run `ovis add`, as its last lines say.
 
 `add`, `login` and `link` are one command under three names. Both ways turn the relay on first when
 it is off, and wait until it is online.
@@ -369,7 +376,9 @@ it is off, and wait until it is online.
     left the screen unanswered (other devices to ask about, this PC joined an account meanwhile,
     or the device became a member) answers nothing, whenever it comes and whatever it says: what
     was typed at that question and not sent would otherwise arrive under the next one. Either is
-    dropped with a line saying so, and the question is asked again. When that device becomes a
+    dropped with a line saying so, and the question is asked again. What was typed and not sent
+    before the question showed is discarded as it first shows, where the terminal's input can be
+    emptied (`tcflush`), and the word typed full-width with an input method is the same word. When that device becomes a
     member after all while the question waits, the question is dropped and the command ends well.
 
   The approve-here window that listing the PC opens is closed at once
@@ -387,9 +396,21 @@ it is off, and wait until it is online.
   terminal shows the request with its six digits
   (**… wants to join your account. Approve it only if its screen shows 123 456. Type 456 to
   approve, or press Enter to decline**). Only the request's own digits approve it: all six, with
-  or without the space, or the last three. Anything else declines, a bare Enter and `y` among
-  them (a `y` is told that the digits are what approves), so a line begun for another request, or
-  typed ahead of any, cannot approve this one. That approval is this PC's own, as on its screen:
+  or without the space, or the last three, so a line begun for another request, or typed ahead of
+  any, cannot approve this one. Full-width digits, as an input method types them, are the same
+  digits. When the last three are also those of another request (one asked about earlier in the
+  run, or waiting now: once in a thousand pairs), they name neither: the question says so and
+  asks for all six, and only all six approve. A request already asked about with its last three
+  is asked about again with all six as soon as such a request waits beside it, and `add` reads the
+  waiting requests once more before it sends an approval typed as three digits: three digits
+  typed for the other request approve nothing then. Only Enter by itself declines. Any other line (a
+  `y` out of habit, a mistyped digit) answers nothing: a decline ends the request for good, so
+  it is not read into a line that was not one. One line says what approves and what declines,
+  and the question is asked again. Three or six digits that are not the request's are the sign
+  that it may be another device's request, so that line says so in words (**444 are not this
+  request's digits: … shows 111 222. If the device you are adding shows other digits than those,
+  this request is not that device's: press Enter by itself to decline it, and do not type the
+  digits below**) before the question is shown again. That approval is this PC's own, as on its screen:
   the window it opens takes approvals from this PC only.
   The waiting goes on under that question: a request that stops waiting unanswered
   is dropped with a line saying so, and an answer the server did not take is asked for again
@@ -403,7 +424,20 @@ it is off, and wait until it is online.
   out, or was answered elsewhere), whenever it comes and whatever it says: a terminal hands a line
   over only when Enter is pressed, so what was typed at that request's question and not sent would
   otherwise arrive under the next one. The question shown then is asked again, and the line typed
-  under that counts.
+  under that counts. The same holds for the first line after an answer that did not reach the
+  PC's server: it may have been typed while that answer was on its way.
+  For the same reason, what was typed and not sent before a question showed is discarded as the
+  question first shows (the terminal's input is emptied, with `tcflush`), so it is no part of the
+  line sent at it. Where the input cannot be emptied (Windows, or no C library found), the first
+  line after each question answers nothing instead, and the question is asked again.
+  That costs an answer typed too early: digits typed before the question showed stay on the
+  screen in front of it, but they were discarded, so Enter pressed at the question is an empty
+  line and declines the request, and the device has to ask again. Type the digits after the
+  question shows.
+  One limit remains, as the terminal is read a line at a time and shows only when Enter was
+  pressed, not when a line was begun: keys pressed in the moment after a question showed, before
+  it was read, are part of the line sent at it. Such a line approves only if it is that request's
+  own digits, and declines only if it is empty.
   Input that is not a terminal
   (a pipe, a file, a closed stdin) answers nothing, whatever it carries and whenever: the command
   says so, names the way out (over ssh, `ssh -t`), and declines every request as it shows.

@@ -429,7 +429,12 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     }
   };
 
+  /**
+   * The sign-in stored now, read for nothing but to tell whether it is the one a confirm before a reload named
+   * (shell.tsx): none without an account service, or when the store cannot be read.
+   */
+  const stored = async (): Promise<AccountSession | undefined> => accountService === null ? undefined : await account.session().catch(() => undefined);
   return { get state() { return accountView; }, get directory() { return directory; },
     /** the sign-in the signed-in view speaks of; none while signed out, or before a new sign-in's first read */
-    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, load, refresh, refreshNow, reread, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
+    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
 }

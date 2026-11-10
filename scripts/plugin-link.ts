@@ -19,6 +19,7 @@
  * It talks only to a server on this machine (a loopback address): approving a device is an act of
  * the PC itself (docs/account.md, "Who may admit a device"), and the sign-in lives in this process.
  */
+import { dlopen, FFIType } from "bun:ffi";
 import { hostname } from "node:os";
 
 import qrcode from "qrcode-generator";
@@ -49,6 +50,8 @@ export interface LinkOptions {
    * its lines come: nobody compared the digits a line of `yes | ovis add` arrives under. Unset counts as not one.
    */
   readonly terminal?: boolean;
+  /** discards what the terminal holds unread (`AnswerInput.discard`); the command passes `discardTyped` */
+  readonly discard?: () => boolean;
   /**
    * `out` is a terminal: the only place the QR code that adds this PC is drawn without `--print`, since whoever reads
    * it can pair with this PC. Unset counts as not one.
@@ -93,7 +96,7 @@ const LAST_MS = 30_000;
  * sooner was not typed after comparing them: it is a key pressed twice, or a second line typed right after the answer
  * to the request before. It is dropped, and the question is asked again. A line begun at a request that then went
  * away can come at any time after the next question shows, so that one is dropped by itself (`held`), and no answer
- * approves without the request's own digits (`approves`). The question about a device the QR code let in (`addByQr`)
+ * approves without the request's own digits (`answerOf`). The question about a device the QR code let in (`addByQr`)
  * is kept by the same two: a line that comes sooner is dropped, and so is the first after a question that changed.
  */
 const DWELL_MS = 1_500;
@@ -223,31 +226,37 @@ export interface AskingDevice { readonly label: string; readonly digits: string;
 
 /**
  * The question a terminal asks about a device that wants in: its six digits, to compare with that device's screen,
- * and what to type. The answer that approves carries the request's own digits (`approves`), so it names the request
- * it is for.
+ * and what to type. The answer that approves carries the request's own digits (`answerOf`), so it names the request
+ * it is for. `whole`: its last three digits are another request's too, so they name neither, and all six are asked for.
  */
-export function approvalPrompt(device: AskingDevice): string {
+export function approvalPrompt(device: AskingDevice, whole = false): string {
   const what = device.intent === "account" ? "join your account" : "pair with this PC";
-  // digits that are not six digits approve nothing (`approves`): the question does not ask for them
+  // digits that are not six digits approve nothing (`answerOf`): the question does not ask for them
   if (!SIX_DIGITS.test(device.digits)) return `${plainLabel(device.label)} wants to ${what}, but its request came without six digits to compare, so it cannot be approved here. Press Enter to decline: `;
-  return `${plainLabel(device.label)} wants to ${what}. Approve it only if its screen shows ${device.digits.slice(0, 3)} ${device.digits.slice(3)}. Type ${device.digits.slice(3)} to approve, or press Enter to decline: `;
+  const shows = `${plainLabel(device.label)} wants to ${what}. Approve it only if its screen shows ${device.digits.slice(0, 3)} ${device.digits.slice(3)}.`;
+  return whole ? `${shows} Another request's digits end in ${device.digits.slice(3)} too, so type all six (${device.digits}) to approve, or press Enter to decline: `
+    : `${shows} Type ${device.digits.slice(3)} to approve, or press Enter to decline: `;
 }
 
 /**
- * Whether a line approves the request that shows `digits`: only those six digits, with or without the space between
- * the halves, or the last three. Anything else declines, a bare Enter and `y` among them: a line begun for another
- * request, or typed ahead of any, does not carry this one's digits. A request whose digits are not six digits is
+ * What a line typed at the prompt of the request that shows `digits` answers. Only those six digits approve it, with
+ * or without the space between the halves, or the last three: a line begun for another request, or typed ahead of
+ * any, does not carry this one's digits. With `whole`, only all six do: the last three are another request's too
+ * (once in a thousand pairs), and a line typed for that one would carry them. Only an empty line (Enter by itself) declines it. Anything else is no answer
+ * (null), a `y` typed out of habit and a mistyped digit among them: a decline ends the request for good, so it is not
+ * read into a line that was not one, and the question is asked again. A request whose digits are not six digits is
  * approved by nothing (a bare Enter must never match digits that are missing).
+ *
+ * install.sh looks for this function by its name (`add_reads_answers`): its `--add` runs the add step only on a
+ * release that has it. Keep the words `export function answerOf`.
  */
-export function approves(line: string, digits: string): boolean {
-  if (!SIX_DIGITS.test(digits)) return false;
-  const typed = line.replace(/\s/g, "");
-  return typed === digits || typed === digits.slice(3);
+export function answerOf(line: string, digits: string, whole = false): "approve" | "decline" | null {
+  // NFKC first: an input method left in its wide mode types the digits full-width (２２２), and they are the same digits
+  const typed = line.normalize("NFKC").replace(/\s/g, "");
+  if (typed === "") return "decline";
+  if (!SIX_DIGITS.test(digits)) return null;
+  return typed === digits || (!whole && typed === digits.slice(3)) ? "approve" : null;
 }
-
-/** What is said of a decline: a person used to y/N is told what approves. */
-export const declinedNote = (line: string | null): string =>
-  line !== null && /^y(es)?$/i.test(line.trim()) ? "Declined: only a request's digits approve it, not y.\n" : "Declined.\n";
 
 /** The next answer, or the abort: Ctrl+C at a prompt stops at once rather than after the next line. */
 function answer(lines: AsyncIterator<string>, signal: AbortSignal): Promise<IteratorResult<string>> {
@@ -302,6 +311,322 @@ function typing(lines: AsyncIterator<string>, signal: AbortSignal, under: () => 
     /** settles with the next line, or the end of the input */
     arrived: (): Promise<void> => new Promise((resolve) => { if (got.length > 0 || ended) resolve(); else wake = resolve; }),
   };
+}
+
+/** A request that waits for an answer, as the PC lists it (`GET /api/relay/pairings`). */
+export interface WaitingDevice extends AskingDevice { readonly id: string }
+
+/** The terminal a person answers at. */
+export interface AnswerInput {
+  /** the person's answers, a line at a time */
+  readonly lines: AsyncIterator<string>;
+  /**
+   * `lines` is a terminal a person types at. Anything else (a pipe, a file, a closed stdin) answers nothing, whenever
+   * its lines come: nobody compared the digits a line of `yes | ovis add` arrives under. Unset counts as not one.
+   */
+  readonly terminal?: boolean;
+  /**
+   * Discards what the terminal holds and nobody read: the lines sent, and what was typed and not sent. True when it
+   * did. Called as a request's prompt first shows, so what was typed before the prompt is no part of its answer.
+   * Where there is none, or it fails, the first line after the prompt answers nothing instead.
+   */
+  readonly discard?: () => boolean;
+  readonly out: (text: string) => void;
+  /** Ctrl+C */
+  readonly signal: AbortSignal;
+  readonly now?: () => number;
+}
+
+let flush: (() => boolean) | null = null;
+
+/**
+ * Discards what the terminal on stdin holds unread, with the system's own tcflush: a line typed and not sent sits in
+ * the terminal, not in this process, so nothing here can see or drop it otherwise. False where that cannot be done
+ * (Windows, a system whose C library is not found, an input that is no terminal).
+ */
+export function discardTyped(): boolean {
+  try {
+    if (flush === null) {
+      // TCIFLUSH, the input queue: 0 on Linux, 1 on macOS
+      const [queue, libraries] = process.platform === "linux" ? [0, ["libc.so.6", `libc.musl-${process.arch === "arm64" ? "aarch64" : "x86_64"}.so.1`]]
+        : process.platform === "darwin" ? [1, ["libSystem.B.dylib"]] : [0, []];
+      flush = () => false;
+      for (const library of libraries) {
+        try {
+          const { symbols } = dlopen(library, { tcflush: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } });
+          flush = () => symbols.tcflush(0, queue) === 0;
+          break;
+        } catch { /* not this system's C library: the next one */ }
+      }
+    }
+    return flush();
+  } catch { return false; }
+}
+
+/**
+ * The one who asks about requests at a terminal, one at a time, and tells which line answers which: `ovis add` and
+ * `pair --approve` both ask through it. Only a line typed under the prompt of the request asked about, once that was
+ * on the screen long enough to compare its digits (DWELL_MS), answers it. Every other line is dropped and said to
+ * be, and none of them is ever kept for a later request.
+ *
+ * The terminal is read a line at a time (canonical mode), so when a line was begun is not seen, only when its Enter
+ * came. What that leaves open is closed from outside: what the terminal holds is discarded as a request's prompt
+ * first shows (`discard`), and the first line handed over after a request left the screen, after an answer was lost,
+ * or after a prompt whose terminal could not be emptied, answers nothing (`held`). The cost: digits typed before a
+ * prompt are discarded though the screen still shows them, so an Enter pressed at it is an empty line and declines
+ * (docs/relay.md says so). What remains: keys pressed in
+ * the moment after a prompt showed, before the person read it, are part of the line sent at it. Such a line
+ * approves only if it is that request's own digits, and declines only if it is empty.
+ */
+function asking(input: AnswerInput) {
+  const { out } = input;
+  const now = input.now ?? Date.now;
+  const terminal = input.terminal === true;
+  // the request asked about: one at a time. `shownAt`: when its prompt, with its digits, first was on the screen
+  // `whole`: only all six of its digits approve it, from the start or since another request showed the same last three (`beside`)
+  let open: { readonly id: string; readonly label: string; readonly digits: string; readonly device: WaitingDevice; whole: boolean; prompt: string; shownAt: number | null } | null = null;
+  // the digits of every request asked about in this run, by its id
+  const seen = new Map<string, string>();
+  // what the request asked about is answered with: by a line that came after its prompt was shown
+  let reply: "approve" | "decline" | null = null;
+  // that answer approves with the last three digits alone
+  let three = false;
+  // the cursor stands after the prompt: what is said next starts on a line of its own
+  let atPrompt = false;
+  // A request left the screen unanswered. The terminal hands a line over only when Enter is pressed, and it is
+  // marked then: what was typed at that request's prompt and not sent comes with the next Enter, under whatever
+  // is asked by then. So the next line handed over answers nothing, whenever it comes and whatever it says.
+  // The same after an answer the server did not take (`lost`), and after a prompt shown at a terminal whose input
+  // could not be discarded (`show`). Its value: why that line is dropped
+  let held: string | null = null;
+  // what the terminal holds was discarded: false where it cannot be, or could not
+  const emptied = (): boolean => { try { return input.discard?.() === true; } catch { return false; } };
+  // What is not a terminal is never read: it has ended, as far as answers go
+  const keys = typing(terminal ? input.lines : NO_LINES, input.signal, () => open !== null && open.shownAt !== null ? open : null, now);
+  // said once: from then on every request is declined as it shows
+  let endSaid = !terminal;
+  if (endSaid) out("This is not run in a terminal, so no request can be answered here: each is declined as it shows. Run this in a terminal to approve one (over ssh, run ssh -t).\n");
+  const say = (text: string): void => { out(atPrompt ? `\n${text}` : text); atPrompt = false; };
+  // The lines that came since the last look: the first after a request went away unanswered (`held`), one typed while
+  // nothing was asked, before the prompt showed, or right as it did (a key pressed twice) answers nothing
+  const sort = (): void => {
+    let dropped: string | null = null;
+    for (const line of keys.take()) {
+      // the Enter that sent the line ended the prompt's
+      atPrompt = false;
+      if (held !== null) {
+        dropped = `${held}${open === null ? "" : " Answer again for the request shown now."}`;
+        held = null;
+        continue;
+      }
+      if (open !== null && line.under === open && open.shownAt !== null) {
+        if (line.at - open.shownAt >= DWELL_MS) {
+          // a second line at one prompt: the first is the answer
+          if (reply !== null) continue;
+          reply = answerOf(line.text, open.digits, open.whole);
+          three = reply === "approve" && answerOf(line.text, open.digits, true) === null;
+          // neither the digits nor Enter by itself: it declines nothing, and the question is asked again
+          if (reply === null) {
+            const typed = line.text.normalize("NFKC").replace(/\s/g, "");
+            // Digits of another value, well formed: the strongest sign that this request is not the device the person
+            // holds. It is said in so many words, with what declines, since the prompt shown again names this
+            // request's digits and typing those approves it. (With `whole`, its own last three are not such a line.)
+            dropped = SIX_DIGITS.test(open.digits) && /^(?:[0-9]{3}|[0-9]{6})$/.test(typed) && typed !== open.digits.slice(3)
+              ? `${typed} are not this request's digits: ${open.label} shows ${open.digits.slice(0, 3)} ${open.digits.slice(3)}. If the device you are adding shows other digits than those, this request is not that device's: press Enter by itself to decline it, and do not type the digits below.`
+              : `${!SIX_DIGITS.test(open.digits) ? "this request cannot be approved here" : open.whole ? "only all six digits shown approve this request" : "only the digits shown approve a request"}, and only Enter by itself declines it. Answer again.`;
+          }
+          continue;
+        }
+        // one that came too soon does not stand in the way of the answer typed after it
+        if (reply === null) dropped = "it came as the request showed, too soon to have compared its digits. Compare them, then answer again.";
+        continue;
+      }
+      dropped = open === null ? "no request is waiting for an answer."
+        : "it was typed before the request shown now was asked about. Answer again for that one.";
+    }
+    if (dropped !== null) say(`That line answered nothing: ${dropped}\n`);
+  };
+  return {
+    /** says a line of its own, under a prompt when one stands */
+    say,
+    /** the request asked about, if one is */
+    get open(): { readonly id: string; readonly label: string } | null { return open; },
+    /**
+     * Takes the lines that came. A reading that failed (Ctrl+C among them) ends the run when it does, not at the next
+     * request, and an input that ended is said to have, once.
+     */
+    look(): void {
+      sort();
+      if (keys.failed !== undefined) throw keys.failed;
+      if (keys.ended && !endSaid) {
+        endSaid = true;
+        say("The terminal's input ended (Ctrl+D): no request can be answered here any more, so each is declined as it shows. Run this again to answer them.\n");
+      }
+    },
+    /**
+     * Asks about a request from now on; its prompt goes out with `show`. `waiting`: the requests that wait now. When
+     * another of them, or one asked about earlier in this run, shows the same last three digits, a line typed for
+     * that one would carry them: this one then asks for all six, and only all six approve it.
+     */
+    ask(device: WaitingDevice, waiting: readonly WaitingDevice[]): void {
+      const others = [...waiting.filter((other) => other.id !== device.id).map((other) => other.digits), ...[...seen].filter(([id]) => id !== device.id).map(([, digits]) => digits)];
+      const whole = SIX_DIGITS.test(device.digits) && others.some((digits) => SIX_DIGITS.test(digits) && digits.slice(3) === device.digits.slice(3));
+      seen.set(device.id, device.digits);
+      open = { id: device.id, label: plainLabel(device.label), digits: device.digits, device, whole, prompt: approvalPrompt(device, whole), shownAt: null };
+      reply = null;
+    },
+    /** the request asked about has an approval typed as its last three digits, not yet sent */
+    get byThree(): boolean { return open !== null && !open.whole && reply === "approve" && three; },
+    /**
+     * `waiting`: the requests that wait now. A request asked about with its last three digits is asked about with
+     * all six from the moment another one that ends in the same three waits beside it: a line typed for that one
+     * would carry them. Three digits typed and not yet sent approve nothing then; all six, or a decline, stand.
+     */
+    beside(waiting: readonly WaitingDevice[]): void {
+      if (open === null || open.whole || !SIX_DIGITS.test(open.digits)) return;
+      const shown = open;
+      if (!waiting.some((other) => other.id !== shown.id && SIX_DIGITS.test(other.digits) && other.digits.slice(3) === shown.digits.slice(3))) return;
+      // what came until now came under the question as it stood
+      sort();
+      shown.whole = true;
+      shown.prompt = approvalPrompt(shown.device, true);
+      const taken = reply === "approve" && three;
+      if (taken) reply = null;
+      // an answer that stands is sent: nothing is asked again. Nor said under a prompt not shown yet, which says it itself
+      if (reply !== null || shown.shownAt === null) return;
+      const why = `nother request's digits end in ${shown.digits.slice(3)} too`;
+      say(taken ? `That line answered nothing: a${why}, so only all six digits approve ${shown.label} now.\n` : `A${why}: only all six digits approve ${shown.label} now.\n`);
+    },
+    /** The request asked about ran out, was answered elsewhere, or the server restarted: its prompt ends, and so does a line typed for it. */
+    gone(): void {
+      if (open === null) return;
+      const shown = open;
+      say(`${shown.label} is no longer waiting.\n`);
+      open = null;
+      reply = null;
+      // what was handed over until now came while it was asked about, and answers nothing any more
+      sort();
+      // what was typed at its prompt and not sent is still in the terminal: the next line handed over is dropped
+      if (shown.shownAt !== null) held = "a request went away while it may have been typed.";
+    },
+    /**
+     * The answer just taken did not reach the PC's server, or whether it did is not known. Until that was said, the
+     * person may have typed on, for that request or the one they expected next: the next line handed over answers
+     * nothing, whichever request is asked about by then (that one again, or another when the server took the answer).
+     */
+    lost(): void {
+      held = "the answer before it may not have reached the Ovis on this PC, and it may have been typed meanwhile.";
+    },
+    /** nothing more can be typed: the input ended, or is no terminal */
+    get ended(): boolean { return keys.ended; },
+    /** The prompt of the request asked about: shown first, or again under what was said since (not under its own answer). */
+    show(): void {
+      // what came before the prompt goes out: none of it was typed at a prompt not yet shown
+      sort();
+      if (open !== null && !atPrompt && reply === null) {
+        if (open.shownAt === null) {
+          // What was typed before this prompt and not sent would come with the Enter pressed at it: it is discarded
+          // now, once for a request (what is typed under its prompt stays when the prompt is shown again). Where it
+          // cannot be, the first line after the prompt may have been begun before it, and answers nothing
+          if (terminal && !keys.ended && !emptied()) held ??= "this terminal's input could not be emptied as the request showed, so it may have been begun before that.";
+          open.shownAt = now();
+        }
+        out(open.prompt);
+        atPrompt = true;
+      }
+    },
+    /** the request asked about has its answer: a line typed at its prompt, or an input that ended */
+    get answered(): boolean { return open !== null && open.shownAt !== null && (reply !== null || keys.ended); },
+    /**
+     * The answer to the request asked about, which is then asked about no more: what was typed at its prompt
+     * (`answerOf`); an input that ended (Ctrl+D), or is no terminal, declines.
+     */
+    answer(): { readonly id: string; readonly label: string; readonly decision: "approve" | "decline" } | null {
+      if (open === null || open.shownAt === null || (reply === null && !keys.ended)) return null;
+      const { id, label } = open;
+      const decision = reply ?? "decline";
+      open = null;
+      reply = null;
+      // what is said next follows the answer's Enter, or the prompt itself when the input ended
+      atPrompt = false;
+      return { id, label, decision };
+    },
+    /** settles with the next line, or the end of the input */
+    arrived: keys.arrived,
+  };
+}
+
+/** `pair --approve`: what it asks the waiting requests with. */
+export interface ApproveOptions extends AnswerInput {
+  /** Sends an answer to the PC's server: `taken`, `gone` when the request no longer waits, `away` when the server gave no answer. */
+  readonly decide: (id: string, decision: "approve" | "decline") => Promise<"taken" | "gone" | "away">;
+  /**
+   * The requests that wait now (`GET /api/relay/pairings`), read again before an approval typed as the last three
+   * digits is sent: one that came since the command started may end in the same three. It throws when the PC's
+   * server gives no answer. Without it, only the requests the command started with are compared.
+   */
+  readonly list?: () => Promise<readonly WaitingDevice[]>;
+}
+
+/**
+ * `pair --approve`: asks about each request that waits, one by one, as `ovis add` does (`asking`): a line counts only
+ * for the request whose prompt it was typed under, and only once that was on the screen long enough to compare its
+ * digits, so a line typed ahead or twice answers none of the requests that follow. The exit code.
+ */
+export async function approveWaiting(pairings: readonly WaitingDevice[], options: ApproveOptions): Promise<number> {
+  const { out, signal } = options;
+  // What is not a terminal answers nothing, so nothing is sent for it either: the requests keep waiting, the person's
+  // own phone among them, for a run at a terminal or the app. (A decline ends a request for good; `ovis add --approve`,
+  // whose run opened the window those requests came through, declines them as they show.)
+  if (options.terminal !== true) {
+    out("This is not run in a terminal, so no request can be answered here. Nothing was declined: the requests keep waiting. Run this in a terminal to answer them (over ssh, run ssh -t).\n");
+    return 1;
+  }
+  const desk = asking(options);
+  for (const pairing of pairings) {
+    desk.ask(pairing, pairings);
+    for (;;) {
+      desk.look();
+      // Three digits approve a request only while no other waiting one ends in them: one may have come since the
+      // command read the list, so it is read once more before such an approval is sent (as `ovis add --approve` does)
+      if (desk.byThree && options.list !== undefined) {
+        let waiting: readonly WaitingDevice[] | null = null;
+        try { waiting = await options.list(); } catch { /* said below */ }
+        if (waiting === null) {
+          // not known whether another request shares them: the three digits approve nothing, and it is asked again
+          out(`The waiting requests could not be read again just now, so the last three digits approved nothing. ${plainLabel(pairing.label)} is asked about again.\n`);
+          desk.ask(pairing, pairings);
+          continue;
+        }
+        desk.beside(waiting);
+      }
+      const answer = desk.answer();
+      if (answer !== null) {
+        const sent = await options.decide(answer.id, answer.decision);
+        if (sent === "taken") out(answer.decision === "approve" ? "Approved.\n" : "Declined.\n");
+        else if (sent === "gone") out(`${answer.label} is no longer waiting.\n`);
+        else {
+          // whether it was taken is not known. With nobody to answer again, the rest is left to a run made once the server answers
+          if (desk.ended) { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
+          // asked about again, never answered by itself, and not by a line typed meanwhile
+          out(`Your answer may not have reached the Ovis on this PC. ${answer.label} is asked about again.\n`);
+          desk.lost();
+          desk.ask(pairing, pairings);
+          continue;
+        }
+        break;
+      }
+      desk.show();
+      if (desk.answered) continue;
+      await new Promise<void>((resolve, reject) => {
+        const stop = () => reject(signal.reason);
+        if (signal.aborted) { stop(); return; }
+        signal.addEventListener("abort", stop, { once: true });
+        desk.arrived().then(() => { signal.removeEventListener("abort", stop); resolve(); });
+      });
+    }
+  }
+  return 0;
 }
 
 const groups = (id: string): string => id.match(/.{1,4}/g)?.join(" ") ?? id;
@@ -831,8 +1156,10 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           const asked = asking;
           // no answer (not a terminal, Ctrl+D, or none in time) keeps nothing: nobody vouched for those devices
           // the word itself, typed in full: a y, begun for anything else or by habit, vouches for nobody
-          const keep = reply !== null && reply.trim().toLowerCase() === "keep";
-          if (reply !== null && !keep && /^y(es)?$/i.test(reply.trim())) say(`Only the word keep keeps ${asked.devices.length === 1 ? "it" : "them"}, not y.\n`);
+          // NFKC first: an input method left in its wide mode types it full-width (ｋｅｅｐ), and it is the same word
+          const word = reply === null ? null : reply.normalize("NFKC").trim().toLowerCase();
+          const keep = word === "keep";
+          if (word !== null && !keep && /^y(es)?$/.test(word)) say(`Only the word keep keeps ${asked.devices.length === 1 ? "it" : "them"}, not y.\n`);
           if (reply === null) say(keys.ended ? `No answer can be typed here, so ${asked.devices.length === 1 ? "it is" : "they are"} not kept.\n` : `No answer came in time, so ${asked.devices.length === 1 ? "it is" : "they are"} not kept.\n`);
           atPrompt = false;
           asking = null;
@@ -902,7 +1229,13 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
       if (screen && (size === null ? "" : `${size.columns}x${size.rows}`) !== drawnFor) draw();
       sort();
       if (asking !== null && !atPrompt && reply === null) {
-        asking.shownAt ??= now();
+        if (asking.shownAt === null) {
+          // What was typed before this question and not sent would come with the Enter pressed at it: it is discarded
+          // now, once for a question (as `asking` does for a request). Where it cannot be, such a line still keeps
+          // nothing unless it is the word keep
+          if (options.terminal === true && keys !== null && !keys.ended) { try { options.discard?.(); } catch { /* the line is read as it comes */ } }
+          asking.shownAt = now();
+        }
         out(asking.prompt);
         atPrompt = true;
       }
@@ -1022,9 +1355,6 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   // a listing a renewal took away and has not put back yet
   const pending: { listing: Listing | null } = { listing: null };
   const unlisted = "This PC could not be listed in your account again just now; it is tried again until it is.\n";
-  // the request the terminal asks about: one at a time, and the waiting goes on while it is unanswered.
-  // `shownAt`: when its prompt, with its digits, first was on the screen
-  let open: { readonly id: string; readonly label: string; readonly digits: string; readonly prompt: string; shownAt: number | null } | null = null;
   try {
     if (signedIn === null) throw new LocalError("The sign-in did not last. Run this again.");
     const first = await listThisPc(api, service, now, pending);
@@ -1064,11 +1394,9 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     // Read from here on, before anything is asked: a line typed ahead (the terminal kept those of the sign-in) comes
     // now, under no request, and answers none. Not sooner: a run in the background is stopped by its first read of
     // the terminal, and by now the PC is listed and the person was told what to do.
-    // What is not a terminal is never read: it has ended, as far as answers go
-    const keys = typing(options.terminal === true ? options.lines : NO_LINES, signal, () => open !== null && open.shownAt !== null ? open : null, now);
-    // said once: from then on every request is declined as it shows
-    let endSaid = options.terminal !== true;
-    if (endSaid) out("This is not run in a terminal, so no request can be answered here: each is declined as it shows. Run this in a terminal to approve one (over ssh, run ssh -t).\n");
+    // The request the terminal asks about is one at a time, and the waiting goes on while it is unanswered
+    const desk = asking({ lines: options.lines, ...options.terminal === undefined ? {} : { terminal: options.terminal }, ...options.discard === undefined ? {} : { discard: options.discard }, out, signal, now });
+    const { say } = desk;
     // it is not this account's PC: its entry there, whose Add could not work, goes, and nothing puts it back
     const elsewhere = async (account: string): Promise<number> => {
       pending.listing = null;
@@ -1083,44 +1411,6 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     // the looks at the end of the time a window may be asked for (LAST_MS)
     const lastLooks = () => mayOpen() && now() >= stopAt - WINDOW_MS - LAST_MS;
     const asked = new Set<string>();
-    // the line that answers the request asked about: one that came after its prompt was shown
-    let reply: string | null = null;
-    // the cursor stands after the prompt: what is said next starts on a line of its own
-    let atPrompt = false;
-    const say = (text: string): void => { out(atPrompt ? `\n${text}` : text); atPrompt = false; };
-    // A request left the screen unanswered. The terminal hands a line over only when Enter is pressed, and it is
-    // marked then: what was typed at that request's prompt and not sent comes with the next Enter, under whatever
-    // is asked by then. So the next line handed over answers nothing, whenever it comes and whatever it says
-    let held = false;
-    // The lines that came since the last look. Only one typed under the prompt of the request asked about, once that
-    // was on the screen long enough to compare its digits (DWELL_MS), answers it. Every other line is dropped and said
-    // to be: the first after a request went away unanswered (`held`), one typed while nothing was asked, before the
-    // prompt showed, or right as it did (a key pressed twice). None of them is ever kept for a later request
-    const sort = (): void => {
-      let dropped: string | null = null;
-      for (const line of keys.take()) {
-        // the Enter that sent the line ended the prompt's
-        atPrompt = false;
-        if (held) {
-          held = false;
-          dropped = `a request went away while it may have been typed.${open === null ? "" : " Answer again for the request shown now."}`;
-          continue;
-        }
-        if (open !== null && line.under === open && open.shownAt !== null) {
-          if (line.at - open.shownAt >= DWELL_MS) {
-            // a second line at one prompt: the first is the answer
-            reply ??= line.text;
-            continue;
-          }
-          // one that came too soon does not stand in the way of the answer typed after it
-          if (reply === null) dropped = "it came as the request showed, too soon to have compared its digits. Compare them, then answer again.";
-          continue;
-        }
-        dropped = open === null ? "no request is waiting for an answer."
-          : "it was typed before the request shown now was asked about. Answer again for that one.";
-      }
-      if (dropped !== null) say(`That line answered nothing: ${dropped}\n`);
-    };
     for (;;) {
       try {
         if (away && !added && !mayOpen()) {
@@ -1138,13 +1428,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           added = back.account === signedIn;
           if (!added) return await elsewhere(back.account);
         }
-        sort();
-        // a reading that failed (not Ctrl+C, which the catch below takes) ends the run when it does, not at the next request
-        if (keys.failed !== undefined) throw keys.failed;
-        if (keys.ended && !endSaid) {
-          endSaid = true;
-          say("The terminal's input ended (Ctrl+D): no request can be answered here any more, so each is declined as it shows. Run this again to answer them.\n");
-        }
+        desk.look();
         if (away) {
           // the first call that is answered again: a server that restarted has no window, so it is asked for at once
           if (!added) await api("POST", "/api/relay/link", { headers: { "x-ovis-local-only": "1" } });
@@ -1153,44 +1437,37 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           away = false;
           say("The Ovis on this PC answers again.\n");
         }
-        if (open !== null && open.shownAt !== null && (reply !== null || keys.ended)) {
-          const { id, label, digits } = open;
-          const line = reply;
-          open = null;
-          reply = null;
-          // what is said next follows the answer's Enter, or the prompt itself when the input ended
-          atPrompt = false;
-          // only the request's own digits approve it; an input that ended (Ctrl+D), or is no terminal, declines
-          const decision = line !== null && approves(line, digits) ? "approve" : "decline";
+        // Three digits approve a request only while no other waiting one ends in them: one may have come since the
+        // last look, so the list is read once more before such an approval is sent
+        if (desk.byThree) desk.beside((await api<{ pairings: WaitingDevice[] }>("GET", "/api/relay/pairings")).pairings);
+        const answer = desk.answer();
+        if (answer !== null) {
+          const { id, label, decision } = answer;
           try {
             await api("POST", "/api/relay/pairing", { body: { id, decision } });
-            out(decision === "approve" ? "Approved.\n" : declinedNote(line));
+            out(decision === "approve" ? "Approved.\n" : "Declined.\n");
           } catch (error) {
             if (error instanceof AwayError) {
               // whether it was taken is not known: the request is asked about again while it still waits, never answered by itself
               asked.delete(id);
+              // nor by a line typed meanwhile, whichever request is asked about next
+              desk.lost();
               out(`Your answer may not have reached the Ovis on this PC. ${label} is asked about again if it is still waiting.\n`);
             }
             if (!(error instanceof LocalError)) throw error;
             out(`${label} is no longer waiting.\n`);
           }
         }
-        const { pairings } = await api<{ pairings: { id: string; label: string; digits: string; intent?: string }[] }>("GET", "/api/relay/pairings");
-        const shown = open;
-        if (shown !== null && !pairings.some((pairing) => pairing.id === shown.id)) {
-          // it ran out, was answered elsewhere, or the server restarted: its prompt ends, and so does a line typed for it
-          say(`${shown.label} is no longer waiting.\n`);
-          open = null;
-          reply = null;
-          // what was handed over until now came while it was asked about, and answers nothing any more
-          sort();
-          // what was typed at its prompt and not sent is still in the terminal: the next line handed over is dropped
-          if (shown.shownAt !== null) held = true;
-        }
-        const next = open === null ? pairings.find((pairing) => !asked.has(pairing.id)) : undefined;
+        const { pairings } = await api<{ pairings: WaitingDevice[] }>("GET", "/api/relay/pairings");
+        const shown = desk.open;
+        // it ran out, was answered elsewhere, or the server restarted
+        if (shown !== null && !pairings.some((pairing) => pairing.id === shown.id)) desk.gone();
+        // another request that ends in the same three digits waits beside the one asked about: that one asks for all six
+        desk.beside(pairings);
+        const next = desk.open === null ? pairings.find((pairing) => !asked.has(pairing.id)) : undefined;
         if (next !== undefined) {
           asked.add(next.id);
-          open = { id: next.id, label: plainLabel(next.label), digits: next.digits, prompt: approvalPrompt(next), shownAt: null };
+          desk.ask(next, pairings);
         }
         const joined = await status();
         if (joined.account !== null && joined.account !== signedIn) return await elsewhere(joined.account);
@@ -1244,25 +1521,18 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           : "Stopped waiting after 30 minutes. Run this again to keep waiting.\n");
         return 1;
       }
-      // what came during the look, before the prompt goes out: none of it was typed at a prompt not yet shown
-      sort();
-      // shown first, or again under what was said since (not under its own answer)
-      if (open !== null && !atPrompt && reply === null) {
-        open.shownAt ??= now();
-        out(open.prompt);
-        atPrompt = true;
-      }
-      const answered = open !== null && (reply !== null || keys.ended);
+      desk.show();
+      const answered = desk.answered;
       // the answer is already there: it is sent before any waiting
       // (not while the PC's server is away: nothing can be sent, and looking again at once would spin)
       if (!away && answered) continue;
       try {
-        if (open === null || answered) await wait(POLL_MS, signal);
+        if (desk.open === null || answered) await wait(POLL_MS, signal);
         else {
           // the poll's wait ends early when a line comes
           const early = new AbortController();
           const pause = wait(POLL_MS, AbortSignal.any([signal, early.signal]));
-          const first = await Promise.race([pause.then(() => "waited" as const), keys.arrived().then(() => "typed" as const)]);
+          const first = await Promise.race([pause.then(() => "waited" as const), desk.arrived().then(() => "typed" as const)]);
           if (first === "typed") { pause.catch(() => undefined); early.abort(); }
           signal.throwIfAborted();
         }

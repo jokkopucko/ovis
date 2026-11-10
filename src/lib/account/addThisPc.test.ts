@@ -4,7 +4,7 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
-import { AddPcWaitOver, keepAddPcWaiting, listThisPc, onAddPcWaiting, reopenAddWindow } from "./addThisPc.ts";
+import { AddPcWaitOver, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, reopenAddWindow } from "./addThisPc.ts";
 import type { AccountService } from "./service.ts";
 
 afterEach(() => setTransport(nativeTransport));
@@ -79,9 +79,15 @@ test("reopening the add window says which PC opened it", async () => {
 function listing(signedIn: { account: string | null }) {
   const publicKey = exportPublicKey(generateKeyPair().publicKey);
   const serverId = deriveServerId(importPublicKey(publicKey));
-  const answer = async (input: RequestInfo | URL): Promise<Response> => new URL(String(input), "http://localhost").pathname === "/api/relay/link"
-    ? Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") })
-    : Response.json({});
+  const asked: string[] = [];
+  const answer = async (input: RequestInfo | URL): Promise<Response> => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    asked.push(path);
+    if (path === "/api/health") return Response.json({ web_ui: { boot_id: "boot", revision: null, server_id: serverId } });
+    return path === "/api/relay/link"
+      ? Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") })
+      : Response.json({});
+  };
   setTransport({ ...nativeTransport, fetch: answer });
   const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(answer as typeof fetch);
   const calls: string[] = [];
@@ -96,7 +102,7 @@ function listing(signedIn: { account: string | null }) {
       forSignIn: (session: { account: string }) => service(session.account),
     } as unknown as AccountService;
   };
-  return { serverId, calls, reads, service: service(), restore: () => fetchSpy.mockRestore() };
+  return { serverId, calls, reads, asked, service: service(), restore: () => fetchSpy.mockRestore() };
 }
 
 test("a listing writes only as the sign-in stored when it began", async () => {
@@ -116,6 +122,8 @@ test("a listing for a wait writes nothing for another PC, under another account,
     listThisPc(pc.service, { relistMs: 540_000, for: wait }).then(() => "listed", (error: unknown) => error instanceof AddPcWaitOver ? error.why : error);
   try {
     expect(await why({ serverId: "another-pc", account: "acct_1", running: () => true })).toBe("pc");
+    // which PC answers is read from its health: no window was opened on a PC that is not the wait's
+    expect(pc.asked).toEqual(["/api/health"]);
     expect(await why({ serverId: pc.serverId, account: "acct_2", running: () => true })).toBe("sign-in");
     // stopped while the directory was read: neither the old entry is deleted nor a new one put
     let running = true;
@@ -128,6 +136,27 @@ test("a listing for a wait writes nothing for another PC, under another account,
   } finally { pc.restore(); }
 });
 
+test("a listing for a wait that was stopped opens no window, and reads nothing once a window on its way has opened", async () => {
+  const signedIn = { account: "acct_1" as string | null };
+  const pc = listing(signedIn);
+  let sessions = 0;
+  const session = pc.service.session.bind(pc.service);
+  pc.service.session = async () => { sessions++; return await session(); };
+  const why = async (running: () => boolean): Promise<unknown> =>
+    listThisPc(pc.service, { relistMs: 540_000, for: { serverId: pc.serverId, account: "acct_1", running } }).then(() => "listed", (error: unknown) => error instanceof AddPcWaitOver ? error.why : error);
+  try {
+    // stopped while the PC was asked which one it is: no window is asked for after Stop waiting
+    expect(await why(() => false)).toBe("ended");
+    expect(pc.asked).toEqual(["/api/health"]);
+    // stopped while the window was being opened: over at once, before any read that may never be answered
+    pc.asked.length = 0;
+    expect(await why(() => !pc.asked.includes("/api/relay/link"))).toBe("ended");
+    expect(pc.asked).toEqual(["/api/health", "/api/relay/link"]);
+    expect(sessions).toBe(0);
+    expect(pc.calls).toEqual([]);
+  } finally { pc.restore(); }
+});
+
 test("a wait kept or forgotten is told to whoever listens, until they stop", () => {
   const heard: (string | null)[] = [];
   const off = onAddPcWaiting((waiting) => heard.push(waiting?.name ?? null));
@@ -136,4 +165,28 @@ test("a wait kept or forgotten is told to whoever listens, until they stop", () 
   off();
   keepAddPcWaiting(null);
   expect(heard).toEqual(["desk", null]);
+});
+
+test("which PC answers is read from its health, and from the hosted app's page where its health does not say", async () => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "location");
+  let health: unknown = { web_ui: { boot_id: "boot", revision: null, server_id: "pc-1" } };
+  const answer = async (_input: RequestInfo | URL): Promise<Response> => Response.json(health);
+  setTransport({ ...nativeTransport, fetch: answer });
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(answer as typeof fetch);
+  try {
+    expect(await pcAnswers("pc-1")).toBe(true);
+    expect(await pcAnswers("pc-2")).toBe(false);
+    // an Ovis that does not tell its ID: nothing says which PC this is
+    health = { web_ui: { boot_id: "boot", revision: null } };
+    await expect(pcAnswers("pc-1")).rejects.toThrow("did not say which PC it is");
+    // the hosted app's page names the PC it reaches
+    Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { pathname: `/s/${deriveServerId(importPublicKey(exportPublicKey(generateKeyPair().publicKey)))}/`, origin: "http://localhost" } });
+    const named = pagePc();
+    expect(named).not.toBeNull();
+    expect(await pcAnswers(named!)).toBe(true);
+    expect(await pcAnswers("pc-2")).toBe(false);
+  } finally {
+    fetchSpy.mockRestore();
+    if (saved) Object.defineProperty(globalThis, "location", saved); else Reflect.deleteProperty(globalThis, "location");
+  }
 });

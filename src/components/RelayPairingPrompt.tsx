@@ -68,18 +68,38 @@ export function takesFocus(active: Element | null): boolean {
 /**
  * Approving lets a device into this PC, so it must be meant for the prompt it lands on, by someone who had
  * the time to read it. How long a key cannot press Approve after the prompt arrived, moved to another place
- * in the stack or was handed the focus: keys typed for what was there before it (a Tab and an Enter by
- * habit, right after the prompt above was approved).
+ * in the stack, was handed the focus or had the focus come into it from outside: keys typed for what was
+ * there before it (a Tab and an Enter by habit, right after the prompt above was approved; Shift+Tab and an
+ * Enter typed for the dialog beneath). Counted to when the key was pressed, not to when the page heard it
+ * (`inputAge`).
  */
 export const APPROVE_KEY_GUARD_MS = 1000;
 /** The same for a pointer, which is aimed by sight: a click on its way to what the prompt now covers, or to the prompt that was in its place. */
 export const APPROVE_POINTER_GUARD_MS = 500;
 
 /**
+ * The longest a key or a click is taken to have been on its way to the page. An event's clock that runs
+ * behind the page's (some browsers' does after a sleep) then makes Approve wait this much longer, not for good.
+ */
+export const INPUT_AGE_MAX_MS = 5000;
+
+/**
+ * How long ago the key or the click of an event was made (its `timeStamp`, on the clock of `performance.now()`):
+ * a page that was busy hears it late, and Approve's guards count to when it was made, so one already on its
+ * way when the prompt arrived or moved approves nothing. 0 for an event that does not say, or says a time
+ * ahead of the page's clock.
+ */
+export function inputAge(timeStamp: unknown, now: number = performance.now()): number {
+  if (typeof timeStamp !== "number" || !Number.isFinite(timeStamp) || timeStamp <= 0) return 0;
+  return Math.min(INPUT_AGE_MAX_MS, Math.max(0, now - timeStamp));
+}
+
+/**
  * The devices waiting for this PC's approval (`relay-pairings`), a prompt each. One that arrives over
  * a modal dialog takes the focus on its own surface, never on Approve, and a dialog's focus trap counts
- * it and its buttons among its own Tab stops (lib/useFocusTrap.ts). Approve waits for a moment after its
- * prompt arrived, moved or was handed the focus (`approve`). It is a group, not a dialog: it
+ * it and its buttons among its own Tab stops (lib/useFocusTrap.ts), entered on the prompt itself in both
+ * directions. Approve waits for a moment after its prompt arrived, moved, was handed the focus or was walked
+ * into (`approve`). It is a group, not a dialog: it
  * covers nothing, so the page's "a dialog is open" checks (Escape handlers, pane cover) must not count it.
  */
 export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairingRequest[] }) {
@@ -112,6 +132,10 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
   const prompts = useRef(new Map<string, HTMLDivElement>());
   /** when each prompt arrived, last moved to another place in the stack or was last handed the focus: Approve's guards count from it */
   const since = useRef(new Map<string, number>());
+  /** when the focus last came into each prompt from outside it: Approve's guard for keys counts from it too */
+  const entered = useRef(new Map<string, number>());
+  /** the key or the pointer press on an Approve that its next click comes of, and when it was made (the event's `timeStamp`) */
+  const pressed = useRef<{ id: string; key: boolean; at: number } | null>(null);
   /** each prompt's place in the stack, as last drawn */
   const places = useRef(new Map<string, number>());
   /** the focus is, or was until its prompt went, inside the layer */
@@ -164,12 +188,22 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
       replayed.current = true;
     };
   }, []);
-  /** `clicks`: the click's `detail`. 0 is Enter or Space on the button (a click that no pointer made), 2 the second click of a double-click */
-  const approve = (id: string, clicks: number): void => {
+  /**
+   * `click.detail`: 0 is Enter or Space on the button (a click that no pointer made), 2 the second click of a
+   * double-click. The guards count to when the click was made, or the key or the press it comes of when that
+   * was earlier (a click a key makes may be stamped only when the page gets to the key).
+   */
+  const approve = (id: string, click: { detail: number; timeStamp?: number }): void => {
+    const key = click.detail === 0;
+    const press = pressed.current;
+    pressed.current = null;
     // aimed at whatever the first click pressed, which may be gone with this prompt in its place
-    if (clicks > 1) return;
-    const from = since.current.get(id);
-    if (from === undefined || Date.now() - from < (clicks === 0 ? APPROVE_KEY_GUARD_MS : APPROVE_POINTER_GUARD_MS)) return;
+    if (click.detail > 1) return;
+    const arrived = since.current.get(id);
+    if (arrived === undefined) return;
+    const from = key ? Math.max(arrived, entered.current.get(id) ?? arrived) : arrived;
+    const age = Math.max(inputAge(click.timeStamp), press !== null && press.id === id && press.key === key ? inputAge(press.at) : 0);
+    if (Date.now() - age - from < (key ? APPROVE_KEY_GUARD_MS : APPROVE_POINTER_GUARD_MS)) return;
     void decide(id, "approve");
   };
 
@@ -181,6 +215,11 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
         const from = event.relatedTarget;
         if (!held.current && from instanceof HTMLElement && !event.currentTarget.contains(from) && inFocusTrap(from)) opener.current = from;
         held.current = true;
+        // into a prompt from outside it (Tab or Shift+Tab from a dialog or the page, or from the prompt beside it):
+        // the keys that follow may be typed for where the focus was, so that prompt's guard for keys starts again
+        for (const [entering, node] of prompts.current) {
+          if (event.target instanceof Node && node.contains(event.target) && !(from instanceof Node && node.contains(from))) entered.current.set(entering, Date.now());
+        }
       }}
       // to nothing (Approve pressed by a key is disabled, then gone: the browser drops the focus) is not the person moving on
       onBlur={(event) => { if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) held.current = false; }}>
@@ -206,7 +245,10 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
               {failure?.id === pairing.id && <span className="relay-error" role="alert"> {failure.text}</span>}
             </span>
             <div className="device-paired-actions">
-              <button type="button" className="btn btn-primary" disabled={deciding !== null} aria-busy={deciding === "approve" ? true : undefined} onClick={(event) => approve(pairing.id, event.detail)}>{t("Approve")}</button>
+              <button type="button" className="btn btn-primary" disabled={deciding !== null} aria-busy={deciding === "approve" ? true : undefined}
+                onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !event.repeat) pressed.current = { id: pairing.id, key: true, at: event.timeStamp }; }}
+                onPointerDown={(event) => { pressed.current = { id: pairing.id, key: false, at: event.timeStamp }; }}
+                onClick={(event) => approve(pairing.id, event)}>{t("Approve")}</button>
               <button type="button" className="btn" disabled={deciding !== null} aria-busy={deciding === "decline" ? true : undefined} onClick={() => void decide(pairing.id, "decline")}>{t("Decline")}</button>
             </div>
           </div>

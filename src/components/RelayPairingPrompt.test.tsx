@@ -5,7 +5,7 @@ import { create, type ReactTestInstance, type ReactTestRenderer } from "react-te
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
-import { APPROVE_KEY_GUARD_MS, APPROVE_POINTER_GUARD_MS, RelayPairingPrompt, aroundDigits, deadlineOf, secondsLeft, takesFocus } from "./RelayPairingPrompt.tsx";
+import { APPROVE_KEY_GUARD_MS, APPROVE_POINTER_GUARD_MS, INPUT_AGE_MAX_MS, RelayPairingPrompt, aroundDigits, deadlineOf, inputAge, secondsLeft, takesFocus } from "./RelayPairingPrompt.tsx";
 
 const AT = Date.parse("2026-11-10T00:00:00.000Z");
 const request = (over: Partial<RelayPairingRequest> = {}): RelayPairingRequest => ({ id: "p1", label: "Hako's iPhone", digits: "725403", expires_at: new Date(AT + 90_000).toISOString(), ...over });
@@ -415,6 +415,71 @@ describe("the PC's prompt for a device waiting for approval", () => {
     await act(async () => { jest.advanceTimersByTime(1); });
     await act(async () => { approveOf(prompts(root)[0]!).props.onClick(KEY); });
     expect(approved()).toEqual(["p2", "p1"]);
+  });
+
+  it("does not approve by a key in the first second after the focus came into the prompt from outside it", async () => {
+    // the person types in a field of Settings, so the prompt is not handed the focus; it has waited long enough
+    const field = inSettings("settings field", ["input"]);
+    page.activeElement = field;
+    const root = await show([request(), request({ id: "p2", label: "desk2" })]);
+    const layer = root.find((drawn) => drawn.props.className === "relay-pairing-layer");
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    // (the nodes as last drawn: each second that passes draws the prompts again)
+    const first = nodeOf(prompts(root)[0]!);
+    // Shift+Tab from the dialog, or the page's own Tab order, brings the focus into the first prompt
+    page.activeElement = first!;
+    await act(async () => { layer.props.onFocus({ target: first, relatedTarget: field, currentTarget: { contains: () => false } }); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(KEY); });
+    // a move inside the prompt (from it to Approve) starts nothing again
+    await act(async () => { jest.advanceTimersByTime(APPROVE_KEY_GUARD_MS - 1); });
+    await act(async () => { layer.props.onFocus({ target: nodeOf(prompts(root)[0]!), relatedTarget: nodeOf(prompts(root)[0]!), currentTarget: { contains: () => true } }); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(KEY); });
+    expect(approved()).toEqual([]);
+    // from one prompt into the other is from outside it
+    await act(async () => { layer.props.onFocus({ target: nodeOf(prompts(root)[1]!), relatedTarget: nodeOf(prompts(root)[0]!), currentTarget: { contains: () => true } }); });
+    await act(async () => { approveOf(prompts(root)[1]!).props.onClick(KEY); });
+    expect(approved()).toEqual([]);
+    // a pointer is aimed by sight: the focus its press brings in holds no click back
+    await act(async () => { approveOf(prompts(root)[1]!).props.onClick(POINTER); });
+    expect(approved()).toEqual(["p2"]);
+    await act(async () => { jest.advanceTimersByTime(1); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(KEY); });
+    expect(approved()).toEqual(["p2", "p1"]);
+  });
+
+  it("counts the guards to when the key or the click was made, not to when the page got to it", async () => {
+    // the page was busy: what it hears now was pressed a while ago, for what was there then
+    const ago = (ms: number): number => performance.now() - ms;
+    const root = await show([request(), request({ id: "p2", label: "desk2" }), request({ id: "p3", label: "desk3" })]);
+    const [first, second, third] = prompts(root).map(approveOf);
+    await act(async () => { jest.advanceTimersByTime(APPROVE_KEY_GUARD_MS); });
+    // an Enter and a click made 600 ms ago, before the prompt's first second and half second were over
+    await act(async () => { first!.props.onClick({ ...KEY, timeStamp: ago(600) }); });
+    await act(async () => { first!.props.onClick({ ...POINTER, timeStamp: ago(600) }); });
+    expect(approved()).toEqual([]);
+    // the click a key makes may be stamped when it is made: the key's own press counts
+    await act(async () => { second!.props.onKeyDown({ key: "Enter", repeat: false, timeStamp: ago(600) }); });
+    await act(async () => { second!.props.onClick({ ...KEY, timeStamp: ago(0) }); });
+    // and a click is as old as the press that began it
+    await act(async () => { second!.props.onPointerDown({ timeStamp: ago(600) }); });
+    await act(async () => { second!.props.onClick({ ...POINTER, timeStamp: ago(0) }); });
+    expect(approved()).toEqual([]);
+    // a press belongs to the click right after it, on its own button, and to no later one
+    await act(async () => { second!.props.onClick({ ...KEY, timeStamp: ago(0) }); });
+    expect(approved()).toEqual(["p2"]);
+    // made after the guards were over: approved, however late it is heard
+    await act(async () => { third!.props.onClick({ ...POINTER, timeStamp: ago(400) }); });
+    await act(async () => { first!.props.onClick({ ...KEY, timeStamp: ago(0) }); });
+    expect(approved()).toEqual(["p2", "p3", "p1"]);
+  });
+
+  it("takes an input to be at most five seconds old, and one that does not say as made now", () => {
+    expect(inputAge(1000, 1600)).toBe(600);
+    // a clock of the events that runs behind the page's would refuse every approval for good
+    expect(inputAge(1000, 60_000)).toBe(INPUT_AGE_MAX_MS);
+    // ahead of the page's clock, or no time at all
+    expect(inputAge(2000, 1600)).toBe(0);
+    for (const none of [undefined, 0, -1, Number.NaN, "12"]) expect(inputAge(none, 1600)).toBe(0);
   });
 
   it("does not approve the prompt that moved up into the place of the one just approved", async () => {

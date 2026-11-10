@@ -304,16 +304,39 @@ export function takeConfirmedPc(): string | null {
 /**
  * The PC whose pairing was confirmed as one with a key of this device's own, kept for the load that follows: a reload
  * before the app opened (for a newer shell) starts from the saved pairing, which does not say what was confirmed.
- * Only the PC ID, in this tab, and consumed by the next load whatever it opens.
+ * Only the PC ID, in this tab. It stays until that pairing's page opens the app, another confirm for a PC takes its
+ * place, or the PC is forgotten: a load that is itself reloaded or interrupted while it connects leaves it for the
+ * next one, which would otherwise open the PC as whoever is signed in by then.
  */
 export function keepDeviceOnlyPc(serverId: string | null): void {
   try { if (serverId === null) sessionStorage.removeItem("ovis-device-only-pc"); else sessionStorage.setItem("ovis-device-only-pc", serverId); }
   catch { /* the choice cannot cross the load: the reloaded page opens the PC as a saved one */ }
 }
-export function takeDeviceOnlyPc(): string | null {
+export function deviceOnlyPc(): string | null {
+  try { return sessionStorage.getItem("ovis-device-only-pc"); } catch { return null; }
+}
+
+/**
+ * The sign-in a pairing's confirm was drawn for, kept for the load that follows: a reload before the app opened (for
+ * a newer shell) starts from the saved pairing, which does not say whose account was confirmed, and would add the
+ * PC to the account of whoever is signed in by then. Only the PC ID and the sign-in's id (`sign_in_id`, none of its
+ * tokens; null for a sign-in that has none), in this tab. Like the one above it stays until that pairing's page
+ * opens the app, another confirm takes its place, or the PC is forgotten, so a second reload on the way finds it too.
+ */
+export interface ConfirmedSignIn { readonly server_id: string; readonly sign_in_id: string | null }
+export function keepConfirmedSignIn(confirmed: ConfirmedSignIn | null): void {
   try {
-    const serverId = sessionStorage.getItem("ovis-device-only-pc");
-    sessionStorage.removeItem("ovis-device-only-pc");
-    return serverId;
+    if (confirmed === null) sessionStorage.removeItem("ovis-confirmed-sign-in");
+    else sessionStorage.setItem("ovis-confirmed-sign-in", JSON.stringify({ server_id: confirmed.server_id, sign_in_id: confirmed.sign_in_id }));
+  } catch { /* the confirm cannot cross the load: the reloaded page opens the PC as a saved one */ }
+}
+export function confirmedSignIn(): ConfirmedSignIn | null {
+  try {
+    const kept: unknown = JSON.parse(sessionStorage.getItem("ovis-confirmed-sign-in") ?? "null");
+    if (kept === null || typeof kept !== "object") return null;
+    const { server_id, sign_in_id } = kept as Record<string, unknown>;
+    if (typeof server_id !== "string") return null;
+    // an id that cannot be read names no sign-in: the pairing then joins no account, as for a sign-in without one
+    return { server_id, sign_in_id: typeof sign_in_id === "string" && sign_in_id !== "" ? sign_in_id : null };
   } catch { return null; }
 }

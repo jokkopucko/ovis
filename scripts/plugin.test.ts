@@ -25,8 +25,8 @@ async function status(): Promise<{ out: string; err: string; exitCode: number }>
   return run("status");
 }
 
-async function run(command: string, extra: Record<string, string | undefined> = {}): Promise<{ out: string; err: string; exitCode: number }> {
-  const child = launch(command, extra);
+async function run(command: string, extra: Record<string, string | undefined> = {}, more: { args?: string[]; stdin?: string } = {}): Promise<{ out: string; err: string; exitCode: number }> {
+  const child = launch(command, extra, more);
   const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { out, err, exitCode };
 }
@@ -41,8 +41,9 @@ function launchEnv(extra: Record<string, string | undefined> = {}): Record<strin
   return env;
 }
 
-function launch(command: string, extra: Record<string, string | undefined> = {}) {
-  return Bun.spawn(["bun", "scripts/plugin.ts", command], { cwd: ROOT, env: launchEnv(extra), stdout: "pipe", stderr: "pipe" });
+function launch(command: string, extra: Record<string, string | undefined> = {}, more: { args?: string[]; stdin?: string } = {}) {
+  // `stdin`: what is piped in, which is not a terminal
+  return Bun.spawn(["bun", "scripts/plugin.ts", command, ...more.args ?? []], { cwd: ROOT, env: launchEnv(extra), stdout: "pipe", stderr: "pipe", ...more.stdin === undefined ? {} : { stdin: new Blob([more.stdin]) } });
 }
 
 beforeEach(() => {
@@ -849,6 +850,100 @@ describe("add and login", () => {
       "link --code: show a code and a QR code to pair one device instead.",
       "",
     ].join("\n"));
+  });
+});
+
+describe("pair --approve", () => {
+  /** An Ovis on a port of its own with two requests waiting, which records what is decided about them. */
+  function waitingPc() {
+    const decisions: unknown[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      if (path === "/api/relay/pairings") return Response.json({ pairings: [{ id: "p1", label: "Phone one", digits: "111222" }, { id: "p2", label: "Phone two", digits: "333444" }] });
+      if (path === "/api/relay/pairing") { decisions.push(await request.json()); return Response.json({ ok: true }); }
+      return new Response(null, { status: 404 });
+    } });
+    return { server, decisions };
+  }
+
+  it("answers nothing with lines piped in, whatever they carry: it is not a terminal, so it says so and fails, and no request is declined", async () => {
+    const { server, decisions } = waitingPc();
+    try {
+      // both requests' digits, as `printf '222\n444\n' | ovis pair --approve` hands them over (or an ssh without -t)
+      const result = await run("pair", { PORT: String(server.port) }, { args: ["--approve"], stdin: "222\n444\n" });
+      expect(result.exitCode, result.err).toBe(1);
+      expect(result.out).toBe("This is not run in a terminal, so no request can be answered here. Nothing was declined: the requests keep waiting. Run this in a terminal to answer them (over ssh, run ssh -t).\n");
+      // the requests still wait, the person's own phone among them
+      expect(decisions).toEqual([]);
+    } finally { await server.stop(true); }
+  });
+
+  // The real terminal, and the system's own tcflush behind `discardTyped`: a fake keyboard cannot show that the
+  // input queue named there is the one that holds what was typed. `script` runs the command on a pty of its own
+  it.skipIf(platform() === "win32" || Bun.which("script") === null)("discards what was typed at a real terminal before the question showed: digits begun ahead of it are no part of the Enter pressed at it", async () => {
+    const decisions: unknown[] = [];
+    let asked = (): void => undefined;
+    // held until the digits typed ahead are in the terminal
+    const typedAhead = new Promise<void>((resolve) => { asked = resolve; });
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      if (path === "/api/relay/pairings") { await typedAhead; return Response.json({ pairings: [{ id: "p1", label: "Phone one", digits: "111222" }] }); }
+      if (path === "/api/relay/pairing") { decisions.push(await request.json()); return Response.json({ ok: true }); }
+      return new Response(null, { status: 404 });
+    } });
+    const bin = join(scratch, "bin");
+    const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state"), PORT: String(server.port) };
+    for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
+    // util-linux takes the command as one string, BSD (macOS) as arguments after the file it records to. Behind cat:
+    // Bun hands a child a socket for stdin, which macOS's script refuses (tcgetattr), and cat gives it a pipe
+    const command = platform() === "darwin" ? "script -q /dev/null bun scripts/plugin.ts pair --approve" : "script -qfec 'bun scripts/plugin.ts pair --approve' /dev/null";
+    const child = Bun.spawn(["sh", "-c", `cat | ${command}`], { cwd: ROOT, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    let screen = "";
+    const reading = (async () => { for await (const chunk of child.stdout) screen += Buffer.from(chunk).toString(); })();
+    const shows = async (text: string): Promise<void> => {
+      const deadline = Date.now() + 20_000;
+      while (!screen.includes(text)) {
+        if (Date.now() > deadline) throw new Error(`the terminal never showed ${JSON.stringify(text)}: ${JSON.stringify(screen)}`);
+        await Bun.sleep(25);
+      }
+    };
+    try {
+      // the request's own last three digits, typed and not sent before anything is asked: the terminal echoes them
+      child.stdin.write("222");
+      child.stdin.flush();
+      await shows("222");
+      asked();
+      await shows("press Enter to decline: ");
+      // fixed wait: a line counts only a second and a half after its question showed, by the command's own clock
+      await Bun.sleep(1_700);
+      child.stdin.write("\n");
+      child.stdin.flush();
+      // kept, the digits would head the line this Enter sends and approve the request; discarded, the line is empty
+      await shows("Declined.");
+      expect(decisions).toEqual([{ id: "p1", decision: "decline" }]);
+      expect(screen).not.toContain("That line answered nothing");
+      child.stdin.end();
+      expect(await child.exited).toBe(0);
+    } finally {
+      // the end of the input ends cat, and with it the terminal and the command on it
+      try { child.stdin.end(); } catch { /* ended above */ }
+      child.kill();
+      await reading.catch(() => undefined);
+      await server.stop(true);
+    }
+  }, 40_000);
+
+  it("says so when no device waits", async () => {
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      return path === "/api/health" ? Response.json(APP_HEALTH) : path === "/api/relay/pairings" ? Response.json({ pairings: [] }) : new Response(null, { status: 404 });
+    } });
+    try {
+      const result = await run("pair", { PORT: String(server.port) }, { args: ["--approve"], stdin: "" });
+      expect([result.out, result.exitCode], result.err).toEqual(["No device is waiting to pair.\n", 0]);
+    } finally { await server.stop(true); }
   });
 });
 

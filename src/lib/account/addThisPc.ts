@@ -6,10 +6,10 @@
  */
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { decodeOffer } from "../../../shared/relay-offer.ts";
-import { requestRelayLink } from "../api.ts";
+import { closeRelayLink, fetchHealth, requestRelayLink } from "../api.ts";
 import { apiFetch } from "../api-request-id.ts";
 import { serverIdOfPath } from "../shellMode.ts";
-import { pcAccountStatus } from "./join.ts";
+import { pcAccountStatus, within } from "./join.ts";
 import { NEW_PC_MS } from "./myPcs.ts";
 import type { AccountService } from "./service.ts";
 
@@ -39,8 +39,36 @@ export async function thisPcInNoAccount(): Promise<boolean> {
  * a wait can tell the PC is the one it waited on.
  */
 export async function reopenAddWindow(): Promise<string | null> {
-  const { url } = await requestRelayLink({ localOnly: true });
+  const { url } = await openAddWindow();
   try { return decodeOffer(url)?.server_id ?? null; } catch { return null; }
+}
+
+/** How long a close of this PC's window may take to answer before a new window is asked for all the same. */
+export const CLOSE_ANSWER_MS = 60_000;
+
+/** The closes of this PC's window this page sent that have not been answered yet, each for `CLOSE_ANSWER_MS` at most. */
+let closing: Promise<unknown> = Promise.resolve();
+
+/**
+ * Closes this PC's pairing window (POST /api/relay/link/close), so nothing more is taken through it. The PC
+ * closes whatever window is open when the request arrives, so one asked for after this call is asked for
+ * only once this close was answered (`openAddWindow`): a close that arrives late never closes the window
+ * of a wait that began after it.
+ */
+export function closeAddWindow(): Promise<{ readonly ok: true }> {
+  const sent = closeRelayLink();
+  closing = Promise.allSettled([closing, within(CLOSE_ANSWER_MS, sent)]);
+  return sent;
+}
+
+/**
+ * Asks this PC for its approve-here pairing window, after every close this page sent before was answered
+ * (or got no answer for `CLOSE_ANSWER_MS`: the window is then asked for all the same, and one such a close
+ * shuts late is back with the wait's next reopen).
+ */
+async function openAddWindow(): Promise<{ url: string }> {
+  for (let seen: Promise<unknown> | null = null; seen !== closing;) { seen = closing; await seen; }
+  return await requestRelayLink({ localOnly: true });
 }
 
 /** Where a waiting Add this PC screen is kept across a reload of its tab. */
@@ -73,6 +101,19 @@ export function pagePc(): string | null {
 }
 
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 128;
+
+/**
+ * Whether the PC that answers this page is `serverId`, read from its health (GET /api/health, `web_ui.server_id`),
+ * which opens and changes nothing: a wait asks before it has a window opened or believes "added", so a PC's
+ * address that now answers for another PC gets neither. Where the health does not say (an older Ovis), the
+ * hosted app's page names the PC it reaches; with neither, nothing says which PC this is and it throws.
+ */
+export async function pcAnswers(serverId: string): Promise<boolean> {
+  const told = (await fetchHealth()).web_ui?.server_id;
+  const id = text(told) ? told : pagePc();
+  if (id === null) throw new Error("This PC did not say which PC it is");
+  return id === serverId;
+}
 const time = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
 /** The waiting screen this tab kept, expired or not; null when it kept none, one of another shape, or its storage cannot be read. */
@@ -124,7 +165,7 @@ export class AddPcWaitOver extends Error {
 export interface ListedFor {
   readonly serverId: string;
   readonly account: string;
-  /** asked right before every write to the directory: false once the wait was stopped or replaced */
+  /** asked before the window is asked for, once it opened, and right before every write to the directory: false once the wait was stopped or replaced */
   readonly running: () => boolean;
 }
 
@@ -147,7 +188,8 @@ export interface ListedAs {
  *
  * Every directory call is made as the sign-in stored when the listing began (`forSignIn`): one made meanwhile
  * (another tab signed out and in) is never written to. Listing again `for` a wait writes nothing, and throws
- * `AddPcWaitOver`, when the PC that answers or the stored account is not the wait's, or the wait no longer runs.
+ * `AddPcWaitOver`, when the PC that answers or the stored account is not the wait's, or the wait no longer runs;
+ * which PC answers is read first from its health (`pcAnswers`), so no window is opened on another PC either.
  * Listing `as` a sign-in that just finished (no press was made) writes nothing either, and throws the same,
  * when the account stored at that read is another one or none, or the attempt was given up. A listing whose
  * wait or attempt ended while its entry was being written does not tell the PC the account either.
@@ -155,12 +197,17 @@ export interface ListedAs {
 export async function listThisPc(service: AccountService, options: { relistMs: number; for?: ListedFor; as?: ListedAs }): Promise<ListedPc> {
   const wait = options.for;
   const as = options.as;
-  const offer = decodeOffer((await requestRelayLink({ localOnly: true })).url);
+  // asked before the window: one is never opened on another PC than the wait's
+  if (wait !== undefined && !await pcAnswers(wait.serverId)) throw new AddPcWaitOver("pc");
+  // stopped while that was asked: no window is asked for after Stop waiting closed it
+  if (wait !== undefined && !wait.running()) throw new AddPcWaitOver("ended");
+  const offer = decodeOffer((await openAddWindow()).url);
   if (offer === null) throw new Error("This PC's pairing link did not parse");
   as?.reached?.("opened");
   if (wait !== undefined && offer.server_id !== wait.serverId) throw new AddPcWaitOver("pc");
   // given up while the window was being opened: nothing more is read or written for it
-  if (as !== undefined && !as.running()) throw new AddPcWaitOver("ended");
+  // (a stopped wait's listing is over at once, so whoever began it closes the late window without waiting for the directory)
+  if ((as !== undefined && !as.running()) || (wait !== undefined && !wait.running())) throw new AddPcWaitOver("ended");
   const session = await service.session();
   if (wait !== undefined && session?.account !== wait.account) throw new AddPcWaitOver("sign-in");
   if (as !== undefined && session?.account !== as.account) throw new AddPcWaitOver("sign-in");

@@ -71,7 +71,8 @@ function tabStops(surface: HTMLElement, options: FocusTrapOptions): HTMLElement[
  * The stops of what lies over every dialog without being one: a device waiting for this PC's approval
  * (components/RelayPairingPrompt.tsx). They follow the dialog's own in its Tab order, so a prompt that
  * left the focus in one of the dialog's fields can still be answered by keyboard. Each prompt is a stop
- * itself, before its buttons: Tab from the dialog lands on the prompt, never straight on Approve.
+ * itself, before its buttons: Tab from the dialog lands on the prompt, never straight on Approve, and so
+ * does Shift+Tab, which would reach its last button first (`overlayEntry`).
  */
 export function overlayStops(): HTMLElement[] {
   const stops: HTMLElement[] = [];
@@ -86,6 +87,16 @@ export function overlayStops(): HTMLElement[] {
 /** The waiting prompt `stop` is, or is in. */
 function overlayOf(stop: HTMLElement): HTMLElement | undefined {
   return [...document.querySelectorAll<HTMLElement>(".relay-pairing-prompt")].find((prompt) => prompt.contains(stop));
+}
+
+/**
+ * Where the focus goes when Tab's next stop is `next`: a button of a waiting prompt is reached only from
+ * inside that prompt. From outside it (Shift+Tab from the dialog's first stop, or from the prompt below)
+ * the prompt itself is entered first, so two Shift+Tabs and an Enter typed for the dialog never press Approve.
+ */
+export function overlayEntry(next: HTMLElement, active: Element | null): HTMLElement {
+  const overlay = overlayOf(next);
+  return overlay === undefined || overlay === next || (active !== null && overlay.contains(active)) ? next : overlay;
 }
 
 /**
@@ -191,7 +202,8 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
       // a device waiting for approval is in this dialog's round, after its own stops: reached from a field
       // the prompt left the focus in, and left again for the dialog, never for the page beneath
       const stops = [...tabStops(node, latest.current), ...overlayStops()];
-      const next = tabTarget(stops, document.activeElement, event.shiftKey);
+      const stop = tabTarget(stops, document.activeElement, event.shiftKey);
+      const next = stop && overlayEntry(stop, document.activeElement);
       // every control disabled (a deed that cannot be undone): Tab goes nowhere rather than out
       event.preventDefault();
       next?.focus({ preventScroll: true });

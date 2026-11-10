@@ -18,7 +18,7 @@ import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
-import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, dashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, takeDeviceOnlyPc } from "./shellState.ts";
+import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, dashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn } from "./shellState.ts";
 import type { Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
@@ -263,6 +263,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // kept for a reload before the app opens (a newer shell): the page that follows opens this PC from its saved
     // pairing, and must not add it to the account of a sign-in stored since the confirm said "a key of its own"
     keepDeviceOnlyPc(attempt.accountless ? attempt.offer.server_id : null);
+    // nor to the account of another sign-in than the one the confirm named: only its id crosses the reload
+    keepConfirmedSignIn(attempt.signIn ? { server_id: attempt.offer.server_id, sign_in_id: attempt.signIn.sign_in_id ?? null } : null);
     if (controller.signal.aborted) { opened.close(); return; }
     opening = null;
     comparison = null;
@@ -281,6 +283,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const enterApp = (opened: RelayTransport, attempt: Attempt): void => {
     // the pairing's own page opened the PC: a later load of it acts as whoever is signed in then
     keepDeviceOnlyPc(null);
+    keepConfirmedSignIn(null);
     setTransport(opened);
     shell?.unmount(); shell = null;
     app = mount.renderApp(); account.armRefresh();
@@ -391,6 +394,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const forget = (): void => {
     const serverId = last?.offer.server_id ?? entry.serverId, name = last?.offer.name ?? null;
     cancelAttempt(); entry = { ...entry, offer: null };
+    // what a confirm left for a reload goes with the pairing it was for
+    if (serverId !== null && deviceOnlyPc() === serverId) keepDeviceOnlyPc(null);
+    if (serverId !== null && confirmedSignIn()?.server_id === serverId) keepConfirmedSignIn(null);
     void (async () => { if (serverId !== null) { account.cancelEnrollment(serverId); await forgetSavedPc(serverId, store); } show({ kind: "forgotten", name }); })();
   };
   const arrived = (): boolean => {
@@ -428,14 +434,25 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   });
 
 
-  const deviceOnlyPc = takeDeviceOnlyPc();
+  // read, not taken: this load may itself be reloaded or interrupted before the PC opens, and the load after it must
+  // find them too. They go when the app opens (enterApp), when a confirm is acted on (connect), or with a Forget
+  const deviceOnly = deviceOnlyPc(), namedSignIn = confirmedSignIn();
   if (arrived()) return;
   if (entry.serverId !== null) {
     const saved = await store.get(entry.serverId);
     if (saved === undefined) show({ kind: "empty" });
     // a key saved from a forged link (an earlier build saved before admission): Forget removes it
     else if (forgedOffer(offerOf(saved))) show({ kind: "failed", failure: "identity-changed", name: saved.name ?? null, detail: null, mismatch: keyMismatch(saved.server_id, [{ key: saved.server_public_key, from: "saved" }]) });
-    else await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null, retryEnrollment: enrollmentOf(saved) === "failed", ...(deviceOnlyPc === saved.server_id ? { accountless: true } : {}) });
+    else {
+      // this load follows a reload before the app opened, of a pairing whose confirm named a sign-in: it goes on under
+      // that sign-in alone. Another one stored by now, or none, gets nothing of it: the PC opens with the key this
+      // page holds and joins no account, as after a confirm that said "a key of its own"
+      const named = namedSignIn?.server_id === saved.server_id ? namedSignIn : null;
+      const now = named === null || named.sign_in_id === null ? undefined : await account.stored();
+      const signIn = now !== undefined && now.sign_in_id === named?.sign_in_id ? now : undefined;
+      const accountless = deviceOnly === saved.server_id || (named !== null && signIn === undefined);
+      await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null, retryEnrollment: enrollmentOf(saved) === "failed", ...(accountless ? { accountless: true } : signIn ? { signIn } : {}) });
+    }
     return;
   }
 

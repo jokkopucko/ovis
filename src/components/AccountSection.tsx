@@ -10,9 +10,9 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
-import { ApiError, closeRelayLink, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
+import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { AccountPcError, within } from "../lib/account/join.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
@@ -151,9 +151,12 @@ function resumable(kept: AddPcWaiting, now: number): boolean {
   return kept.until > now && kept.until <= now + WAITING_MS && (pc === null || pc === kept.serverId);
 }
 
-/** Closes this PC's pairing window, so nothing more is taken through it; an older Ovis has no such route and lets it run out. */
+/**
+ * Closes this PC's pairing window, so nothing more is taken through it; an older Ovis has no such route and lets it run out.
+ * A wait begun right after asks for its window only once this close was answered (`closeAddWindow`).
+ */
 function closeWindow(): void {
-  closeRelayLink().catch((error: unknown) => {
+  closeAddWindow().catch((error: unknown) => {
     if (!(error instanceof ApiError && error.status === 404)) console.warn("Ovis: this PC's pairing window was not closed", error instanceof Error ? error.name : error);
   });
 }
@@ -174,7 +177,8 @@ let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc>
  * This PC, signed in and in no account yet: listed in the account with one tap, then it waits for a
  * device already in the account to add it, which the owner approves here (docs/account.md, "Adding a PC").
  * While it waits it keeps its pairing window open, for thirty minutes a press, and says when a device added it.
- * A reloaded tab takes the wait up again only on the same PC under the same account. A sign-in that just
+ * A reloaded tab takes the wait up again only on the same PC under the same account: which PC answers is read
+ * (`pcAnswers`) before a wait has a window opened or says the PC was added. A sign-in that just
  * finished on this screen through a button that said it adds this PC lists the PC and waits by itself
  * (`signedInHere`), under its own account alone, with a window only this PC approves, and gives the button back
  * when that gets no answer; a listing no press began is dropped when its screen goes, and the window it opened for
@@ -255,9 +259,12 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
         const session = await accountService().session().catch(() => undefined);
         if (!live) return;
         if (account !== null) {
+          // a device added this PC while the tab that waited for it was reloading: said only under the sign-in that waited, still
+          // stored, and only of the PC that waited (this address may answer for another PC of the account now)
+          const added = kept.account === account && session?.account === account && await within(ANSWER_MS, pcAnswers(kept.serverId));
+          if (!live) return;
           keepAddPcWaiting(null);
-          // a device added this PC while the tab that waited for it was reloading: said only under the sign-in that waited, still stored
-          if (kept.account === account && session?.account === account) setState({ kind: "done", account, enrolling });
+          if (added) setState({ kind: "done", account, enrolling });
           return;
         }
         // read again: while the sign-in was read, another copy of this screen may have stopped the wait, or begun one in its place
@@ -348,7 +355,11 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
      * A reopen or a listing of this wait reached the PC after Stop waiting closed its window (here, or in another
      * copy), and opened it again for nobody: closed once more, unless the person began another wait meanwhile.
      */
-    const closeLate = (): void => { if ((stops.current !== stopsThen || withdrawn()) && starts.current === startsThen && !waitKept()) closeWindow(); };
+    const closeLate = (): boolean => {
+      if (!((stops.current !== stopsThen || withdrawn()) && starts.current === startsThen && !waitKept())) return false;
+      closeWindow();
+      return true;
+    };
     const expired = (): boolean => {
       if (Date.now() < until) return false;
       forget();
@@ -359,7 +370,9 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
     const stillSignedIn = async (): Promise<boolean> => mark === null || (await accountService().session())?.account === mark.account;
     /** The PC has an account: the screen says so, or shows nothing when it is not the one signed in to. */
     const joined = async (account: string, enrolling: boolean): Promise<void> => {
-      const next = await joinedAs(account, enrolling);
+      // believed only of the PC that waited: this address may answer for another PC now, one that has an account
+      // already, and of that one the screen says nothing, as on a page that kept no wait
+      const next: AddThisPcState = mark === null || await pcAnswers(mark.serverId) ? await joinedAs(account, enrolling) : { kind: "hidden" };
       if (!live) return;
       keepAddPcWaiting(null);
       setState(next);
@@ -373,10 +386,18 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
       within(ANSWER_MS, (async (): Promise<void> => {
         if (!await stillSignedIn()) { if (live) stopped(); return; }
         if (!live || withdrawn()) return;
+        // asked before the window, of a request that opens nothing: the address may answer for another PC than the
+        // one that waited, and no window is opened on that one
+        if (mark !== null && !await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
+        if (!live || withdrawn()) return;
         const pc = await reopenAddWindow();
-        closeLate();
-        // the address now answers for another PC than the one that waited: its wait is not this one's
-        if (live && pc !== null && mark !== null && pc !== mark.serverId) stopped();
+        const closed = closeLate();
+        // it changed PC between that question and the window: the wait is not this one's
+        if (pc === null || mark === null || pc === mark.serverId) return;
+        if (live) stopped();
+        // and that request opened a window on the other PC, where no screen waits for anyone: closed again, unless
+        // it was just now, or the person began another wait meanwhile (whose window a close would take)
+        if (!closed && starts.current === startsThen && !waitKept()) closeWindow();
       })()).catch(warned("Ovis: this PC's pairing window was not reopened")).finally(() => { reopening = false; });
     };
     let asking = false;
@@ -405,8 +426,9 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
       /** the listing this attempt began, which the other copy on this wait joins rather than listing too */
       let mine: typeof relistOnItsWay = null;
       let over = false;
-      /** this attempt asked the PC for its window */
+      /** this attempt asked the PC for its window, and has not closed one it opened late yet */
       let asked = false;
+      const closeAsked = (): void => { if (asked && closeLate()) asked = false; };
       within(2 * REOPEN_MS, (async (): Promise<boolean> => {
         const { account, enrolling } = await thisPcMembership();
         if (!live) return true;
@@ -426,6 +448,10 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
         const flying = shared && relistOnItsWay?.until === until ? relistOnItsWay : null;
         asked = flying === null;
         const listed = flying?.listed ?? listThisPc(accountService(), { relistMs: RELIST_MS, for: wait });
+        // its request for the window may reach the PC only after this attempt was given up for getting no answer in
+        // time, and after Stop waiting closed the window: closed once more when the listing itself is over, and
+        // when the attempt is (a listing whose directory never answers is never over)
+        if (flying === null) void listed.then(closeAsked, closeAsked);
         if (shared && flying === null) relistOnItsWay = mine = { until, listed };
         await listed;
         if (!live) return true;
@@ -447,7 +473,7 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
       }).then((ok) => {
         // over with this attempt, also one that got no answer in time: the next attempt lists for itself
         over = true;
-        if (asked) closeLate();
+        closeAsked();
         if (mine !== null && relistOnItsWay === mine) relistOnItsWay = null;
         // a wait that just ended (its effect is about to be left) has no listing due: never at once
         if (live && relisting === null) relisting = setTimeout(relist, ok ? due() || RELIST_MS : REOPEN_MS);
@@ -629,7 +655,8 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
   /**
    * Stops waiting, in every copy of this screen, and closes the window on the PC so nothing more is taken;
    * an older Ovis has no such route and lets it run out. A reopen or a listing still on its way to the PC may
-   * open the window again after that close: the wait's own effect closes it once more when they answer (`closeLate`).
+   * open the window again after that close: the wait's own effect closes it once more when they answer (`closeLate`),
+   * also a listing that was given up for getting no answer in time.
    */
   const stop = (): void => {
     stops.current++;

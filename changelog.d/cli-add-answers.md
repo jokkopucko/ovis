@@ -1,9 +1,9 @@
 ### Changed
 - `ovis add` (also `login` and `link`) and `pair --approve` no longer ask y/N about a device that
   wants in. The question shows the device's six digits and asks for them: typing all six (with or
-  without the space) or the last three approves that request, and anything else declines, a bare
-  Enter and `y` among them (a `y` is told that the digits are what approves). An answer so names
-  the request it is for: a line begun for another request, or typed ahead, approves nothing.
+  without the space) or the last three approves that request, and Enter by itself declines it.
+  An answer so names the request it is for: a line begun for another request, or typed ahead,
+  approves nothing.
 
 ### Fixed
 - `ovis add` (also `login` and `link`) no longer takes a line typed ahead as the answer to a device

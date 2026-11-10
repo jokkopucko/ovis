@@ -80,6 +80,11 @@ const focusShown = (page: Page): Promise<boolean> => page.evaluate(() => {
  * The page's clock, stopped and moved by hand: Approve's guards count in this window's milliseconds, and
  * the presses below are real ones that take as long as the machine is busy.
  */
+/**
+ * What a guard that has just run out is given on top: the guards count to when a key or a click was made, and a
+ * real press is a few of the machine's own milliseconds old when the page hears it, which the stopped clock does not pass.
+ */
+const PRESS_AGE_MS = 250;
 const clock = {
   stop: (page: Page) => page.evaluate(() => { const qa = (globalThis as unknown as { qaClock: { at: number | null } }).qaClock; qa.at = Date.now(); }),
   pass: (page: Page, ms: number) => page.evaluate((by) => { const qa = (globalThis as unknown as { qaClock: { at: number | null } }).qaClock; qa.at = (qa.at ?? Date.now()) + by; }, ms),
@@ -149,12 +154,22 @@ try {
   await page.keyboard.press("Tab");
   assert.ok((await focus(page)).startsWith("settings"), "Tab past Decline goes back to Settings, never nowhere");
   await page.keyboard.press("Shift+Tab");
-  assert.equal(await focus(page), "prompt Decline", "Shift+Tab from Settings' first stop goes back into the prompt");
-  await page.keyboard.press("Shift+Tab");
-  await page.keyboard.press("Shift+Tab");
-  assert.equal(await focus(page), "prompt");
+  assert.equal(await focus(page), "prompt", "Shift+Tab from Settings' first stop goes back into the prompt, on the prompt itself: never onto Decline and then Approve");
+  // a key on Approve within a second of the focus coming into the prompt approves nothing, though the prompt has waited
+  await clock.stop(page);
+  await clock.pass(page, 5000);
   await page.keyboard.press("Shift+Tab");
   assert.ok((await focus(page)).startsWith("settings"), "Shift+Tab from the prompt goes to Settings' last stop, never to the page beneath");
+  await page.keyboard.press("Tab");
+  assert.equal(await focus(page), "prompt");
+  await page.keyboard.press("Tab");
+  assert.equal(await focus(page), "prompt Approve");
+  await page.keyboard.press("Enter");
+  await settled();
+  assert.deepEqual(decided, [], "Enter on Approve right after Tab brought the focus into the prompt approves nothing");
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await focus(page), "prompt", "inside the prompt Shift+Tab walks back from Approve to the prompt");
+  await clock.run(page);
   withdraw();
   await prompt.waitFor({ state: "detached" });
 
@@ -201,9 +216,12 @@ try {
   assert.equal(await focus(page), "prompt", "Tab leaves Settings for the prompt itself, not for Approve or the page beneath");
   await page.keyboard.press("Tab");
   assert.equal(await focus(page), "prompt Approve");
-  // its first second is over by now (the seconds shown have moved): Enter approves
+  // its first second is over by now (the seconds shown have moved), and so is the second after Tab brought the focus in: Enter approves
   await page.waitForFunction(() => Number.parseInt(document.querySelector('[data-testid="relay-pairing-left"]')?.textContent?.trim() ?? "", 10) <= 88);
+  await clock.stop(page);
+  await clock.pass(page, 1500);
   await page.keyboard.press("Enter");
+  await clock.run(page);
   await prompt.waitFor({ state: "detached" });
   assert.deepEqual(decided.splice(0), [{ id: inSettings.id, decision: "approve" }]);
   assert.ok((await focus(page)).startsWith("settings"), `the focus goes back to where Tab took it from in Settings once the prompt is gone: ${await focus(page)}`);
@@ -223,7 +241,11 @@ try {
   // once its first second is over, a key on Approve approves
   await page.waitForFunction(() => Number.parseInt(document.querySelector('[data-testid="relay-pairing-left"]')?.textContent?.trim() ?? "", 10) <= 88);
   await prompt.getByRole("button", { name: "Approve", exact: true }).focus();
+  // (and the second after the focus came onto its button)
+  await clock.stop(page);
+  await clock.pass(page, 1500);
   await page.keyboard.press("Enter");
+  await clock.run(page);
   await prompt.waitFor({ state: "detached" });
   assert.deepEqual(decided, [{ id: first2.id, decision: "approve" }]);
 
@@ -296,7 +318,7 @@ try {
   await page.keyboard.press("Enter");
   await settled();
   assert.deepEqual(decided.length, 1, "nor within a second of the hand-off");
-  await clock.pass(page, 1);
+  await clock.pass(page, 1 + PRESS_AGE_MS);
   await page.keyboard.press("Enter");
   await count(0);
   assert.deepEqual(decided.splice(0), [{ id: handedA.id, decision: "approve" }, { id: handedB.id, decision: "approve" }], "after that second, Enter on Approve approves");
@@ -332,7 +354,7 @@ try {
   await page.mouse.click(x, y);
   await settled();
   assert.equal(decided.length, 1, "a click in the moved prompt's first half second approves nothing");
-  await clock.pass(page, 1);
+  await clock.pass(page, 1 + PRESS_AGE_MS);
   // a double-click's second click never approves, however long the prompt has been there
   await page.mouse.down({ clickCount: 2 });
   await page.mouse.up({ clickCount: 2 });

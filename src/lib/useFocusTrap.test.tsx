@@ -124,14 +124,27 @@ describe("a dialog's Tab round and a device waiting for approval over it", () =>
     expect(walked).toEqual(["close", "p1", "p1 Approve", "p1 Decline", "back", "field"]);
   });
 
-  it("reaches the prompt backwards from the dialog's first stop, and leaves it backwards into the dialog", async () => {
+  it("reaches the prompt backwards from the dialog's first stop, on the prompt itself, and leaves it backwards into the dialog", async () => {
     const settings = dialog();
     await open(settings);
     expect(focused()).toBe("back");
     page.prompts = [prompt("p1"), prompt("p2")];
     const walked: string[] = [];
     for (let step = 0; step < 7; step += 1) { expect(tab(true)).toBe(true); walked.push(focused()); }
-    expect(walked).toEqual(["p2 Decline", "p2 Approve", "p2", "p1 Decline", "p1 Approve", "p1", "close"]);
+    // never from outside a prompt onto one of its buttons: Shift+Tab twice and an Enter typed for the dialog press nothing
+    expect(walked).toEqual(["p2", "p1", "close", "field", "back", "p2", "p1"]);
+  });
+
+  it("walks a prompt's own buttons in both directions once the focus is in it", async () => {
+    const settings = dialog();
+    await open(settings);
+    const [first, second] = [prompt("p1"), prompt("p2")];
+    page.prompts = [first, second];
+    second.focus();
+    const walked: string[] = [];
+    for (const back of [false, false, true, true, true]) { expect(tab(back)).toBe(true); walked.push(focused()); }
+    // back from the second prompt itself is into the one above it, which is entered on itself too
+    expect(walked).toEqual(["p2 Approve", "p2 Decline", "p2 Approve", "p2", "p1"]);
   });
 
   it("keeps Tab in the dialog when no device waits, and when the prompt cannot take the focus", async () => {

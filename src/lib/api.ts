@@ -901,7 +901,8 @@ async function readPaneConversation(paneId: string, machineId: string, page: Con
 export interface HealthInfo {
   ok: boolean;
   herdr: HerdrIdentity;
-  web_ui?: { boot_id: string | null; revision: string | null };
+  /** `server_id`: this PC's relay ID, told to an authenticated browser where the PC has one; absent from an older server */
+  web_ui?: { boot_id: string | null; revision: string | null; server_id?: string };
   /** Absent only on a server that predates the token gate. */
   auth?: HealthAuth;
   /** authenticated only; absent from an older server */

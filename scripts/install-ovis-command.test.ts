@@ -18,6 +18,7 @@ const MARK = "# ovis launcher, written by install.sh";
 const ADD_LINE = "to add this PC to your Ovis account: ";
 const HINT_LINE = "to add this PC to your Ovis account, run in a terminal on this PC: ";
 const WAITS_LINE = "the app is not running yet, so this PC was not added to your Ovis account. Once it runs, run in a terminal on this PC: ";
+const OLD_READER_LINE = "this Ovis release would take a line typed ahead as its answer about the device that adds this PC, so the installer does not start that step for it. Update Ovis in Settings → Updates, then run in a terminal on this PC: ";
 const UPDATE_LINE = "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again";
 const TOKEN_LINE = "on a PC other people log in to, set OVIS_TOKEN first: without it any local user counts as this PC";
 const CTRL_C = "\x03";
@@ -36,14 +37,15 @@ const CONSTANTS = ["REPO", "BIN_DIR", "LAUNCHER_MARK"].map((name) => {
   if (!line) throw new Error(`install.sh sets no ${name}`);
   return line;
 }).join("\n");
-const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_command", "in_foreground", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted"].map(fn).join("\n");
+const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_reads_answers", "add_command", "in_foreground", "discard_typed", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-command-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 /**
  * The plugin's script, as a stand-in: it says where it ran from, what it was given and the dirs it
- * was handed. `add` (and `link`) leave a record, with whether their input is a terminal, and like the
+ * was handed. `add` (and `link`) leave a record, with whether their input is a terminal (and, on a PC
+ * flagged `add-reads`, the line already typed there when they start), and like the
  * real one they fail while the app is not running. `status` says "running" while the PC's `running`
  * flag is set. `knows` is the release: one with `add`, one from before it (only `link`), or one from
  * before both, which answers a name it does not know with its usage and exit 2 as the real one does
@@ -53,8 +55,10 @@ function pluginScript(knows: "add" | "link" | "neither" = "add"): string {
   const record = `{
   const { appendFileSync, existsSync } = await import("node:fs");
   if (!existsSync(process.env.SCRATCH + "/running")) { console.error("Ovis is not running at http://127.0.0.1:7317; start it first"); process.exit(1); }
-  appendFileSync(process.env.SCRATCH + "/add.calls", JSON.stringify({ command, rest, terminal: process.stdin.isTTY === true, ...(process.env.RELEASE ? { release: process.env.RELEASE } : {}) }) + "\\n");
   console.log("the add step");
+  // what is already typed at its terminal when it starts: the line a question it asks later would take for its answer
+  const typed = existsSync(process.env.SCRATCH + "/add-reads") ? { typed: await Promise.race([new Promise((resolve) => process.stdin.once("data", (line) => resolve(String(line)))), Bun.sleep(1500).then(() => null)]) } : {};
+  appendFileSync(process.env.SCRATCH + "/add.calls", JSON.stringify({ command, rest, terminal: process.stdin.isTTY === true, ...typed, ...(process.env.RELEASE ? { release: process.env.RELEASE } : {}) }) + "\\n");
   if (existsSync(process.env.SCRATCH + "/add-waits")) { console.log("waiting for an approval"); await Bun.sleep(60_000); }
   process.exit(existsSync(process.env.SCRATCH + "/add-fails") ? 1 : 0);
 }`;
@@ -65,6 +69,17 @@ else if (['add', 'login', 'link'].includes(command) && ${knows === "neither" ? "
 else if (${knows === "neither" ? "false" : knows === "add" ? `["add", "login", "link"].includes(command)` : `command === "link"`}) ${record}
 else console.log(JSON.stringify({ root: import.meta.dir, command, rest, config: process.env.HERDR_PLUGIN_CONFIG_DIR ?? null, state: process.env.HERDR_PLUGIN_STATE_DIR ?? null }));
 `;
+}
+
+/**
+ * scripts/plugin-link.ts, as a stand-in: the code that asks about the device that adds the PC. `new` tells a line
+ * typed ahead from an answer, by the function install.sh knows such a release by; `old` is v0.5.2's, which asks
+ * [y/N] and takes the next line the terminal hands it (the words are its own).
+ */
+function readerScript(reader: "new" | "old"): string {
+  return reader === "new"
+    ? `export function answerOf(line: string, digits: string, whole = false): "approve" | "decline" | null { return null; }\n`
+    : `export function approves(answer: string, digits: string): boolean { return false; }\n// Type the last three digits to approve [y/N]; nothing here is called answerOf (the word alone, in a comment, is not the function)\n`;
 }
 
 const STAND_INS: Record<string, string> = {
@@ -97,7 +112,8 @@ class Pc {
     this.launcher = join(this.scratch, ".local", "bin", "ovis");
     this.app = join(this.scratch, ".local", "share", "ovis", "app");
     mkdirSync(this.bin);
-    for (const tool of ["sh", "cat", "uname", "ldd", "grep", "git", "tar", "awk", "sed", "mktemp", "rm", "sleep", "mv", "mkdir", "cp", "chmod", "ps", "tail", "readlink"]) {
+    // (no perl: the add step empties the terminal with stty and dd, and finds its foreground with ps)
+    for (const tool of ["sh", "cat", "uname", "ldd", "grep", "git", "tar", "awk", "sed", "mktemp", "rm", "sleep", "mv", "mkdir", "cp", "chmod", "ps", "tail", "readlink", "stty", "dd"]) {
       const real = Bun.which(tool);
       if (real) symlinkSync(real, join(this.bin, tool));
     }
@@ -108,11 +124,13 @@ class Pc {
     this.plugin("plugin");
   }
 
-  /** herdr lists the plugin at `name` under `id`; `knows` is what its script does */
-  plugin(name: string, knows: "add" | "link" | "neither" = "add", id = "devswha.ovis"): string {
+  /** herdr lists the plugin at `name` under `id`; `knows` is what its script does, `reader` how its add step reads an answer */
+  plugin(name: string, knows: "add" | "link" | "neither" = "add", id = "devswha.ovis", reader: "new" | "old" = "new"): string {
     const root = join(this.scratch, name);
     mkdirSync(join(root, "scripts"), { recursive: true });
     writeFileSync(join(root, "scripts", "plugin.ts"), pluginScript(knows));
+    // a release from before link has no such file
+    if (knows !== "neither") writeFileSync(join(root, "scripts", "plugin-link.ts"), readerScript(reader));
     writeFileSync(join(this.scratch, "plugin-id"), id);
     writeFileSync(join(this.scratch, "plugin-root"), root);
     return root;
@@ -123,6 +141,7 @@ class Pc {
   core(): string {
     mkdirSync(join(this.app, "scripts"), { recursive: true });
     writeFileSync(join(this.app, "scripts", "plugin.ts"), pluginScript());
+    writeFileSync(join(this.app, "scripts", "plugin-link.ts"), readerScript("new"));
     return this.app;
   }
   /** herdr's checkout at `name` as a git checkout with one commit, whose script `knows` what it is given: its root */
@@ -145,12 +164,13 @@ class Pc {
    * add step records as the release that ran; `checkout` is another checkout at the same commit that
    * keeps its releases in the same state dir.
    */
-  release(root: string, knows: "add" | "link" | "neither", options: { port?: number | string; state?: string; label?: string; checkout?: string } = {}): string {
+  release(root: string, knows: "add" | "link" | "neither", options: { port?: number | string; state?: string; label?: string; checkout?: string; reader?: "new" | "old" } = {}): string {
     const state = options.state ?? join(this.scratch, ".config", "ovis");
     const updates = join(state, "updates", createHash("sha256").update(`${options.checkout ?? root}:${options.port ?? 7317}`).digest("hex").slice(0, 16));
     const release = join(updates, "release-1");
     mkdirSync(join(release, "scripts"), { recursive: true });
     writeFileSync(join(release, "scripts", "plugin.ts"), `process.env.RELEASE = ${JSON.stringify(options.label ?? "updated")};\n${pluginScript(knows)}`);
+    if (knows !== "neither") writeFileSync(join(release, "scripts", "plugin-link.ts"), readerScript(options.reader ?? "new"));
     writeFileSync(join(updates, "current.json"), JSON.stringify({ source_revision: this.git(root, "rev-parse", "HEAD"), directory: release }));
     return release;
   }
@@ -167,9 +187,9 @@ class Pc {
     writeFileSync(join(this.scratch, "herdr-config", id, name), text);
     return this;
   }
-  flag(name: "add-fails" | "add-waits" | "running"): this { writeFileSync(join(this.scratch, name), ""); return this; }
+  flag(name: "add-fails" | "add-waits" | "add-reads" | "running"): this { writeFileSync(join(this.scratch, name), ""); return this; }
   /** what the add step was run with, one record per run */
-  addCalls(): { command: string; rest: string[]; terminal: boolean; release?: string }[] {
+  addCalls(): { command: string; rest: string[]; terminal: boolean; typed?: string | null; release?: string }[] {
     const log = join(this.scratch, "add.calls");
     return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
   }
@@ -205,10 +225,10 @@ class Pc {
 
   /**
    * The whole installer at a terminal (script(1) gives one), the script on stdin as under `curl … | sh`.
-   * `typed` goes to the terminal once `after` is on it. The wrapping shell survives Ctrl-C as the
-   * user's own shell does, and reports the installer's exit code.
+   * `typed` goes to the terminal once `after` is on it, again and again until the run ends, or `once`.
+   * The wrapping shell survives Ctrl-C as the user's own shell does, and reports the installer's exit code.
    */
-  async atTerminal(args: string, extra?: Record<string, string>, typed?: { after: string; text: string }, background = false): Promise<{ out: string; exitCode: number }> {
+  async atTerminal(args: string, extra?: Record<string, string>, typed?: { after: string; text: string; once?: boolean }, background = false): Promise<{ out: string; exitCode: number }> {
     const install = `cat "${join(ROOT, "install.sh")}" | sh -s -- ${args}`;
     // in the background as an interactive shell runs `… &`: with job control, so in a process group that is not the terminal's
     const command = background ? `"${Bun.which("bash")}" -c 'set -m; ${install} & wait $!; echo "exit=$?"'` : `trap : INT; ${install}; echo "exit=$?"`;
@@ -229,7 +249,7 @@ class Pc {
         if (again !== undefined || typed === undefined || !out.includes(typed.after)) continue;
         // Ctrl-C is a signal, and the add step's own handlers come a moment after its first words: pressed until it lands
         type(typed.text);
-        again = setInterval(() => type(typed.text), 100);
+        again = setInterval(() => { if (!typed.once) type(typed.text); }, 100);
       }
       await child.exited;
     } finally {
@@ -691,6 +711,29 @@ describe.skipIf(platform() === "win32")("the ovis launcher install.sh writes", (
     expect(printed(lines(oldest, before, release))).toBe(`bun ${release}/scripts/plugin.ts add`);
   });
 
+  it("tells the reader of the release that runs, not the checkout's: the checkout's script hands the add on to it", () => {
+    const reads = (pc: Pc, root: string, code: string) => pc.sh(`root='${root}'; code='${code}'; if add_reads_answers; then echo new; else echo old; fi`).out.trim();
+    const old = (pc: Pc, root: string, code: string) => pc.sh(`add=1; terminal=0; launcher_ours=0; original_path=$PATH; root='${root}'; code='${code}'; add_pc; echo "result=$add_result old=$add_old"; closing_lines`).out;
+    // a checkout at v0.5.2 whose app Settings → Updates has since brought to a release with the new reader
+    const updated = new Pc().flag("running");
+    const first = updated.checkout("plugin", "link");
+    writeFileSync(join(first, "scripts", "plugin-link.ts"), readerScript("old"));
+    expect(reads(updated, first, updated.release(first, "add"))).toBe("new");
+    // the release that runs is the old one: no add step, whatever is said of the name
+    const stale = new Pc().flag("running");
+    const root = stale.checkout("plugin", "link");
+    const release = stale.release(root, "link", { reader: "old" });
+    expect(reads(stale, root, release)).toBe("old");
+    const said = old(stale, root, release);
+    expect(said).toContain("result=none old=1");
+    expect(said).toContain(`${OLD_READER_LINE}bun ${root}/scripts/plugin.ts link`);
+    expect(stale.addCalls()).toEqual([]);
+    // the word in a comment is not the function
+    expect(readerScript("old")).toContain("answerOf");
+    // and the real script has it, by the words install.sh looks for
+    expect(readFileSync(join(ROOT, "scripts", "plugin-link.ts"), "utf8")).toContain("\nexport function answerOf(");
+  });
+
   it("prints commands that run from a home directory with a space in its name", async () => {
     const pc = new Pc({ home: "john o'smith " }).written().flag("running");
     expect(pc.scratch).toContain(" ");
@@ -821,6 +864,37 @@ describe.skipIf(platform() === "win32")("install.sh --add", () => {
       expect(out.indexOf(TOKEN_LINE)).toBeLessThan(out.indexOf("the add step"));
     });
 
+    // What was typed while the installer worked, or pasted after its command, is still in the terminal when the
+    // add step starts: it must not be there to answer what the add asks later (a device's approval, y/N).
+    for (const how of ["perl", "stty and dd"] as const) {
+      it.concurrent(`discards what was typed before the add step starts (${how})`, async () => {
+        const pc = new Pc().flag("running").flag("add-reads");
+        if (how === "perl") { symlinkSync(Bun.which("perl")!, join(pc.bin, "perl")); rmSync(join(pc.bin, "stty")); }
+        // typed as soon as the installer says its first word, long before the add step
+        const { out, exitCode } = await pc.atTerminal("--add", {}, { after: "Ovis", text: "y\n", once: true });
+        expect(exitCode, out).toBe(0);
+        expect(out.indexOf("y\r\n")).toBeLessThan(out.indexOf(TOKEN_LINE));
+        expect(pc.addCalls()).toEqual([{ command: "add", rest: [], terminal: true, typed: null }]);
+      });
+    }
+
+    it.concurrent("what is typed once the add step runs still reaches it", async () => {
+      const pc = new Pc().flag("running").flag("add-reads");
+      const { out, exitCode } = await pc.atTerminal("--add", {}, { after: "the add step", text: "y\n" });
+      expect(exitCode, out).toBe(0);
+      expect(pc.addCalls()).toEqual([{ command: "add", rest: [], terminal: true, typed: "y\n" }]);
+    });
+
+    it.concurrent("does not run the add step where what was typed cannot be discarded, and says what to run", async () => {
+      // neither perl nor stty: nothing here can empty the terminal, so nothing typed before is taken for an answer
+      const pc = new Pc().flag("running").flag("add-reads");
+      rmSync(join(pc.bin, "stty"));
+      const { out, exitCode } = await pc.atTerminal("--add", {}, { after: "Ovis", text: "y\n", once: true });
+      expect(exitCode, out).toBe(0);
+      expect(pc.addCalls()).toEqual([]);
+      expect(out).toContain(`Ovis: ${HINT_LINE}${pc.launcher} add`);
+    });
+
     it.concurrent("OVIS_ADD=1 means the same as --add", async () => {
       const pc = new Pc().flag("running");
       const { exitCode, out } = await pc.atTerminal("", { OVIS_ADD: "1" });
@@ -851,6 +925,27 @@ describe.skipIf(platform() === "win32")("install.sh --add", () => {
       const { exitCode, out } = await pc.atTerminal("--add");
       expect(exitCode, out).toBe(0);
       expect(pc.addCalls()).toEqual([{ command: "link", rest: [], terminal: true }]);
+    });
+
+    // install.sh is served from main, and installs the latest release: until that one has the reader that tells a
+    // line typed ahead from an answer, a "y" and Enter typed during its sign-in would approve the first device that asks
+    it.concurrent("does not run the add step of a release whose reader takes a line typed ahead (v0.5.2), and says to update first", async () => {
+      const pc = new Pc().flag("running").flag("add-reads");
+      pc.plugin("plugin", "link", "devswha.ovis", "old");
+      // y and Enter, typed over and over from the installer's first word on, as during the old sign-in
+      const { out, exitCode } = await pc.atTerminal("--add", {}, { after: "Ovis", text: "y\n" });
+      expect(exitCode, out).toBe(0);
+      expect(pc.addCalls()).toEqual([]);
+      expect(out).not.toContain("the add step");
+      expect(out).toContain(`Ovis: ${OLD_READER_LINE}${pc.launcher} add`);
+      expect(out).not.toContain(HINT_LINE);
+      // the same release, with the reader of the next one: its add step runs
+      const next = new Pc().flag("running");
+      next.plugin("plugin", "link", "devswha.ovis", "new");
+      const ran = await next.atTerminal("--add");
+      expect(ran.exitCode, ran.out).toBe(0);
+      expect(next.addCalls()).toEqual([{ command: "link", rest: [], terminal: true }]);
+      expect(ran.out).not.toContain(OLD_READER_LINE);
     });
 
     it.concurrent("says what to run on a release from before both", async () => {
