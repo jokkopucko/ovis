@@ -14,8 +14,10 @@ one.
 **Importing a file again replaces the theme of that name.** Change a color, import the file once
 more, and the new colors take the place of the old ones, on whichever side drew them. Only a theme
 with the same name and the same sides is replaced: a dark file and a light file of one name are
-kept as two themes, told apart by the side written beside each. Names that look the same are the
-same name: characters that draw nothing are not kept.
+kept as two themes, and each then says its sides on its card and on its Remove button. A name is
+kept as it is written, with the joiners and the emoji selector that Persian and Indic words and
+emoji need, and without any other character that draws nothing. Two names that look the same
+are the same name.
 
 ## The colors
 
@@ -63,7 +65,8 @@ draws a dark one. A faint block whose text has to be moved across its background
 on the side it was written for.
 
 The status glyphs of the sidebar and the tabs keep herdr's own colors, made lighter or darker only
-where the theme's surfaces need it.
+where the theme's surfaces need it. The text of a filled button (Send) reads on the button and on
+the button under the pointer.
 
 On a dark theme the terminal keeps xterm's own sixteen ANSI colors, as with the built-in dark
 themes; on a light theme they come from the theme's hues.
@@ -112,7 +115,8 @@ palette:
 The older flat form (`scheme: "Name"` with `base00: "181613"` lines beside it) is read too. A
 scheme is one side: a background darker than the text is a dark theme. A file with a dark and a
 light side is the JSON above; YAML that holds two sides (a `dark:` or `light:` block, or a color
-named twice) is refused rather than read as one.
+named twice) is refused rather than read as one, and the message says so. Keys may be quoted, as
+values may.
 
 ## Limits
 

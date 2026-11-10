@@ -185,6 +185,20 @@ try {
             }
             if (evidence) await page.screenshot({ path: join(evidence, `theme-file-two-${width}-${scheme}.png`) });
 
+            // a second theme of the same name with other sides is its own theme, and the two say their sides
+            const lone = JSON.stringify({ name: "Lamplight", dark: example.theme.dark });
+            await picker.setInputFiles(file("lamplight-dark.json", lone));
+            await page.waitForFunction(() => document.querySelectorAll('.settings-dialog [data-theme-card^="custom:"]').length === 3);
+            assert.deepEqual((await cards.allInnerTexts()).map((text) => text.trim()).sort(), ["Harbor Night", "Lamplight · Dark", "Lamplight · Dark · Light"]);
+            assert.equal(await dialog.getByRole("button", { name: "Remove theme Lamplight · Dark · Light", exact: true }).count(), 1);
+            await dialog.getByRole("button", { name: "Remove theme Lamplight · Dark", exact: true }).click();
+            await page.waitForFunction(() => document.querySelectorAll('.settings-dialog [data-theme-card^="custom:"]').length === 2);
+            assert.deepEqual((await cards.allInnerTexts()).map((text) => text.trim()).sort(), ["Harbor Night", "Lamplight"], `${where}: alone again, the name stands by itself`);
+            // YAML that holds two sides is refused, and told why
+            await picker.setInputFiles(file("two.yaml", 'name: "Two"\ndark:\n  base00: "101010"\n  base05: "e0e0e0"\nlight:\n  base00: "ffffff"\n  base05: "202020"\n'));
+            await dialog.getByRole("alert").filter({ hasText: "That file holds more than one side." }).waitFor();
+            assert.equal(await cards.count(), 2);
+
             // Remove: the cards go, and a side that drew one is its built-in theme again
             await dialog.getByRole("button", { name: "Remove theme Harbor Night", exact: true }).click();
             await dialog.getByRole("button", { name: "Remove theme Lamplight", exact: true }).click();

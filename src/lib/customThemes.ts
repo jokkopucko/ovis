@@ -43,18 +43,37 @@ const SIDES = ["dark", "light"] as const;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** What draws nothing in a name: the format marks, the code points a renderer ignores, and the blank Braille pattern. */
+const UNSEEN = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+/**
+ * The three of them a written name can need: the joiners that shape Persian and Indic words and
+ * tie an emoji sequence together (U+200C, U+200D), and the selector that draws a sign as an emoji
+ * (U+FE0F). Without them "👩‍💻" is two pictures and "شب‌تاب" another word shape.
+ */
+const SHAPING = /[\u200c\u200d\ufe0f]/u;
+
 /**
  * A name as it is kept: one line, at most MAX_THEME_NAME characters, in one spelling (NFC), without
- * control characters and without anything that draws nothing or reorders the text around it: a
- * name from someone else's file is drawn in Settings, and two names that look the same are one
- * name. A name that would draw nothing is no name. Cleaning a clean name changes nothing.
+ * control characters, without the marks that reorder the text around it, and without what draws
+ * nothing, except the joiners and the emoji selector a name can need: a name from someone else's
+ * file is drawn in Settings as it was written. A name that would draw nothing is no name. Cleaning
+ * a clean name changes nothing.
  */
 function cleanName(value: unknown): string {
   if (typeof value !== "string") return "";
   // the unseen marks go first: a letter and its accent they stood between then join as one
-  const plain = value.replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").normalize("NFC");
+  const plain = value.replace(UNSEEN, (mark) => SHAPING.test(mark) ? mark : "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").normalize("NFC");
   const name = [...plain.replace(/\s+/g, " ").trim()].slice(0, MAX_THEME_NAME).join("").trim();
-  return /[^\p{Z}]/u.test(name) ? name : "";
+  return nameKey(name) === "" ? "" : name;
+}
+
+/**
+ * What two names are compared by: the name without anything unseen, the joiners and the selector
+ * included, in one spelling. Names that look the same have one key, so an import folds them, and
+ * the kept name still draws as its file wrote it.
+ */
+export function nameKey(name: string): string {
+  return name.replace(UNSEEN, "").normalize("NFC").replace(/\s+/g, " ").trim();
 }
 
 const color = (value: unknown): string | null => {
@@ -177,10 +196,11 @@ function scalar(text: string): string {
 
 /**
  * A Base16 scheme's YAML, read line by line: its sixteen `baseXX: "rrggbb"` lines wherever they
- * are indented, and its `name:` (or the older `scheme:`). No YAML beyond that is understood, and
- * none is needed for a scheme file. Every step is linear in the line, and a long line is skipped.
- * A scheme is one side: null for a file that holds more than one (a colour named twice, or a
- * `dark:` or `light:` block of its own), whose lines would otherwise run together into one block.
+ * are indented, and its `name:` (or the older `scheme:`). A key may be quoted, as a value may. No
+ * YAML beyond that is understood, and none is needed for a scheme file. Every step is linear in
+ * the line, and a long line is skipped. A scheme is one side: null for a file that holds more
+ * than one (a colour named twice, or a `dark:` or `light:` block of its own), whose lines would
+ * otherwise run together into one block.
  */
 function readSchemeLines(text: string): Record<string, unknown> | null {
   const palette: Record<string, string> = {};
@@ -190,13 +210,14 @@ function readSchemeLines(text: string): Record<string, unknown> | null {
     const line = raw.trim();
     const colon = line.indexOf(":");
     if (colon <= 0) continue;
-    const key = line.slice(0, colon).trimEnd();
+    const written = line.slice(0, colon).trimEnd();
+    const key = written.length >= 2 && (written[0] === '"' || written[0] === "'") && written.at(-1) === written[0] ? written.slice(1, -1) : written;
     const value = scalar(line.slice(colon + 1).trimStart());
     const seed = BASE16_KEYS.find((known) => known.toLowerCase() === key.toLowerCase());
     if (seed) {
       if (seed in palette) return null;
       palette[seed] = value;
-    } else if (raw.startsWith(key)) {
+    } else if (raw[0] !== " " && raw[0] !== "\t") {
       // a field of the scheme itself, not of something nested in it
       if (key === "dark" || key === "light") return null;
       if ((key === "name" || key === "scheme") && !(key in scheme)) scheme[key] = value;
@@ -205,14 +226,15 @@ function readSchemeLines(text: string): Record<string, unknown> | null {
   return scheme;
 }
 
-export type ThemeFileError = "too-large" | "not-a-theme" | "not-json" | "no-colors" | "bad-color";
+export type ThemeFileError = "too-large" | "not-a-theme" | "not-json" | "two-sides" | "no-colors" | "bad-color";
 /** `key`: the colour a "bad-color" file wrote wrongly. */
 export type ThemeFileResult = { theme: CustomTheme } | { error: ThemeFileError; key?: Base16Key };
 
 /**
  * The theme a file holds. `fallbackName` names a theme whose file gives none (the file's own
  * name, without its ending). A file is taken whole or refused: a colour it wrote wrongly, a side
- * without a ground and a text colour, or JSON that does not parse is said rather than left out.
+ * without a ground and a text colour, JSON that does not parse, or YAML that holds two sides is
+ * said rather than left out.
  */
 export function readThemeFile(file: string, fallbackName = ""): ThemeFileResult {
   if (file.length > MAX_THEME_FILE_BYTES) return { error: "too-large" };
@@ -223,7 +245,8 @@ export function readThemeFile(file: string, fallbackName = ""): ThemeFileResult 
     // reader would take some of its lines for a scheme's and import half of it, or find none and say "no colors".
     if (/^\s*(\{|\/\/|\/\*)/.test(text)) return { error: "not-json" };
     parsed = readSchemeLines(text);
-    if (parsed !== null && Object.keys((parsed as { palette: object }).palette).length === 0 && /"base0[0-9a-f]"\s*:/i.test(text)) return { error: "not-json" };
+    // a file full of base00 to base0F lines is not "no theme found": it holds more sides than a scheme has
+    if (parsed === null) return { error: "two-sides" };
   }
   if (!isObject(parsed)) return { error: "not-a-theme" };
   const name = cleanName(parsed["name"]) || cleanName(parsed["scheme"]) || cleanName(fallbackName) || "Theme";
@@ -286,7 +309,8 @@ export function withTheme(current: CustomThemes, theme: CustomTheme, side: Mode)
 
 /**
  * The list after `theme` is imported: chosen for each side it has, and null when the list is full.
- * A held theme of the same name and the same sides is the one this file was before it was edited:
+ * A held theme of the same name (as it looks: nameKey) and the same sides is the one this file was
+ * before it was edited:
  * the new one takes its place in the list, and a side that drew the old one draws this one. So an
  * author who changes a colour and imports again has one theme, not a row of twins that fills the
  * list. A theme of that name with other sides is another theme (a dark file and a light file both
@@ -294,7 +318,8 @@ export function withTheme(current: CustomThemes, theme: CustomTheme, side: Mode)
  */
 export function withImported(current: CustomThemes, theme: CustomTheme): CustomThemes | null {
   const sameSides = (entry: CustomTheme): boolean => SIDES.every((side) => (entry[side] === undefined) === (theme[side] === undefined));
-  const earlier = current.themes.filter((entry) => entry.name === theme.name && entry.id !== theme.id && sameSides(entry)).map((entry) => entry.id);
+  const key = nameKey(theme.name);
+  const earlier = current.themes.filter((entry) => nameKey(entry.name) === key && entry.id !== theme.id && sameSides(entry)).map((entry) => entry.id);
   let next = current;
   if (earlier.length > 0) {
     const at = current.themes.findIndex((entry) => entry.id === earlier[0]);

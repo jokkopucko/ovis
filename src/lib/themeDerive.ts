@@ -215,6 +215,13 @@ export function deriveTheme(seeds: Base16): { mode: Mode; vars: Record<RoleName,
   const working = fit(seeds.base0D, indicator);
   const blocked = fit(seeds.base08, indicator);
   const done = fit(seeds.base0B, indicator);
+  // The button's text reads on its fill and on the fill under the pointer: fitted to the first alone it can
+  // drop under its floor on the second. Where no colour reads on both, it keeps the fill, and the hover
+  // takes a step it does read on: toward the ground instead of the text, or none.
+  const onFill = [ground(accent, TEXT_FLOOR)];
+  const onBoth = fit(bg, [...onFill, ground(mix(accent, text), TEXT_FLOOR)]);
+  const onPrimary = clears(onBoth, onFill) ? onBoth : fit(bg, onFill);
+  const hovered = [mix(accent, text), mix(accent, bg)].find((fill) => contrast(onPrimary, fill) >= TEXT_FLOOR) ?? accent;
   const statusAlpha = dark ? 0.14 : 0.12;
   const shadow = dark ? "#000000" : text;
 
@@ -223,8 +230,7 @@ export function deriveTheme(seeds: Base16): { mode: Mode; vars: Record<RoleName,
     border: seeds.base02, "border-strong": seeds.base03,
     text, "text-dim": textDim, "text-strong": text,
     accent, "accent-tint": rgba(accent, dark ? 0.13 : 0.1),
-    primary: accent, "primary-hover": mix(accent, text),
-    "primary-text": fit(bg, [ground(accent, TEXT_FLOOR)]),
+    primary: accent, "primary-hover": hovered, "primary-text": onPrimary,
     "primary-tint": rgba(accent, dark ? 0.16 : 0.14),
     "status-idle": fit(seeds.base03, [ground(bg, INDICATOR_FLOOR)]),
     "status-working": working, "status-blocked": blocked, "status-done": done,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FileUp, Trash2 } from "lucide-react";
-import { MAX_CUSTOM_THEMES, MAX_THEME_FILE_BYTES, readThemeFile, withImported, withoutTheme, type CustomTheme, type ThemeFileError } from "../lib/customThemes.ts";
+import { MAX_CUSTOM_THEMES, MAX_THEME_FILE_BYTES, nameKey, readThemeFile, withImported, withoutTheme, type CustomTheme, type ThemeFileError } from "../lib/customThemes.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import type { Mode } from "../lib/themes.ts";
@@ -16,9 +16,23 @@ function refusal(t: Translate, error: ThemeFileError | "full", key = ""): string
     case "too-large": return t("That file is too large to be a theme.");
     case "not-a-theme": return t("No theme was found in that file. It needs Base16 colors, base00 to base0F.");
     case "not-json": return t("That file is not valid JSON. Look for a trailing comma or a comment.");
+    case "two-sides": return t("That file holds more than one side. A YAML scheme is one side: write a dark and a light side as one JSON file.");
     case "no-colors": return t("That theme has no background (base00) and text (base05) color.");
     case "full": return t("{count} themes are imported already. Remove one first.", { count: MAX_CUSTOM_THEMES });
   }
+}
+
+/** The sides an imported theme has, in words. */
+const sidesOf = (t: Translate, theme: CustomTheme): string => [theme.dark && t("Dark"), theme.light && t("Light")].filter(Boolean).join(" · ");
+
+/**
+ * What an imported theme is called where it is named alone (its card, its Remove button): its name,
+ * and its sides too when another imported theme looks to have the same name (a dark file and a
+ * light file nobody renamed), so the two are told apart.
+ */
+export function themeLabel(t: Translate, theme: CustomTheme, themes: readonly CustomTheme[]): string {
+  const key = nameKey(theme.name);
+  return themes.some((entry) => entry.id !== theme.id && nameKey(entry.name) === key) ? `${theme.name} · ${sidesOf(t, theme)}` : theme.name;
 }
 
 /**
@@ -61,7 +75,6 @@ export function ThemeFiles({ onImported }: { onImported: (sides: readonly Mode[]
     setPending({ theme, sides });
   };
 
-  const kinds = (theme: CustomTheme): string => [theme.dark && t("Dark"), theme.light && t("Light")].filter(Boolean).join(" · ");
   return (
     <>
       <SettingsRow
@@ -90,8 +103,8 @@ export function ThemeFiles({ onImported }: { onImported: (sides: readonly Mode[]
             {custom.themes.map((theme) => (
               <li key={theme.id}>
                 <span className="theme-file-name">{theme.name}</span>
-                <span className="theme-file-kinds">{kinds(theme)}</span>
-                <button type="button" className="icon-button" aria-label={t("Remove theme {name}", { name: theme.name })} title={t("Remove theme {name}", { name: theme.name })} onClick={() => {
+                <span className="theme-file-kinds">{sidesOf(t, theme)}</span>
+                <button type="button" className="icon-button" aria-label={t("Remove theme {name}", { name: themeLabel(t, theme, custom.themes) })} title={t("Remove theme {name}", { name: themeLabel(t, theme, custom.themes) })} onClick={() => {
                   update((current) => ({ customThemes: withoutTheme(current.customThemes, theme.id) }));
                   setStatus(null);
                 }}>

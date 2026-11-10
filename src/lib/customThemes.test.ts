@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   bootRows, chosenTheme, customRow, customRowId, drawnTheme, MAX_CUSTOM_THEMES, MAX_THEME_FILE_BYTES, MAX_THEME_NAME, NO_CUSTOM_THEMES,
-  readThemeFile, sanitizeCustomThemes, withImported, withoutTheme, withTheme, type CustomTheme, type CustomThemes,
+  nameKey, readThemeFile, sanitizeCustomThemes, withImported, withoutTheme, withTheme, type CustomTheme, type CustomThemes,
 } from "./customThemes.ts";
 import { DEFAULT_SETTINGS, sanitizeSettings } from "./settings.ts";
 import { BASE16_KEYS } from "./themeDerive.ts";
@@ -122,15 +122,23 @@ describe("readThemeFile", () => {
     expect(theme(`author:\n  name: "Someone"\nbase00: "101010"\nbase05: "e0e0e0"\n`, "file").name).toBe("file");
     // a BOM before JSON too
     expect(theme(`\ufeff${JSON.stringify({ name: "B", base00: "#101010", base05: "#e0e0e0" })}`).name).toBe("B");
+    // a key may be quoted, either way, as a value may
+    expect(theme(`"scheme": "Quoted"\n"base00": "181818"\n"base05": "d8d8d8"\n"base0D": "7cafc2"\n`)).toMatchObject({ name: "Quoted", dark: { base00: "#181818", base05: "#d8d8d8", base0D: "#7cafc2" } });
+    expect(theme(`'name': 'Single'\npalette:\n  'base00': '181818'\n  'base05': 'd8d8d8'\n`)).toMatchObject({ name: "Single", dark: { base00: "#181818" } });
+    // a quote on one end only is no quoted key, and a nested quoted name is still not the scheme's
+    expect(readThemeFile(`"base00: "181818"\n`)).toEqual({ error: "not-a-theme" });
+    expect(theme(`author:\n  "name": "Someone"\nbase00: "101010"\nbase05: "e0e0e0"\n`, "file").name).toBe("file");
   });
 
   test("a scheme is one side: a file whose lines hold two is refused, not run together into one", () => {
     // the app's two-sided shape written as YAML: its blocks' lines would overwrite each other
     const yaml = `name: "Two"\ndark:\n  base00: "101010"\n  base05: "e0e0e0"\n  base0D: "ff0000"\nlight:\n  base00: "ffffff"\n  base05: "202020"\n`;
-    expect(readThemeFile(yaml)).toEqual({ error: "not-a-theme" });
-    expect(readThemeFile(`dark:\n  base00: "101010"\n  base05: "e0e0e0"\n`)).toEqual({ error: "not-a-theme" });
-    // a colour named twice, whatever the case of its key
-    expect(readThemeFile(`base00: "101010"\nbase05: "e0e0e0"\nBASE00: "ffffff"\n`)).toEqual({ error: "not-a-theme" });
+    // said as that: a file full of base00 to base0F lines is not "no theme found"
+    expect(readThemeFile(yaml)).toEqual({ error: "two-sides" });
+    expect(readThemeFile(`dark:\n  base00: "101010"\n  base05: "e0e0e0"\n`)).toEqual({ error: "two-sides" });
+    // a colour named twice, whatever the case of its key or its quotes
+    expect(readThemeFile(`base00: "101010"\nbase05: "e0e0e0"\nBASE00: "ffffff"\n`)).toEqual({ error: "two-sides" });
+    expect(readThemeFile(`base00: "101010"\nbase05: "e0e0e0"\n"base00": "ffffff"\n`)).toEqual({ error: "two-sides" });
     // a scheme whose nested fields are called dark or light is still a scheme
     expect(theme(`name: "Nested"\nmeta:\n  dark: true\npalette:\n  base00: "101010"\n  base05: "e0e0e0"\n`).dark?.base00).toBe("#101010");
   });
@@ -141,7 +149,7 @@ describe("readThemeFile", () => {
     expect(theme(long, "fallback").name).toBe("fallback");
     expect(readThemeFile(`${"base00: ".repeat(7_000)}\n`)).toEqual({ error: "not-a-theme" });
     expect(readThemeFile(`base00:${" ".repeat(150)}#\n`)).toEqual({ error: "bad-color", key: "base00" });
-    expect(readThemeFile(`base00:${" ".repeat(150)}#\n`.repeat(400))).toEqual({ error: "not-a-theme" });
+    expect(readThemeFile(`base00:${" ".repeat(150)}#\n`.repeat(400))).toEqual({ error: "two-sides" });
     expect(performance.now() - started).toBeLessThan(500);
   });
 
@@ -193,16 +201,26 @@ describe("readThemeFile", () => {
     // a mark that would draw the rest of the line backwards is dropped, in a file and in a stored list
     expect(theme(JSON.stringify({ name: "ab\u202ecd\u2066ef\u200f", base00: "#000000", base05: "#ffffff" })).name).toBe("abcdef");
     expect(sanitizeCustomThemes({ themes: [{ ...read, name: "x\u202ey" }], dark: null, light: null }).themes[0]!.name).toBe("xy");
-    // names that look the same are one name: nothing unseen is kept (a soft hyphen, a zero-width space, a word
-    // joiner, a variation selector, a tag), and one spelling of an accented letter
+    // nothing unseen is kept (a soft hyphen, a zero-width space, a word joiner, a tag, a blank Braille cell),
+    // and one spelling of an accented letter
     const named = (name: string): string => theme(JSON.stringify({ name, base00: "#000000", base05: "#ffffff" })).name;
-    for (const unseen of ["\u200b", "\u00ad", "\u2060", "\ufe0f", "\u{e0001}", "\u200d", "\u034f", "\u3164"]) expect(named(`Lamp${unseen}light${unseen}`), unseen.codePointAt(0)!.toString(16)).toBe("Lamplight");
+    for (const unseen of ["\u200b", "\u00ad", "\u2060", "\u{e0001}", "\u034f", "\u3164", "\u2800", "\ufe00"]) expect(named(`Lamp${unseen}light${unseen}`), unseen.codePointAt(0)!.toString(16)).toBe("Lamplight");
     expect(named("Rose\u0301 Pine")).toBe("Ros\u00e9 Pine");
     expect(named("Ros\u00e9 Pine")).toBe("Ros\u00e9 Pine");
-    // a letter and its accent with something unseen between them join as well, so cleaning a kept name changes nothing
-    expect(named("Rose\u200d\u0301")).toBe("Ros\u00e9");
-    for (const name of ["Rose\u200d\u0301 Pine", "\u202eab\u00adc", "e\u0301".repeat(60), "\ud83d", "A\u0085B"]) expect(named(named(name)), name).toBe(named(name));
+    // but a name keeps the joiners and the emoji selector it was written with: an emoji sequence, an emoji-style
+    // sign, a Persian and a Devanagari word draw as their file wrote them
+    for (const written of ["Night \u{1f469}\u200d\u{1f4bb}", "Love \u2764\ufe0f", "\u0634\u0628\u200c\u062a\u0627\u0628", "\u0915\u094d\u200d\u0937"]) expect(named(written), written).toBe(written);
+    // and is compared without them, so two names that look the same are one name
+    for (const unseen of ["\u200c", "\u200d", "\ufe0f"]) {
+      expect(named(`Lamp${unseen}light`)).toBe(`Lamp${unseen}light`);
+      expect(nameKey(named(`Lamp${unseen}light`))).toBe("Lamplight");
+    }
+    expect(nameKey("Rose\u200d\u0301  Pine ")).toBe("Ros\u00e9 Pine");
+    // cleaning a kept name changes nothing
+    for (const name of ["Rose\u200d\u0301 Pine", "\u202eab\u00adc", "e\u0301".repeat(60), "\ud83d", "A\u0085B", "\u200d".repeat(50), `x${"\u2764\ufe0f".repeat(30)}`, "a\u2800\u200db"]) expect(named(named(name)), name).toBe(named(name));
     expect(sanitizeCustomThemes({ themes: [{ ...read, name: "Lamp\u200blight" }], dark: null, light: null }).themes[0]!.name).toBe("Lamplight");
+    // only joiners, selectors or a blank cell draw nothing: that is no name either
+    for (const blank of ["\u2800", "\u200d\u200c", "\ufe0f ", "\u2800 \u200d"]) expect(named(blank), blank.codePointAt(0)!.toString(16)).toBe("Theme");
     // a name that would draw nothing is no name: the file's own name stands in, and a stored one is dropped
     expect(theme(JSON.stringify({ name: "\u200b\u200d \u2060", base00: "#000000", base05: "#ffffff" }), "from-file").name).toBe("from-file");
     expect(sanitizeCustomThemes({ themes: [{ ...read, name: "\u200b" }], dark: null, light: null })).toBe(NO_CUSTOM_THEMES);
@@ -283,6 +301,17 @@ describe("the kept list", () => {
     expect(withImported(withImported(list, night)!, day)).toEqual(list);
     const unnamedNight = theme(JSON.stringify({ base00: "#101010", base05: "#e0e0e0" }), "theme"), unnamedDay = theme(JSON.stringify({ base00: "#ffffff", base05: "#202020" }), "theme");
     expect(withImported(withImported(NO_CUSTOM_THEMES, unnamedNight)!, unnamedDay)!.themes).toEqual([unnamedNight, unnamedDay]);
+  });
+
+  test("a name is matched as it looks: one written with a joiner or a selector is the same theme", () => {
+    const plain = theme(JSON.stringify({ name: "Love \u2764", base00: "#101010", base05: "#e0e0e0" }));
+    const emoji = theme(JSON.stringify({ name: "Love \u2764\ufe0f", base00: "#202020", base05: "#e0e0e0" }));
+    expect(plain.name).not.toBe(emoji.name);
+    // the edited file takes the earlier one's place, and its own spelling is the one kept
+    expect(withImported(withImported(NO_CUSTOM_THEMES, plain)!, emoji)).toEqual({ themes: [emoji], dark: emoji.id, light: null });
+    // a different name is another theme
+    const other = theme(JSON.stringify({ name: "Love", base00: "#202020", base05: "#e0e0e0" }));
+    expect(withImported(withImported(NO_CUSTOM_THEMES, plain)!, other)!.themes).toEqual([plain, other]);
   });
 
   test("a full list still takes an edit of a theme it holds, and refuses another name", () => {

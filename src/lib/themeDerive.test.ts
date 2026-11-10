@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { contrast } from "./colorMath.ts";
 import { parseThemeBlocks, parseThemeValue } from "./themeCss.ts";
-import { CONTRAST_PAIRS, INDICATOR_FLOOR, LIGHT_ANSI_PAIRS } from "./themeContrast.ts";
+import { CONTRAST_PAIRS, INDICATOR_FLOOR, LIGHT_ANSI_PAIRS, TEXT_FLOOR } from "./themeContrast.ts";
 import { BASE16_KEYS, deriveTheme, fit, INDICATORS, type Base16 } from "./themeDerive.ts";
 import { INDICATOR_ROLES, LIGHT_ANSI_ROLES, ROLES } from "./themeRoles.ts";
 
@@ -25,6 +25,9 @@ function below({ mode, vars }: ReturnType<typeof deriveTheme>): string[] {
     const ratio = contrast(roles[fg]!, roles[bg]!);
     return ratio < floor ? [`${fg} on ${bg}: ${ratio.toFixed(2)}:1 < ${floor}:1 (${roles[fg]} / ${roles[bg]})`] : [];
   });
+  // the filled button's text under the pointer: not a pair the built-in themes are held to, and one a derived theme keeps
+  const pressed = contrast(roles["primary-text"]!, roles["primary-hover"]!);
+  if (pressed < TEXT_FLOOR) under.push(`primary-text on primary-hover: ${pressed.toFixed(2)}:1 (${roles["primary-text"]} / ${roles["primary-hover"]})`);
   const row = contrast(roles["bg-hover"]!, roles["bg"]!);
   return row < TELLS ? [...under, `a row on the ground: ${row.toFixed(3)}:1 (${roles["bg-hover"]} / ${roles["bg"]})`] : under;
 }
@@ -148,6 +151,17 @@ describe("deriveTheme", () => {
     const pit = deriveTheme(seeds({ base00: "#000000", base01: "#000000", base02: "#ffffff", base05: "#757575" }));
     expect(pit.vars.text).not.toBe("#757575");
     expect(below(pit)).toEqual([]);
+  });
+
+  test("the filled button's text reads on its fill and on the fill under the pointer", () => {
+    // 4.60:1 at rest and 3.45:1 under the pointer when the text was fitted to the resting fill alone
+    const { vars } = deriveTheme(seeds({ base00: "#d419b4", base01: "#d419b4", base02: "#d419b4", base05: "#6bdb67", base0D: "#dfa7ef" }));
+    expect(contrast(vars["primary-text"], vars.primary)).toBeGreaterThanOrEqual(TEXT_FLOOR);
+    expect(contrast(vars["primary-text"], vars["primary-hover"])).toBeGreaterThanOrEqual(TEXT_FLOOR);
+    expect(vars["primary-hover"]).not.toBe(vars.primary);
+    // a readable scheme keeps the hover it had: a tenth of the way to the text
+    expect(deriveTheme(DARK).vars["primary-hover"]).not.toBe(DARK.base0D);
+    expect(contrast(deriveTheme(DARK).vars["primary-text"], deriveTheme(DARK).vars["primary-hover"])).toBeGreaterThanOrEqual(TEXT_FLOOR);
   });
 
   test("herdr's state colours are the stylesheet's, moved only where the theme's surfaces need it", () => {

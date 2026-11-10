@@ -20,6 +20,7 @@ export const SETTINGS_LAYOUT_ZH: Record<string, string> = {
   "That file is too large to be a theme.": "这个文件太大，不像主题文件。",
   "No theme was found in that file. It needs Base16 colors, base00 to base0F.": "文件里没有找到主题。需要 Base16 颜色（base00 到 base0F）。",
   "That file is not valid JSON. Look for a trailing comma or a comment.": "这不是有效的 JSON 文件。请检查是否有多余的逗号或注释。",
+  "That file holds more than one side. A YAML scheme is one side: write a dark and a light side as one JSON file.": "这个文件包含不止一面。YAML 配色只能有一面：深色和浅色两面请写在同一个 JSON 文件里。",
   "That theme has no background (base00) and text (base05) color.": "这个主题没有背景色（base00）和文字色（base05）。",
   "{key} in that file is not a color. Colors are written #rrggbb.": "文件中的 {key} 不是颜色。颜色写作 #rrggbb。",
   "{count} themes are imported already. Remove one first.": "已导入 {count} 个主题。请先删除一个。",

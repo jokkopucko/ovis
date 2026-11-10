@@ -20,6 +20,7 @@ export const SETTINGS_LAYOUT_JA: Record<string, string> = {
   "That file is too large to be a theme.": "テーマファイルにしては大きすぎます。",
   "No theme was found in that file. It needs Base16 colors, base00 to base0F.": "ファイルにテーマが見つかりません。Base16 の色(base00〜base0F)が必要です。",
   "That file is not valid JSON. Look for a trailing comma or a comment.": "有効な JSON ファイルではありません。末尾のカンマやコメントがないか確認してください。",
+  "That file holds more than one side. A YAML scheme is one side: write a dark and a light side as one JSON file.": "このファイルには複数の面が入っています。YAML のスキームは片面だけです。ダークとライトの両方は 1 つの JSON ファイルに書いてください。",
   "That theme has no background (base00) and text (base05) color.": "このテーマには背景色(base00)と文字色(base05)がありません。",
   "{key} in that file is not a color. Colors are written #rrggbb.": "ファイルの {key} は色ではありません。色は #rrggbb で書きます。",
   "{count} themes are imported already. Remove one first.": "すでに {count} 個のテーマを読み込んでいます。先に 1 つ削除してください。",
