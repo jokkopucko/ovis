@@ -119,7 +119,9 @@ try {
   assert.ok(remoteFile(join(remoteHome, ".ssh/authorized_keys")).includes(`ovis:${machineId}`));
   assert.ok(!readFileSync(join(state, "machines.json"), "utf8").includes(password), "password is never persisted");
   console.log("PASS first install, fingerprint, secret authentication and dedicated-key registration");
-  const second = await setup({ ...target, identity_file: join(state, "ssh", machineId), session: "ssh-second", name: "QA second PC" });
+  // A second herdr beside the first is asked for: a setup that only names another session is offered the running one
+  // (choose_herdr) instead of starting its own.
+  const second = await setup({ ...target, identity_file: join(state, "ssh", machineId), session: "ssh-second", name: "QA second PC", start_new_herdr: true });
   assert.equal(second.phase, "connected", second.error ?? "");
   const secondPath = `/api/machines/${second.machine_id}`;
   const secondCreated = await api<WorkspaceCreated>(secondPath + "/workspace/create", "POST", { cwd: remoteHome, label: "ovis-test-ssh-second" });
