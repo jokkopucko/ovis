@@ -144,7 +144,8 @@ export class RelayService {
   readonly relay: string;
   readonly app: string;
   /** Phones that compared digits with this PC and wait for the owner's approval. */
-  readonly approvals = new RelayPairingApprovals();
+  readonly approvals: RelayPairingApprovals;
+  private stopRevokeAll: (() => void) | undefined;
   private pairCodes: RelayPairCodes | undefined;
   /** This PC's relay pass, kept while the relay is on and is one of Ovis's. */
   private passKeeper: RelayPassKeeper | undefined;
@@ -159,6 +160,8 @@ export class RelayService {
   private directOn: boolean | undefined;
 
   constructor(private readonly options: RelayServiceOptions) {
+    // the pairing window outlives a restart (pairing-approvals.ts), so it is read from this PC's state
+    this.approvals = new RelayPairingApprovals({ path: join(options.stateDir, "relay", "pairing-window.json") });
     const named = options.relay ?? process.env["OVIS_RELAY_URL"];
     const origin = named === undefined ? undefined : relayEndpoint(named, "wss:");
     // A test PC on a staging copy of Ovis's relay (relay/README.md, "Staging"), and only with Ovis's staging account
@@ -436,6 +439,9 @@ export class RelayService {
   resume(services: RequestServices, port: number): void {
     this.services = services;
     this.port = port;
+    // "revoke all" ends what the owner had invited too, not only the devices already let in
+    this.stopRevokeAll?.();
+    this.stopRevokeAll = services.devices.onRevokeAll(() => this.approvals.closeWindow());
     this.blocked = services.serveOnly ? "serve_only" : null;
     try {
       let saved: unknown;
@@ -514,6 +520,8 @@ export class RelayService {
   async stop(): Promise<RelayStatus> {
     writePrivateState(join(this.options.stateDir, "relay", "state.json"), { enabled: false });
     this.enabled = false;
+    // turned off by the owner, unlike shutdown(): the window does not wait for the relay to come back
+    this.approvals.closeWindow();
     await this.disconnect();
     return this.status();
   }
@@ -580,6 +588,8 @@ export class RelayService {
     if (this.resetting) throw new Error("Relay identity reset is in progress.");
     this.resetting = true;
     try {
+      // a window opened for the old key's link does not carry over to the new key
+      this.approvals.closeWindow();
       await this.disconnect();
       for (const device of services.devices.list(null)) if (device.via_relay) services.devices.revoke(device.id);
       this.identity = rotateRelayIdentity(this.options.stateDir);

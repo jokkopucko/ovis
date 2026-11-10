@@ -125,7 +125,7 @@ longer works**.
 PC's `server_id`, public key, relay and host name only (**Copy a link without a code** under the setup
 guide's QR code; it holds nothing secret, though whoever carries the link can read the host name). Copying it opens a 10-minute window, as a Bluetooth device's pairing mode
 does: outside it the PC refuses a comparison with `auth_failed` before any prompt, and does not count
-it as a failed pairing, so nobody the owner did not invite can raise a prompt. Such a link may have come through a channel nobody vouches
+it as a failed pairing, so nobody the owner did not invite can raise a prompt. The window is kept across a restart of the PC's server for the rest of its ten minutes (a saved deadline further ahead than that reads as closed), and `POST /api/relay/link/close`, from this PC only, ends it and declines the comparisons it was showing. Such a link may have come through a channel nobody vouches
 for, so its key is not trusted on its own: a relay, or whoever handed the link over, could have put
 its own key there and sit between the phone and the PC. Trust comes from two people looking at
 two screens instead, as in Bluetooth's numeric comparison:

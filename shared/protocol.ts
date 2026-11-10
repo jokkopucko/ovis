@@ -176,6 +176,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
  *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
+ *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the
+ *         comparisons this PC was shown under it; from this PC only (403 local_required through the relay)
+ *         500 internal_error when the saved window could not be cleared (closed until a restart)
  *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
  *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
  *         404 relay_pairing_gone once it left, was decided or ran out of time

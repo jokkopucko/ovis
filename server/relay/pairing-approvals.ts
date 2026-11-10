@@ -1,11 +1,16 @@
 import { randomBytes, randomInt } from "node:crypto";
+import { existsSync, readFileSync, rmSync, truncateSync } from "node:fs";
 import type { PairingIntent, RelayPairingRequest, RemotePairingRequest } from "../../shared/machines.ts";
 import type { DeviceMatch } from "../devices.ts";
+import { writePrivateState } from "../private-state.ts";
 
 /** Comparisons waiting on the owner at once; a phone past them is refused (`auth_failed`), so prompts cannot pile up. */
 export const MAX_PENDING_APPROVALS = 3;
 /** How long after the owner copies a link without a code this PC takes comparisons, as a Bluetooth device in pairing mode. */
 export const PAIRING_WINDOW_MS = 10 * 60_000;
+
+/** The file calls that take the saved window away, swappable in tests. */
+export const pairingWindowFs = { rmSync, truncateSync };
 
 /** How a waiting comparison ended: approved (by this PC when `by` is absent, else by that account member) or not. */
 export type PairingDecision = { approved: true; by?: DeviceMatch } | { approved: false };
@@ -42,6 +47,10 @@ function decoys(digits: string): [string, string, string] {
  * Held in memory only: a restart drops them with their sessions. The PC's own windows hear of every
  * change with the digits (`relay-pairings`); drive account members connected through the relay hear
  * of it with three candidates instead (`remote-pairings`, docs/account.md "Who may admit a device").
+ *
+ * The pairing window itself is kept in `path` when one is given, so a PC that restarts (an update)
+ * while it waits to be added still takes the comparison it asked for: never past the ten minutes it
+ * was opened for, and closed again by closeWindow.
  */
 export class RelayPairingApprovals {
   private readonly waiting = new Map<string, Waiting>();
@@ -49,22 +58,139 @@ export class RelayPairingApprovals {
   private readonly remoteListeners = new Set<(pairings: RemotePairingRequest[]) => void>();
   private windowUntil = 0;
   private localOnlyUntil = 0;
+  private readonly path: string | undefined;
+  private readonly now: () => number;
+  private readonly setTimer: (run: () => void, ms: number) => () => void;
+  private cancelExpiry: (() => void) | undefined;
+  private closeCount = 0;
+
+  constructor(options: { path?: string; now?: () => number; setTimer?: (run: () => void, ms: number) => () => void } = {}) {
+    this.path = options.path;
+    this.now = options.now ?? Date.now;
+    this.setTimer = options.setTimer ?? ((run, ms) => {
+      const timer = setTimeout(run, ms);
+      timer.unref();
+      return () => clearTimeout(timer);
+    });
+    this.load();
+  }
+
+  /** How many times the window was closed on purpose: a comparison taken before a close is not shown after it (session.ts). */
+  get closes(): number { return this.closeCount; }
+
+  /**
+   * Writes the window closed once it has run out, so the file never holds a deadline a later start
+   * could land inside (a clock that went back). Nothing waits on it: the timer does not keep the server up.
+   */
+  private watchExpiry(): void {
+    this.cancelExpiry?.();
+    this.cancelExpiry = undefined;
+    if (!this.path) return;
+    const until = Math.max(this.windowUntil, this.localOnlyUntil);
+    if (until === 0) return;
+    this.cancelExpiry = this.setTimer(() => {
+      this.cancelExpiry = undefined;
+      if (this.now() < Math.max(this.windowUntil, this.localOnlyUntil)) { this.watchExpiry(); return; }
+      this.windowUntil = 0;
+      this.localOnlyUntil = 0;
+      if (!this.save()) this.forget();
+    }, Math.max(0, until - this.now()));
+  }
+
+  /**
+   * The saved window, when the file holds both deadlines: one without the other reads as closed, since
+   * a window that came back without its local-only half would show what it takes to account members.
+   * A deadline further ahead than a window opened now is not a window this clock opened (the clock ran
+   * ahead when it was saved, or went back since): it reads as closed, never as a fresh ten minutes at
+   * every start. Whatever is not open now is written back as closed, so a clock that later goes back
+   * cannot reopen it.
+   */
+  private load(): void {
+    if (!this.path) return;
+    let saved: unknown;
+    try { saved = JSON.parse(readFileSync(this.path, "utf8")); } catch { return; }
+    if (typeof saved !== "object" || saved === null) return;
+    const { v, window_until: windowUntil, local_only_until: localOnlyUntil } = saved as Record<string, unknown>;
+    if (v !== 1) return;
+    if (typeof windowUntil !== "number" || !Number.isFinite(windowUntil)) return;
+    if (typeof localOnlyUntil !== "number" || !Number.isFinite(localOnlyUntil)) return;
+    const now = this.now();
+    const latest = now + PAIRING_WINDOW_MS;
+    if (windowUntil > now && windowUntil <= latest && localOnlyUntil <= latest) {
+      this.windowUntil = windowUntil;
+      this.localOnlyUntil = localOnlyUntil;
+      this.watchExpiry();
+      return;
+    }
+    if (windowUntil === 0 && localOnlyUntil === 0) return;
+    if (!this.save()) this.forget();
+  }
+
+  /** Both deadlines in one write, so the file never holds one without the other. False when it could not be written. */
+  private save(): boolean {
+    if (!this.path) return true;
+    try {
+      writePrivateState(this.path, { v: 1, window_until: this.windowUntil, local_only_until: this.localOnlyUntil });
+      return true;
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "relay.pairing_window.save_failed", error: error instanceof Error ? error.message : String(error) }));
+      return false;
+    }
+  }
 
   /**
    * The owner asked for a link without a code: comparisons are taken for PAIRING_WINDOW_MS from now.
    * `localOnly`: this PC's own screen waits to be added to an account (docs/account.md, "Adding a PC"),
    * so what is asked until then is decided here only, even once the PC has members who could approve.
    */
-  openWindow(now = Date.now(), options: { localOnly?: boolean } = {}): void {
+  openWindow(now = this.now(), options: { localOnly?: boolean } = {}): void {
     this.windowUntil = now + PAIRING_WINDOW_MS;
     if (options.localOnly) this.localOnlyUntil = now + PAIRING_WINDOW_MS;
+    // a window that could not be saved still works until this process ends, but the file it could not
+    // replace must not stand in for it at the next start (an older window without its local-only half)
+    if (!this.save()) this.forget();
+    this.watchExpiry();
+  }
+
+  /**
+   * Takes the saved window away when it could not be rewritten: absent reads as closed, and so does
+   * an empty file, which is what is left when the file cannot be removed either. False when neither worked.
+   */
+  private forget(): boolean {
+    if (!this.path) return true;
+    try { pairingWindowFs.rmSync(this.path, { force: true }); return true; } catch { /* truncated below */ }
+    try { pairingWindowFs.truncateSync(this.path, 0); return true; }
+    catch (error) {
+      console.warn(JSON.stringify({ event: "relay.pairing_window.forget_failed", error: error instanceof Error ? error.message : String(error) }));
+      return false;
+    }
+  }
+
+  /**
+   * Ends the window now: the owner stopped waiting, revoked every device, reset the relay identity or
+   * turned the relay off. A comparison this PC's own windows were shown under that window ends
+   * unapproved with it, so nothing asked before the close can be approved after it; a join shown to
+   * account members only never depended on the window and stays. False when the saved window could
+   * neither be rewritten nor taken away: it is closed for this process, but a restart could bring it back.
+   */
+  closeWindow(): boolean {
+    const open = this.windowUntil !== 0 || this.localOnlyUntil !== 0;
+    this.windowUntil = 0;
+    this.localOnlyUntil = 0;
+    this.closeCount += 1;
+    this.cancelExpiry?.();
+    this.cancelExpiry = undefined;
+    for (const entry of [...this.waiting.values()]) if (!entry.membersOnly) entry.finish({ approved: false });
+    if (!this.path || (!open && !existsSync(this.path))) return true;
+    // a file that cannot be rewritten must not bring the window back at the next start: absent reads as closed
+    return this.save() || this.forget();
   }
 
   /** Whether a comparison taken now is this PC's own to decide: asked while its add-me screen waited. */
-  localOnlyOpen(now = Date.now()): boolean { return now < this.localOnlyUntil; }
+  localOnlyOpen(now = this.now()): boolean { return now < this.localOnlyUntil; }
 
   /** Outside the window a comparison is refused before any prompt, so nobody the owner did not invite can raise one. */
-  windowOpen(now = Date.now()): boolean { return now < this.windowUntil; }
+  windowOpen(now = this.now()): boolean { return now < this.windowUntil; }
 
   list(): RelayPairingRequest[] {
     return [...this.waiting.values()].filter(({ membersOnly }) => !membersOnly).map(({ request }) => request);

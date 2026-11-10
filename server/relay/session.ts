@@ -96,7 +96,7 @@ export class RelaySession {
   /** A pairing by comparing digits under way; `ended` once it made a device or counted as a failure. */
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
-    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
+    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; /** approvals.closes when it was taken */ closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
   } | undefined;
   private device: DeviceMatch | undefined;
   /** The key this session's device signed in or paired with: a `link` must start from it (docs/account.md). */
@@ -303,7 +303,7 @@ export class RelaySession {
         this.state = "pair-commit";
         this.sas = {
           label: frame.payload.label, publicKey: frame.payload.public_key, commitment: fromBase64Url(frame.payload.commitment),
-          pcNonce: randomPairNonce(), expiresAt: Date.now() + PAIR_APPROVAL_MS, phoneConfirmed: false, approved: false, ended: false, membersOnly, localOnly,
+          pcNonce: randomPairNonce(), expiresAt: Date.now() + PAIR_APPROVAL_MS, phoneConfirmed: false, approved: false, ended: false, membersOnly, localOnly, closes: this.options.services.relay.approvals.closes,
         };
         // past the comparison's deadline the session ends with `timeout` and its prompt goes at once;
         // the mux's own setup deadline stays just behind it as the backstop
@@ -319,6 +319,9 @@ export class RelaySession {
         if (this.state !== "pair-commit" || !sas || !this.sasBinding) { this.close("protocol_error"); return; }
         const phoneNonce = fromBase64Url(frame.payload.nonce);
         if (!commitmentHolds(sas.commitment, this.sasBinding, sas.publicKey, phoneNonce)) { this.close("auth_failed"); return; }
+        // the window it was taken under was closed while this phone held its reveal: no prompt after a close
+        // (a join shown to account members only never depended on the window)
+        if (!sas.membersOnly && this.options.services.relay.approvals.closes !== sas.closes) { this.close("auth_failed"); return; }
         // a pause that began while this phone held its reveal still keeps its prompt off the owner's screen
         this.options.services.devices.assertRelayPairing(this.path);
         const asked = this.options.services.relay.approvals.ask(sas.label,

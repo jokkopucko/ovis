@@ -344,6 +344,22 @@ test("a revealed nonce that is not the committed one is refused before any promp
   expect(f.app.context.services.relay.approvals.list()).toEqual([]);
 });
 
+test("a comparison taken before the window was closed raises no prompt when its digits come after the close", async () => {
+  const f = fixture();
+  const { p } = await direct(f);
+  await p.hello();
+  const nonce = randomPairNonce();
+  await p.send({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
+    payload: { label: "New phone", public_key: p.publicKey, commitment: toBase64Url(pairCommitment(p.binding(), p.publicKey, nonce)) } });
+  expect((await p.inbox.next()).type).toBe(FrameType.PAIR_CHALLENGE);
+  // the owner stops waiting, and even opens a new window, while the phone holds its reveal
+  f.app.context.services.relay.approvals.closeWindow();
+  f.app.context.services.relay.approvals.openWindow();
+  await p.send({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(nonce) } });
+  expect(await sessionError(p)).toBe("auth_failed");
+  expect(f.app.context.services.relay.approvals.list()).toEqual([]);
+});
+
 test("replayed or out-of-order pairing frames end the session", async () => {
   const f = fixture();
   for (const replay of ["request-twice", "confirm-early", "reveal-early", "confirm-twice"] as const) {

@@ -306,6 +306,59 @@ it("names the PC in the pairing link without a code as Ovis lists it", async () 
   expect(offer?.name).toBe(hostname().slice(0, 64));
 });
 
+it("closes the pairing window on request, and keeps it closed for the next start", async () => {
+  const f = await fixture();
+  await f.start();
+  expect((await f.request("/link", "POST")).status).toBe(200);
+  expect(f.service.approvals.windowOpen()).toBe(true);
+  // Given the request does not come from this app's relay controls, it changes nothing
+  expect((await f.request("/link/close", "POST", false)).status).toBe(403);
+  expect(f.service.approvals.windowOpen()).toBe(true);
+  // When the owner stops waiting
+  const closed = await f.request("/link/close", "POST");
+  expect(closed.status).toBe(200);
+  expect(await closed.json()).toEqual({ ok: true });
+  expect(f.service.approvals.windowOpen()).toBe(false);
+  // Then a restart does not bring it back
+  await f.restart();
+  expect(f.service.approvals.windowOpen()).toBe(false);
+  // And closing a window that is not open answers the same
+  expect(await (await f.request("/link/close", "POST")).json()).toEqual({ ok: true });
+});
+
+it("keeps the pairing window, local-only as it was opened, across a restart", async () => {
+  const f = await fixture();
+  await f.start();
+  const linked = await fetch(f.base + "/api/relay/link", { method: "POST", headers: { origin: f.base, "x-herdr-update": "1", "x-ovis-local-only": "1" } });
+  expect(linked.status).toBe(200);
+  await f.restart();
+  expect(f.service.approvals.windowOpen()).toBe(true);
+  expect(f.service.approvals.localOnlyOpen()).toBe(true);
+});
+
+it("closes the pairing window on Revoke all, Reset relay identity and turning the relay off", async () => {
+  const f = await fixture();
+  await f.start();
+  const open = async () => {
+    expect((await f.request("/link", "POST")).status).toBe(200);
+    expect(f.service.approvals.windowOpen()).toBe(true);
+  };
+  const closedForGood = async () => {
+    expect(f.service.approvals.windowOpen()).toBe(false);
+    expect(f.service.approvals.localOnlyOpen()).toBe(false);
+    expect(JSON.parse(readFileSync(join(f.stateDir, "relay", "pairing-window.json"), "utf8"))).toEqual({ v: 1, window_until: 0, local_only_until: 0 });
+  };
+  await open();
+  f.app.context.services.devices.revokeAll();
+  await closedForGood();
+  await open();
+  await f.service.resetIdentity();
+  await closedForGood();
+  await open();
+  expect((await f.request("/stop", "POST")).status).toBe(200);
+  await closedForGood();
+});
+
 it("creates a new active code when the relay offer has none to reuse", async () => {
   const f = await fixture();
   await f.start();
@@ -350,7 +403,7 @@ it("starts, decodes an offer, pairs, authenticates, and carries full HTTP and WS
   const returning = await client(f, offer, false, paired.device);
   expect((await returning.http("/api/relay")).status).toBe(200);
   expect(await (await returning.http("/api/access")).json()).toMatchObject({ relay: { phase: "online" } });
-  for (const path of ["/api/relay/offer", "/api/relay/code", "/api/relay/code/cancel", "/api/relay/reset-identity", "/api/relay/start", "/api/relay/stop"]) {
+  for (const path of ["/api/relay/offer", "/api/relay/code", "/api/relay/code/cancel", "/api/relay/link/close", "/api/relay/reset-identity", "/api/relay/start", "/api/relay/stop"]) {
     const refused = await returning.http(path, { method: "POST", headers: [["x-herdr-update", "1"]] });
     expect(refused.status).toBe(403);
     expect(await refused.json()).toMatchObject({ error: { code: "local_required" } });
