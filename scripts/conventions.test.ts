@@ -202,6 +202,7 @@ describe("names from before Ovis", () => {
     "server/remote-host.ts": "a remote bundle published before the rename reads the old name",
     "install.sh": "reads the old settings of an earlier install",
     "scripts/install-herdr-core.test.ts": "tests that install.sh replaces an earlier install's runtime under its old name",
+    "scripts/install-ovis-command.test.ts": "tests that the ovis command reads an earlier install's state dir setting under its old name",
     "install.ps1": "reads the old settings of an earlier install",
     "app/windows/src/Setup.cs": "reads the token of an earlier install's settings, as install.ps1 does",
     "app/windows/tests/SetupTests.cs": "tests that read",

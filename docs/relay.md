@@ -277,14 +277,20 @@ code as well ([Access and safety](guide.md#access-and-safety)).
 ### A PC with no screen
 
 A PC you reach only over SSH (a home server, a desktop in another room) links itself from its own
-terminal, with the same two ways its Settings page offers and the same rules. In an installed
-plugin, run the plugin's script as in [In a terminal](guide.md#in-a-terminal); from a checkout:
+terminal, with the same two ways its Settings page offers and the same rules. The installer's
+`ovis` command runs them ([In a terminal](guide.md#in-a-terminal)); from a checkout, or on Windows,
+`bun scripts/plugin.ts` takes its place:
 
 ```bash
-bun scripts/plugin.ts add             # sign in to your account, then approve the device that adds this PC
-bun scripts/plugin.ts add --google    # the same, at Google's own device page (--github: GitHub's)
-bun scripts/plugin.ts link --code     # a code to type and the relay QR code, renewed until Ctrl+C
+ovis add             # sign in to your account, then approve the device that adds this PC
+ovis add --google    # the same, at Google's own device page (--github: GitHub's)
+ovis link --code     # a code to type and the relay QR code, renewed until Ctrl+C
 ```
+
+The installer runs `ovis add` as its last step when it is given `--add`
+(`curl -fsSL https://ovis.sh/install.sh | sh -s -- --add`), at a terminal you can answer at and
+while the app runs. On a PC where it has just installed herdr the app is not up yet: start herdr,
+then run `ovis add`, as its last lines say.
 
 `add`, `login` and `link` are one command under three names. Both ways turn the relay on first when
 it is off, and wait until it is online.

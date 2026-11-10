@@ -1,6 +1,14 @@
 # Herdr may have started before Bun was installed: read the current user PATH at invocation time.
-param([string]$Command = 'status')
+param(
+    [string]$Command = 'status',
+    # the command's own flags (link --code, add --google), handed on as they are
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
+)
 $ErrorActionPreference = 'Stop'
+# Only plain flags go on: nothing that cmd.exe would need quoted, or could read as its own syntax.
+foreach ($flag in $Rest) {
+    if ($flag -cnotmatch '^--[a-z][a-z-]*$') { throw "Ovis does not know the argument '$flag': only flags such as --code are passed on." }
+}
 if (-not $env:HOME) { $env:HOME = $env:USERPROFILE }
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $env:PATH = "$env:USERPROFILE\.bun\bin;$userPath;$env:PATH"
@@ -12,6 +20,10 @@ if ($batchShim) {
     $env:OVIS_BUN = $bun.Source
     $env:OVIS_PLUGIN_SCRIPT = Join-Path $PSScriptRoot 'plugin.ts'
     $env:OVIS_PLUGIN_COMMAND = $Command
+    # The flags are expanded once too, unquoted: the check above left nothing in them to quote.
+    # Without flags the variable is left out of the command line, since cmd.exe keeps the name of one that is not set.
+    $env:OVIS_PLUGIN_FLAGS = $Rest -join ' '
+    $flags = if ($Rest) { ' %OVIS_PLUGIN_FLAGS%' } else { '' }
 }
 if ($Command -eq 'start') {
     # A fresh hidden console keeps PowerShell's output pipes out of the detached server.
@@ -35,8 +47,8 @@ if ($Command -eq 'start') {
     exit 0
 }
 if ($batchShim) {
-    & $env:ComSpec /d /v:off /s /c '""%OVIS_BUN%" "%OVIS_PLUGIN_SCRIPT%" "%OVIS_PLUGIN_COMMAND%""'
+    & $env:ComSpec /d /v:off /s /c ('""%OVIS_BUN%" "%OVIS_PLUGIN_SCRIPT%" "%OVIS_PLUGIN_COMMAND%"' + $flags + '"')
 } else {
-    & $bun.Source (Join-Path $PSScriptRoot 'plugin.ts') $Command
+    & $bun.Source (Join-Path $PSScriptRoot 'plugin.ts') $Command @Rest
 }
 exit $LASTEXITCODE

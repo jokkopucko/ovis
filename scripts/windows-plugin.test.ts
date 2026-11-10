@@ -55,9 +55,11 @@ it.skipIf(process.platform !== "win32")("runs the Windows launcher with executab
       ]);
       expect(resolutionCode, resolutionError).toBe(0);
       expect(resolved.trim().split(/\r?\n/)).toEqual(["Application", join(bin, `bun.${installation}`)]);
-      for (const command of ["start", "status"]) {
+      // a command's flags go on with it (link --code); anything that is not a plain flag is refused before Bun runs
+      for (const [command, ...rest] of [["start"], ["status"], ["link", "--code", "--google"], ["link", "a&b"], ["link", "--code=%OS%"]] as [string, ...string[]][]) {
+        const refused = rest.some((flag) => !/^--[a-z][a-z-]*$/.test(flag));
         rmSync(result, { force: true });
-        const child = Bun.spawn(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", launcher, command], {
+        const child = Bun.spawn(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", launcher, command, ...rest], {
           windowsHide: true,
           env: { ...process.env, USERPROFILE: prefix, HERDR_PLUGIN_STATE_DIR: scratch },
           stdout: "pipe", stderr: "pipe",
@@ -67,8 +69,14 @@ it.skipIf(process.platform !== "win32")("runs the Windows launcher with executab
           const [out, err, code] = await Promise.all([
             new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
           ]);
+          if (refused) {
+            expect(code, `${installation} ${command} ${rest.join(" ")}: ${out}${err}`).not.toBe(0);
+            expect(existsSync(result)).toBe(false);
+            continue;
+          }
           expect(code, `${installation} ${command}: ${out}${err}`).toBe(command === "status" ? 7 : 0);
-          expect(JSON.parse(readFileSync(result, "utf8"))).toEqual([command]);
+          // start takes no flags: the launcher starts the server with the command alone
+          expect(JSON.parse(readFileSync(result, "utf8"))).toEqual([command, ...rest]);
         } finally {
           clearTimeout(timeout);
         }
