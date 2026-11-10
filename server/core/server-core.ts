@@ -81,7 +81,7 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
 
   const submitText = createSubmitText({ options, lastTyped, attachments, terminalAttach, SUBMIT_DEADLINE_MS, TYPED_SETTLE_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS, SUBMIT_DELAY_MS });
 
-  const { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries } = createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, submitText, authorizeSocket: (client) => authorizeSocket(client), clientSnapshot: () => clientSnapshot(), omo: { sessionOf: (paneId) => omo.sessionOf(paneId) }, queueHeld: (paneId) => queueHeld(paneId), SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS });
+  const { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries } = createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, submitText, authorizeSocket: (client) => authorizeSocket(client), clientSnapshot: () => clientSnapshot(), omo: { sessionOf: (paneId) => omo.sessionOf(paneId) }, queueHeld: (paneId, fresh) => queueHeld(paneId, fresh), SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS });
 
   // the watches read OpenCode's forms and omp's sessions into a state of their own: the route's entries, drafts and
   // lookups are its answers' (the route's drafts are only read, for the step an answer moved its card to)

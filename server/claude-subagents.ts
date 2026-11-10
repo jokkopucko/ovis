@@ -355,6 +355,14 @@ interface Parent {
   starts: Start[];
   /** whether the latest turn goes on: no rest came after it yet */
   turnOpen: boolean;
+  /**
+   * Where the latest turn Claude resumed by itself was told, while no rest was written after it: that turn
+   * may still run (ClaudeSubagentStatus.loopHolds). The byte boundary of a scheduled task's fire (a `/loop`
+   * wakeup's is one) or of the turn's own prompt (selfResumed), whichever was written last.
+   */
+  loopAt: number | null;
+  /** when the entry `loopAt` is the boundary of was written, by its own timestamp: how old one found at the transcript's first read is */
+  loopTime: number | null;
   /** what a slash command's echo found, until the next entry says whether it began a turn (scanParentLine) */
   echo: { command: string | null; restAt: number | null; promptAt: number | null; turnOpen: boolean; starts: Start[] } | null;
 }
@@ -375,7 +383,7 @@ function scanParent(path: string): Parent | null {
   let parent = parents.get(path);
   if (!parent || parent.id !== stat.id || parent.offset > stat.size || !sameHistory(parent.version, stat)) {
     const from = Math.max(0, stat.size - PARENT_WINDOW);
-    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, echo: null };
+    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, loopAt: null, loopTime: null, echo: null };
   }
   parent.version = stat;
   remember(parents, path, parent, 256);
@@ -457,6 +465,34 @@ function acknowledgement(entry: Row, block: Row): boolean {
   return words.startsWith("Async agent launched");
 }
 
+/**
+ * The keys of the prompt of a turn Claude resumed by itself: Claude Code 2.1.318 writes it as a meta
+ * user entry right after a `/loop` wakeup's fire, with `turnOrigin` `scheduled` and `wakeupSource`
+ * `loop_wakeup`; a scheduled task that is no loop has `schedule_wakeup` there (2.1.321 gives every
+ * prompt with a `wakeupSource` that `turnOrigin`). Its own keys only: words that quote them are
+ * escaped inside a JSON string.
+ */
+const SELF_RESUMED_RE = /"turnOrigin":"scheduled"|"wakeupSource":"/;
+
+/**
+ * A self-resumed turn's prompt (SELF_RESUMED_RE), which no person typed and no chat sent: it holds
+ * the queue as a scheduled task's fire does (Parent.loopAt). After a fire of its own it only holds
+ * on; with no fire between the rest before it and itself, it is what tells of the turn. So for the
+ * second of two loops due in one tick, whose prompt runs right after the first loop turn's rest. And
+ * for a task that came due while another turn worked, where Claude wrote its fire during that turn:
+ * that turn's rest ended the fire's hold, as a rest ends whatever was told before it (scanParentLine),
+ * and the task's own turn begins at once. Either turn is told by this line and not by its fire, so it
+ * holds nothing from that rest until Claude has written this line, some tens of milliseconds into it.
+ */
+function selfResumed(parent: Parent, line: string, end: number): void {
+  try {
+    const entry = row(JSON.parse(line));
+    if (entry?.["type"] !== "user" || entry["isSidechain"] === true || (entry["turnOrigin"] !== "scheduled" && typeof entry["wakeupSource"] !== "string")) return;
+    parent.loopAt = end;
+    parent.loopTime = stamp(entry["timestamp"]);
+  } catch { /* a line caught half written is read again */ }
+}
+
 function scanParentLine(parent: Parent, line: string, end: number): void {
   const user = line.includes('"type":"user"');
   // Claude writes a local command's caveat and output with neither `origin` nor a permission mode, as a
@@ -482,17 +518,26 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       const entry = row(JSON.parse(line));
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
         parent.restAt = stamp(entry["timestamp"]) === null ? null : end;
-        if (parent.restAt !== null) parent.turnOpen = false;
+        // the rest of whatever turn went on, one Claude resumed by itself too: it ends what every fire and
+        // self-resumed prompt before it told, which of them began the turn at rest is not kept (selfResumed).
+        // A rest that tells no time is none here either: what it follows holds on, for its time at most
+        if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; }
       }
     } catch { /* a line caught half written is read again */ }
   } else if (line.includes('"subtype":"scheduled_task_fire"') && !line.includes('"isSidechain":true')) {
     // a /loop wakeup's fire begins the turn it resumes, before that turn writes its prompt: the rest before it is gone
     try {
       const entry = row(JSON.parse(line));
-      if (entry?.["type"] === "system" && entry["taskKind"] === "loop") {
-        parent.echo = null;
-        parent.restAt = null;
-        openTurn(parent, end, stamp(entry["timestamp"]));
+      if (entry?.["type"] === "system") {
+        const written = stamp(entry["timestamp"]);
+        // Claude resumes a turn by itself here, with no prompt of the person's nor a send of the chat's to tell of it:
+        // any scheduled task's fire holds the queue (ClaudeSubagentStatus.loopHolds), a loop's or not
+        if (entry["isSidechain"] !== true) { parent.loopAt = end; parent.loopTime = written; }
+        if (entry["taskKind"] === "loop") {
+          parent.echo = null;
+          parent.restAt = null;
+          openTurn(parent, end, written);
+        }
       }
     } catch { /* a line caught half written is read again */ }
   } else if (user && line.includes('"isCompactSummary":true')) {
@@ -507,6 +552,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       : { command, restAt: parent.restAt, promptAt: parent.promptAt, turnOpen: parent.turnOpen, starts: parent.starts.map((start) => ({ ...start })) };
     parent.restAt = null;
     openTurn(parent, end, stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]));
+    if (user && SELF_RESUMED_RE.test(line)) selfResumed(parent, line, end);
   } else if (line.includes('"queued_command"') && !line.includes('"isSidechain":true')) {
     try {
       const entry = row(JSON.parse(line));
@@ -1440,7 +1486,7 @@ interface Tracked {
   key: string; path: string | null; startedAt: number | null; pid: number | null;
   /** when its transcript, and its process, were last looked for */
   at: number; pidAt: number;
-  live: boolean; running: number; turnRunning: number; promptAt: number | null; resting: boolean; holding?: boolean; sig: string | null;
+  live: boolean; running: number; turnRunning: number; promptAt: number | null; resting: boolean; holding?: boolean; looping?: boolean; sig: string | null;
   /** the session's turn has rested since background work last ran: herdr's working from then is still that work's */
   restedOnWork?: boolean;
   reset?: boolean;
@@ -1488,11 +1534,38 @@ const BUSY_HOLD_MS = 5000;
 interface Claim { turn: number; barriers: Barrier[]; held: Barrier[] }
 
 /**
+ * How long a turn Claude resumed by itself (a `/loop` wakeup's, another scheduled task's) holds the
+ * pane's queue while no rest is written after it (#3494). Claude resumes it as the task fires, with no
+ * prompt of the person's nor a send of the chat's, and herdr reads that turn a moment later: queued
+ * input sent in between would land in the turn at work. A turn that writes no rest (interrupted, on a
+ * Claude Code that writes none for it; its process killed) is waited on no longer than this.
+ */
+export const LOOP_HOLD_MS = 60_000;
+
+/**
+ * The latest fire or self-resumed prompt the pane took account of (`fire`, its byte boundary:
+ * Parent.loopAt), and since when it holds the queue (`since`). null: it holds nothing, as a rest
+ * was written past it, or the transcript's first read found it written LOOP_HOLD_MS ago or longer
+ * (history: its turn may have been interrupted long ago). One found at any other boundary is another
+ * one, wherever that stands: a transcript rewritten in place keeps no boundary of the read before.
+ */
+interface Loop { fire: number; since: number | null }
+
+/**
+ * Since when a fire found written at a transcript's first read (the server started, or the pane's
+ * session was found late) holds the queue: from when it was written, by its own timestamp, so for
+ * what is left of LOOP_HOLD_MS. Its turn may run now, as for a fire read later. One that old
+ * already, or telling no time, is history (null); one dated ahead of this clock holds from now,
+ * so never longer than LOOP_HOLD_MS.
+ */
+const foundFiring = (written: number | null, now: number): number | null => written !== null && now - written < LOOP_HOLD_MS ? Math.min(written, now) : null;
+
+/**
  * A transcript's turns as the busy signals have them (#2072). A rest certifies a pane at rest only
  * when no signal waits for its turn. `retired`: the start of the latest turn a poll saw at rest,
  * which a later signal with nothing to place it is never matched to.
  */
-interface Turns { readonly path: string; readonly id: string; retired: number; herdr: Claim; chat: Claim }
+interface Turns { readonly path: string; readonly id: string; retired: number; herdr: Claim; chat: Claim; loop: Loop }
 
 /**
  * The running subagents and background commands of every Claude pane, for the pane's count. Only a pane whose agent is
@@ -1551,6 +1624,53 @@ export class ClaudeSubagentStatus {
   holdsQueue(paneId: string): boolean {
     const turns = this.panes.get(paneId)?.turns;
     return turns !== undefined && turns.herdr.held.length + turns.chat.held.length > 0;
+  }
+
+  /**
+   * Claude resumed a turn by itself (a `/loop` wakeup, a scheduled task) and no rest was written since:
+   * the pane's queue holds. Until that turn's rest is written, or LOOP_HOLD_MS after the last entry that
+   * told of it was read (a later fire or prompt holds anew). No word of herdr's ends it: herdr reads the
+   * pane at rest until it reads the turn, and its working may be a late one for the turn before, or
+   * heard while a delivery is at its last checks. So a resumed turn that is interrupted and writes no
+   * rest holds the queue until that time is up, though herdr reads the pane at rest again.
+   */
+  loopHolds(paneId: string): boolean {
+    const since = this.panes.get(paneId)?.turns?.loop.since ?? null;
+    return since !== null && this.now() - since < LOOP_HOLD_MS;
+  }
+
+  /**
+   * loopHolds as the pane's last poll found it, and told of it (onChange). A caller that kept that
+   * telling back (a pane that settles) compares it across the poll.
+   */
+  loopTold(paneId: string): boolean {
+    return this.panes.get(paneId)?.looping ?? false;
+  }
+
+  /**
+   * loopHolds as the pane's transcript says now: what was appended since the pane's last poll is read
+   * first, as a task may have fired since, or the resumed turn come to rest. A hold that read finds
+   * begun or ended, or one whose time ran out untold, is a poll's to take account of, made at once: it
+   * tells of it as any poll does (onChange). So is a fire in another file found in the transcript's
+   * place: the poll begins the pane's turns anew from that file, and weighs the fire by its own age.
+   * With no such change nothing more is read and nothing is told: the pane's counts, its turns and
+   * its busy signals stay as its last poll left them. A pane whose transcript is not found, or not
+   * read yet, has none to read: nothing holds it until then. Nor is anything read of a pane that
+   * left Claude, or once the tracker stopped: what its last poll found stands, for its time.
+   */
+  loopHoldsNow(paneId: string): boolean {
+    const tracked = this.panes.get(paneId);
+    const turns = !this.stopped && tracked?.path != null && tracked.live && tracked.turns?.path === tracked.path ? tracked.turns : undefined;
+    const parent = turns ? scanParent(turns.path) : null;
+    if (tracked && turns && parent) {
+      // what the file tells of a self-resumed turn is not what the pane's turns have: none any more, or one that is
+      // not the one they took account of, in another place or in another file
+      const changed = parent.loopAt === null ? turns.loop.since !== null : parent.id !== turns.id || parent.loopAt !== turns.loop.fire;
+      // that poll reads the transcript: the file changed since its signature was certified, or none was, as
+      // a poll that finds a hold standing certifies none (poll)
+      if (changed || this.loopHolds(paneId) !== (tracked.looping ?? false)) this.poll(paneId);
+    }
+    return this.loopHolds(paneId);
   }
 
   /**
@@ -1685,7 +1805,8 @@ export class ClaudeSubagentStatus {
     // another process's transcript: what it holds is that process's, and a rest in it ends no turn of this one
     if (reset && found) this.deferred.set(pane.pane_id, [...this.deferred.get(pane.pane_id) ?? [], { source: "herdr", at: this.now() }]);
     // the count it had goes on from here: another session with none says so at the next poll
-    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, restedOnWork: sameLife && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
+    // so does what was told of a self-resumed turn's hold: one that ran out meanwhile is told at the next poll, as no status event may be
+    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, looping: current?.looping, restedOnWork: sameLife && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
   }
 
   private observeSession(pane: HerdrPane): void {
@@ -1748,8 +1869,15 @@ export class ClaudeSubagentStatus {
         let waiting = false;
         if (parent === undefined) resting = false;
         else {
+          const known = tracked.turns;
           const turns = this.turnsOf(paneId, tracked.path, parent);
           settle(turns, parent, this.now());
+          // a fire or a self-resumed prompt written since the read before holds the queue from now, whatever herdr
+          // said or says of the pane; a rest written past it ends that. One the transcript's first read finds
+          // written holds by its own age (foundFiring). Any that is not the one last taken account of is one written
+          // since: it stands past that one, or anywhere in a transcript rewritten in place
+          if (parent.loopAt === null) turns.loop.since = null;
+          else if (parent.loopAt !== turns.loop.fire) turns.loop = { fire: parent.loopAt, since: turns === known ? this.now() : foundFiring(parent.loopTime, this.now()) };
           // a turn seen at rest is history: a later signal with nothing to place it is not its own
           const latest = turnAt(parent);
           if (resting && latest !== null) turns.retired = Math.max(turns.retired, latest);
@@ -1761,14 +1889,17 @@ export class ClaudeSubagentStatus {
         const after = subagentsSignature(tracked.path, tracked.watch, this.now());
         // Certify only the versions and dependency set read, never a concurrent append's newer signature.
         // Coarse file clocks require every input to have been quiet before the scan began. A signal
-        // waiting for its turn is read again at each poll, until the turn is written or it gives up
-        tracked.sig = !waiting && state.settled && before.sig === after.sig && scanAt - before.latestMs >= 1000
+        // waiting for its turn is read again at each poll, until the turn is written or it gives up;
+        // so is a self-resumed turn holding the queue, whose time runs out with nothing written
+        tracked.sig = !waiting && !this.loopHolds(paneId) && state.settled && before.sig === after.sig && scanAt - before.latestMs >= 1000
           ? `${after.sig}:${tracked.startedAt}` : null;
       }
       // a held queue let go of (a rest written past it) is told too, though the pane rested all along
       const holding = this.holdsQueue(paneId);
-      if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt && resting === tracked.resting && holding === (tracked.holding ?? false)) continue;
+      const looping = this.loopHolds(paneId);
+      if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt && resting === tracked.resting && holding === (tracked.holding ?? false) && looping === (tracked.looping ?? false)) continue;
       tracked.holding = holding;
+      tracked.looping = looping;
       // the last of its work ending keeps the rest: herdr's working may be the busy title it had, said before
       // that work ended, until a turn begins (a busy signal, or one written) and the rest is gone
       // read together with its rest, the last of that work ending keeps it too: the rest and the end came before this read
@@ -1789,7 +1920,8 @@ export class ClaudeSubagentStatus {
   private turnsOf(paneId: string, path: string, parent: Parent): Turns {
     const tracked = this.panes.get(paneId)!;
     if (tracked.turns?.path === path && tracked.turns.id === parent.id) return tracked.turns;
-    const turns: Turns = { path, id: parent.id, retired: -1, herdr: { turn: -1, barriers: [], held: [] }, chat: { turn: -1, barriers: [], held: [] } };
+    // a fire or a self-resumed prompt this first read finds written is the poll's to weigh (foundFiring)
+    const turns: Turns = { path, id: parent.id, retired: -1, herdr: { turn: -1, barriers: [], held: [] }, chat: { turn: -1, barriers: [], held: [] }, loop: { fire: -1, since: null } };
     if (parent.restAt !== null) turns.retired = turnAt(parent) ?? -1;
     for (const signal of this.deferred.get(paneId) ?? []) match(turns, parent, signal, parent.offset);
     this.deferred.delete(paneId);
