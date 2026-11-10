@@ -318,6 +318,36 @@ describe("the hosted shell's front page", () => {
     await until(() => { const { state } = last(); return (state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-out"; }, "the signed-out front page");
   });
 
+  it("reads the directory as the sign-in it found, and again as one another tab stored before the list was asked", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const sessionOf = (account: string, provider: "github" | "google") => ({ service: SERVICE, account, provider, access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: now + 3_600_000 });
+    const asked: string[] = [];
+    const accountFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const bearer = new Headers(init?.headers).get("authorization") ?? "";
+      asked.push(bearer);
+      const pcs = bearer.endsWith("acct-b") ? [{ server_id: desk.server_id, label: "B's PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: null, public_key: null, relay: AP }] : [];
+      return ({ status: 200, ok: true, json: async () => ({ pcs }) }) as unknown as Response;
+    };
+    const inner = memoryAccountStore();
+    await inner.set("session", sessionOf("acct-a", "github"));
+    // another tab stores account B's sign-in right after the page read account A's
+    let reads = 0;
+    const accountStore: typeof inner = { ...inner, get: (async (name: Parameters<typeof inner.get>[0]) => {
+      const value = await inner.get(name);
+      if (name === "session" && ++reads === 1) await inner.set("session", sessionOf("acct-b", "google"));
+      return value;
+    }) as typeof inner.get };
+
+    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github", "google"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => rendered.length > 0 && account().pcs !== null, "the first list drawn");
+
+    // B's PCs are never drawn under A's heading, and nothing was asked for A with B's token
+    expect(account().provider).toBe("google");
+    expect(rows()).toBe(1);
+    expect(asked.every((bearer) => bearer.endsWith("acct-b"))).toBe(true);
+  });
+
   it("starts one read when two reasons to read again land in the same moment", async () => {
     jest.useFakeTimers();
     const desk = keyFor();

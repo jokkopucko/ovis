@@ -68,6 +68,33 @@ export async function accountLimitsOf(service: AccountService, session: AccountS
   return current !== undefined && sameSignIn(current, session) ? limits : null;
 }
 
+/**
+ * The account's PCs and sign-in methods as `session` reads them; null once another sign-in (or none) is stored,
+ * before the reads or while their answers were on the way: those are not this section's to show under its heading.
+ */
+export async function accountListsOf(service: AccountService, session: AccountSession): Promise<{ pcs: Awaited<ReturnType<AccountService["listPcs"]>>; methods: Awaited<ReturnType<AccountService["identities"]>> | null } | null> {
+  const shown = service.forSignIn(session);
+  const replaced = async (): Promise<boolean> => {
+    const current = await service.session();
+    return current === undefined || !sameSignIn(current, session);
+  };
+  try {
+    const [pcs, methods] = await Promise.all([
+      shown.listPcs(),
+      shown.identities().catch((error: unknown) => {
+        // a service from before sign-in methods: the list is left out, the rest works
+        if (error instanceof AccountServiceError) return null;
+        throw error;
+      }),
+    ]);
+    return await replaced() ? null : { pcs, methods };
+  } catch (error) {
+    // a sign-in that ended with none in its place stays an error the section words; one replaced is read anew
+    if (error instanceof SignedOutError && await service.session().catch(() => undefined) !== undefined) return null;
+    throw error;
+  }
+}
+
 const isDeviceProvider = (provider: AccountProvider): provider is DeviceProvider => (DEVICE_PROVIDERS as readonly string[]).includes(provider);
 
 /** The link page as a person reads it off the screen: account.ovis.sh/link. */
@@ -235,7 +262,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   // bumped by a sign-out and on unmount: a load still waiting for the account's PCs then shows nothing
   const loads = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async function read(): Promise<void> {
     const generation = ++loads.current;
     const show = (next: View) => { if (loads.current === generation) setView(next); };
     const service = new AccountService({ store: indexedAccountStore });
@@ -249,15 +276,12 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
       setView((current) => current.kind === "signed-in" && current.account === session.account ? { ...current, limits } : current);
     });
     try {
-      const [pcs, methods] = await Promise.all([
-        service.listPcs(),
-        service.identities().catch((error: unknown) => {
-          // a service from before sign-in methods: the list is left out, the rest works
-          if (error instanceof AccountServiceError) return null;
-          throw error;
-        }),
-      ]);
-      if (loads.current === generation) setView((current) => ({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: null }));
+      const lists = await accountListsOf(service, session);
+      if (loads.current !== generation) return;
+      // another sign-in took this one's place (another tab): the section reads that one
+      if (lists === null) { void read(); return; }
+      const { pcs, methods } = lists;
+      setView((current) => ({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: null }));
     } catch (error) {
       if (error instanceof SignedOutError) show({ kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") });
       else if (loads.current === generation) setView((current) => ({ ...signedIn, pcs: [], methods: null, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: t("The account service could not be reached. The PCs this device is paired with still work.") }));
