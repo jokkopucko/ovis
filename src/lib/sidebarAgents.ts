@@ -69,6 +69,16 @@ export function paneMark(entry: SidebarAgent | undefined): string | null {
   return entry.canonicalAgent ?? entry.agentLabel ?? "";
 }
 
+/**
+ * Whether a row's title says nothing but which agent it is ("Claude Code", with or without the glyph an agent puts
+ * before its terminal title): the row's mark already says that, so such a title gives way to where the agent runs.
+ */
+export function titleOnlyNamesAgent(title: string, names: readonly (string | null | undefined)[]): boolean {
+  const plain = (text: string): string => text.replace(/^[^\p{L}\p{N}]+/u, "").trim().toLowerCase();
+  const said = plain(title);
+  return said !== "" && names.some((name) => typeof name === "string" && plain(name) === said);
+}
+
 /** Every agent a workspace runs, each name once, in the roster's order. */
 export function workspaceAgentLabels(agents: readonly SidebarAgent[]): Map<string, string[]> {
   const byWorkspace = new Map<string, string[]>();

@@ -4,7 +4,7 @@ import { Bell, BellOff, ChevronDown, ChevronRight, Ellipsis, FolderInput, Folder
 import type { Machine } from "../../shared/machines.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { paneTokenValues } from "../../shared/pane-tokens.ts";
-import type { AgentStatus, HerdrPane, PaneContext, PlanSummary } from "../../shared/protocol.ts";
+import type { AgentStatus, HerdrPane, PaneContext, PlanSummary, TabInfo } from "../../shared/protocol.ts";
 import { currentAgentRowTokens, subscribeAgentRowTokens } from "../lib/agentRowTokens.ts";
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
@@ -13,7 +13,8 @@ import { agentGroup, agentRoster, groupAgentRows, splitBackgroundRows, type Agen
 import { assignAgentGroup, liveGroupKeys, loadFoldedAgentGroups, rowAgentGroup, saveFoldedAgentGroups, splitNamedGroups } from "../lib/namedAgentGroups.ts";
 import { currentPaneMutes, paneMuteKey, prunePaneMutes, setPaneMutes, subscribePaneMutes, togglePaneMute } from "../lib/paneMutes.ts";
 import { lockedPinKeys, locksAfterPinToggle, toggleAgentLock } from "../lib/paneLocks.ts";
-import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
+import { agentContext, agentTabName, paneMark, titleOnlyNamesAgent } from "../lib/sidebarAgents.ts";
+import { agentName } from "../lib/runtimeMove.ts";
 import { customTabLabel } from "../lib/tabName.ts";
 import { useSettings } from "../lib/settings.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
@@ -151,9 +152,44 @@ export interface AgentSidebarProps {
   onSelect(machineId: string, paneId: string): void;
 }
 
-/** what a row is called: the pane's label, else its agent's title, else the pane's own */
+/** what a row calls itself: the pane's label, else its agent's title, else the pane's own */
 function rowTitle({ pane, agent }: AgentRow["entry"]): string {
   return pane.label?.trim() || agent?.title?.trim() || pane.title?.trim() || displayPaneTitle(pane);
+}
+
+/** what a row's mark already says: the agent's kind and its product name ("claude", "Claude Code"); nothing for a row with no agent mark */
+function markNames(entry: AgentRow["entry"]): string[] {
+  const mark = paneMark(entry);
+  return mark && hasAgentMark(mark) && entry.canonicalAgent ? [entry.canonicalAgent, agentName(entry.canonicalAgent)] : [];
+}
+
+/** the tabs of a row's workspace, in herdr's order: a tab is judged by its place among them (lib/tabName.ts) */
+function workspaceTabs({ machine, entry }: AgentRow): TabInfo[] {
+  return machine.snapshot?.tabs.filter((candidate) => candidate.workspace_id === entry.workspace.workspace_id) ?? [];
+}
+
+/**
+ * The title a row draws, which is also the one its sort by name, its helpers' line and its menu say.
+ * `own` is what the row calls itself. The mark says which agent it is, so an agent's or a pane's own title that says
+ * only that ("Claude Code") gives way to the workspace the agent runs in (a worktree herdr named, in its compact
+ * form): rows of agents with nothing of their own to say are then told apart. `replaced` says so, and `title` is the
+ * outcome. A label the user gave the pane is theirs and always stands, and a row with no agent mark keeps its title.
+ * A one-line row leads with what the agent is on (the pane's label, else a tab the user named, else that title): that
+ * is `drawn` there, and `title` in a two-line row.
+ */
+export function agentRowTitle(row: AgentRow, oneLine: boolean): { own: string; title: string; replaced: boolean; drawn: string } {
+  const { pane, workspace, tab } = row.entry;
+  const own = rowTitle(row.entry);
+  const label = pane.label?.trim() || null;
+  const worktree = workspace.worktree?.is_linked_worktree === true;
+  const replaced = label === null && titleOnlyNamesAgent(own, markNames(row.entry));
+  const title = replaced ? worktree ? compactWorktreeName(workspace.label) : workspace.label : own;
+  if (!oneLine) return { own, title, replaced, drawn: title };
+  // a tab herdr only numbers ("Tab 2") never stands in for what the agent is on: only one the user named does
+  const place = workspaceTabs(row).findIndex((candidate) => candidate.tab_id === tab?.tab_id) + 1 || tab?.number;
+  const named = label || (tab ? customTabLabel(tab, place) : null) || title;
+  // a row titled by its worktree's own name, as herdr made it, says that name as the workspace row does
+  return { own, title, replaced, drawn: worktree && named === workspace.label ? compactWorktreeName(named) : named };
 }
 
 /** Settings → Group agents by state: each group's heading */
@@ -285,9 +321,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const byState = useCallback((list: readonly AgentRow[]) => groupAgentRows(list, {
     sort: settings.agentGroupSort,
     status: rowStatus,
-    name: ({ entry }) => rowTitle(entry),
+    // by the title the row draws, not the one it gave way to
+    name: (row) => agentRowTitle(row, settings.sidebarRows === "one").drawn,
     seqs: activity.seqs,
-  }), [settings.agentGroupSort, rowStatus, activity]);
+  }), [settings.agentGroupSort, settings.sidebarRows, rowStatus, activity]);
   // Settings → Named agent groups (shared): the unpinned rows in the groups the user named, the ungrouped last
   // (lib/namedAgentGroups.ts); grouped by state as well, each named group lists its rows needs-you first, without headings
   const groupNames = settings.agentNamedGroups ? settings.agentGroupNames : [];
@@ -450,36 +487,38 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const sheet = useMediaQuery(SHEET_QUERY);
 
   // what a row says of its agent, for the row and for its open menu
-  const describe = ({ machine, entry }: AgentRow) => {
+  const describe = (row: AgentRow) => {
+    const { machine, entry } = row;
     const { pane, workspace, tab, agent, agentLabel } = entry;
     const online = machine.state === "connected";
-    const title = rowTitle(entry);
     const name = agent?.name?.trim() || null;
     // the name has its own place on the line: the label beside it says the kind instead
     const kindLabel = name !== null && agentLabel === name ? entry.canonicalAgent ?? agent?.title?.trim() ?? null : agentLabel;
-    const tabs = machine.snapshot?.tabs.filter((candidate) => candidate.workspace_id === workspace.workspace_id) ?? [];
+    const tabs = workspaceTabs(row);
     const mark = paneMark(entry);
     const markAgent = mark && hasAgentMark(mark) ? mark : null;
-    const parts = { agentLabel: kindLabel, title, markAgent, machineName: machineName(machine), workspaceLabel: workspace.label, tabName: agentTabName(tab, tabs, t) };
-    const contextParts = agentContext(parts);
+    const { own: said, title, replaced, drawn } = agentRowTitle(row, compact);
+    // the title the row gave way from, which its tooltip still says
+    const ownTitle = replaced ? said : null;
+    // nor does the line spend words on the agent's kind beside its mark (a screen reader still hears it, as markKind):
+    // a plugin's own line for the agent says more than its kind or product name, and stays
+    const parts = { agentLabel: kindLabel !== null && titleOnlyNamesAgent(kindLabel, markNames(entry)) ? null : kindLabel, title, markAgent, machineName: machineName(machine), workspaceLabel: workspace.label, tabName: agentTabName(tab, tabs, t) };
+    // the workspace a title already names is not said again after it, under the whole name of a worktree either
+    const contextParts = agentContext(parts).filter((part) => part !== title && !(replaced && part === workspace.label));
     const context = contextParts.join(" · ");
     const kind = kindLabel?.trim() || null;
     const markKind = kind && kind !== title.trim() && !contextParts.includes(kind) ? kind : null;
     // a PC that is away says nothing of its agents now, its plugins' words included
     const tokens = online ? paneTokenValues(rowTokens, entry.canonicalAgent, pane.tokens ?? agent?.tokens) : [];
     // on one line a row leads with what the agent is on (its own label, else its tab's name) and says its workspace once
-    if (settings.sidebarRows === "one") {
-      // a tab herdr only numbers ("Tab 2") never stands in for what the agent is on: only one the user named does
-      const place = tabs.findIndex((candidate) => candidate.tab_id === tab?.tab_id) + 1 || tab?.number;
-      const named = pane.label?.trim() || (tab ? customTabLabel(tab, place) : null) || title;
-      // a row titled by its worktree's own name, as herdr made it, says that name as the workspace row does
-      const lead = workspace.worktree?.is_linked_worktree && named === workspace.label ? compactWorktreeName(named) : named;
+    if (compact) {
+      const lead = drawn;
       // a named tab that leads keeps the agent's own title after it, so two agents of one tab never read the same
       const own = title !== lead && title !== workspace.label ? title : null;
       const leadParts = [...new Set([own, ...agentContext({ ...parts, title: lead, tabName: parts.tabName === lead ? null : parts.tabName, workspaceLabel: workspace.worktree?.is_linked_worktree ? compactWorktreeName(workspace.label) : workspace.label })])].filter((part): part is string => part !== null && part !== lead);
-      return { online, title: lead, name, mark, context: leadParts.join(" · "), place: wholePlace(machine, leadParts), markKind: kind && kind !== lead && !leadParts.includes(kind) ? kind : null, tokens };
+      return { online, title: lead, ownTitle, name, mark, context: leadParts.join(" · "), place: wholePlace(machine, leadParts), markKind: kind && kind !== lead && !leadParts.includes(kind) ? kind : null, tokens };
     }
-    return { online, title, name, mark, context, place: wholePlace(machine, contextParts), markKind, tokens };
+    return { online, title, ownTitle, name, mark, context, place: wholePlace(machine, contextParts), markKind, tokens };
   };
 
   // a helper reads under the agent that started it when that row is just above it in the same list (lib/agentRoster.ts)
@@ -571,11 +610,13 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const workingCount = states.filter((state) => state === "working").length;
     // its tree line runs on to the helpers in sight under it
     const more = helpers.some((row) => !foldedHelpers.has(row));
+    // whose helpers they are, by the title that agent's row draws
+    const helpersOfTitle = t("Helpers of {title}", { title: describe(agentRow).title });
     return <li className="agent-helpers" key={`helpers:${key}`} data-helpers-of={key} data-more={more ? "" : undefined} hidden={hidden || undefined}>
-      <button type="button" className="agent-helpers-toggle" aria-expanded={open} title={t("Helpers of {title}", { title: rowTitle(agentRow.entry) })} onClick={() => toggleHelpers(key)}>
+      <button type="button" className="agent-helpers-toggle" aria-expanded={open} title={helpersOfTitle} onClick={() => toggleHelpers(key)}>
         {open ? <ChevronDown className="agent-section-caret" aria-hidden="true" /> : <ChevronRight className="agent-section-caret" aria-hidden="true" />}
         <span className="agent-helpers-name" aria-hidden="true">{t("Helpers")}</span>
-        <span className="visually-hidden">{t("Helpers of {title}", { title: rowTitle(agentRow.entry) })}</span>
+        <span className="visually-hidden">{helpersOfTitle}</span>
         {blockedCount > 0 && <span className="agent-named-group-dot" data-state="blocked" title={t("{count} need you", { count: blockedCount })}><span className="visually-hidden">{t("{count} need you", { count: blockedCount })}</span></span>}
         {workingCount > 0 && <span className="agent-named-group-dot" data-state="working" title={t("{count} working", { count: workingCount })}><span className="visually-hidden">{t("{count} working", { count: workingCount })}</span></span>}
         <span className="agent-section-count">{helpers.length}</span>
@@ -598,7 +639,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const selected = machine.id === selectedMachineId && pane.pane_id === selectedPaneId;
     // under the filter a row it did not match is there for the selection: drawn as context, and said so
     const filterContext = filter.active && machineFilter(filter, machine.id)?.matchedPanes.has(pane.pane_id) !== true;
-    const { online, title, name, mark, context, place, markKind, tokens } = describe(row);
+    const { online, title, ownTitle, name, mark, context, place, markKind, tokens } = describe(row);
     const spoken = [title, markKind, ...(depth > 0 ? [] : [name, ...context.split(" · ")])];
     const missingContext = [entry.canonicalAgent, entry.workspace.label, machine.name].filter((part) => part && !spoken.includes(part)).join(" · ");
     // the row cuts a long value: the tooltip, and a phone's menu sheet, say each in full
@@ -607,7 +648,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const startedBy = parentRow ? t("Started by {name}", { name: describe(parentRow).title }) : null;
     const status = online ? activity.status(machine.id, pane) : undefined;
     const progress = online && pane.agent_progress !== undefined && (status === "working" || status === "blocked") ? t("Progress {percent}%", { percent: pane.agent_progress }) : null;
-    const tooltip = [...new Set([pane.pane_id, title, agent?.title?.trim(), place, machines.length === 1 ? machine.name : null, startedBy, blocked, progress, ...tokens, markKind, name, agent?.display_agent, pane.cwd, online ? null : stateWord(machine)].filter(Boolean))].join("\n");
+    const tooltip = [...new Set([pane.pane_id, title, ownTitle, agent?.title?.trim(), place, machines.length === 1 ? machine.name : null, startedBy, blocked, progress, ...tokens, markKind, name, agent?.display_agent, pane.cwd, online ? null : stateWord(machine)].filter(Boolean))].join("\n");
     const pinKey = sidebarPinKey(machine.id, pane.pane_id);
     const menuOpen = menu?.key === pinKey;
     // one menu for the ⋯ and a right-click, which opens it at the pointer and leaves the focus where it was

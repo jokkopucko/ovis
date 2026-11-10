@@ -142,6 +142,96 @@ describe("AgentSidebar one-line row titles", () => {
     expect(places[1]).toStartWith("Guard the export button");
   });
 
+  test("a title that only names the agent gives way to the workspace: the mark already says which agent it is", () => {
+    const html = render([machine([
+      pane("w1:p1", { agent_status: "working", title: "Claude Code" }),
+      pane("w1:p2", { agent_status: "working", title: "✳ Claude Code" }),
+      pane("w1:p3", { agent_status: "working", title: "Idempotent payments" }),
+    ])]);
+    expect(texts(html, "agent-title")).toEqual(["checkout-api", "checkout-api", "Idempotent payments"]);
+    // nothing on the line spells the agent's name, and the workspace a title took is not said twice
+    expect(texts(html, "agent-title").concat(texts(html, "agent-context")).join(" ")).not.toContain("Claude");
+    expect(texts(html, "agent-context")).toEqual(["checkout-api"]);
+    // a screen reader, which sees no mark, still hears it
+    expect(html.match(/<span class="visually-hidden">claude: <\/span>/g)?.length).toBe(3);
+  });
+
+  /** this device's saved choices, by storage key */
+  const store = (values: Record<string, string>): void => {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { matchMedia: () => ({ matches: false }), localStorage: { getItem: (key: string) => values[key] ?? null, setItem() {}, removeItem() {} } } });
+  };
+  const twoLines = { "ovis:settings": JSON.stringify({ sidebarRows: "two" }) };
+  /** a PC whose workspaces are these, in this order, each with one tab herdr numbers: a pane names its own */
+  const inWorkspaces = (labels: string[], panes: HerdrPane[]): Machine => {
+    const base = machine(panes);
+    base.snapshot!.workspaces = labels.map((label, index) => ({ workspace_id: `w${index + 1}`, label, number: index + 1, focused: false, pane_count: 1, tab_count: 1, active_tab_id: `w${index + 1}:t1`, agent_status: "idle" }));
+    base.snapshot!.tabs = labels.map((_, index) => ({ tab_id: `w${index + 1}:t1`, workspace_id: `w${index + 1}`, label: "1", number: 1, focused: false, pane_count: 1, agent_status: "idle" }));
+    return base;
+  };
+  const at = (workspace: number, extra: Partial<HerdrPane>): HerdrPane =>
+    pane(`w${workspace}:p1`, { workspace_id: `w${workspace}`, tab_id: `w${workspace}:t1`, agent_status: "working", ...extra });
+
+  test("Within a state: Name orders the rows by the title each draws, not by the agent's name it gave way from", () => {
+    const grouped = { "ovis:agent-groups": "true", "ovis:agent-group-sort": JSON.stringify("name") };
+    const rows = inWorkspaces(["zulu", "bravo", "alpha"], [at(1, { title: "Claude Code" }), at(2, { title: "Beta task" }), at(3, { title: "Claude Code" })]);
+    store({ ...grouped, ...twoLines });
+    expect(texts(render([rows]), "agent-title")).toEqual(["alpha", "Beta task", "zulu"]);
+    store(grouped);
+    expect(texts(render([rows]), "agent-title")).toEqual(["alpha", "Beta task", "zulu"]);
+    // on one line a tab the user named leads its row, and so places it; on two lines the row's own title does
+    const tabbed = machine([
+      pane("w1:p1", { tab_id: "w1:t1", agent_status: "working", title: "Mid task" }),
+      pane("w1:p2", { tab_id: "w1:t2", agent_status: "working", title: "Zeta task" }),
+    ]);
+    tabbed.snapshot!.tabs = [
+      { tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1, focused: false, pane_count: 1, agent_status: "idle" },
+      { tab_id: "w1:t2", workspace_id: "w1", label: "apple", number: 2, focused: false, pane_count: 1, agent_status: "idle" },
+    ];
+    expect(texts(render([tabbed]), "agent-title")).toEqual(["apple", "Mid task"]);
+    store({ ...grouped, ...twoLines });
+    expect(texts(render([tabbed]), "agent-title")).toEqual(["Mid task", "Zeta task"]);
+  });
+
+  test("a two-line row titled by a worktree herdr named does not say that workspace again under its title", () => {
+    const rows = inWorkspaces(["checkout-api", "worktree-brave-valley-7fc6"], [at(1, { title: "Idempotent payments" }), at(2, { title: "Claude Code" })]);
+    rows.snapshot!.workspaces[1]!.worktree = { repo_key: "r", repo_name: "checkout-api", repo_root: "/r", checkout_path: "/r-wt", is_linked_worktree: true };
+    store(twoLines);
+    const html = render([rows]);
+    expect(texts(html, "agent-title")).toEqual(["Idempotent payments", "brave-valley"]);
+    // the place is the first row's alone: the second has nothing left to say, in the worktree's whole name either
+    expect(texts(html, "agent-context")).toEqual(["checkout-api"]);
+    store({});
+    const oneLine = render([rows]);
+    expect(texts(oneLine, "agent-title")).toEqual(["Idempotent payments", "brave-valley"]);
+    expect(texts(oneLine, "agent-context")).toEqual(["checkout-api"]);
+  });
+
+  test("a label the user gave the pane stands, on one line and on two, even when it only names the agent", () => {
+    const rows = [machine([
+      pane("w1:p1", { agent_status: "working", label: "Claude Code", title: "Claude Code" }),
+      pane("w1:p2", { agent_status: "working", title: "Claude Code" }),
+    ])];
+    expect(texts(render(rows), "agent-title")).toEqual(["Claude Code", "checkout-api"]);
+    store(twoLines);
+    expect(texts(render(rows), "agent-title")).toEqual(["Claude Code", "checkout-api"]);
+  });
+
+  test("the helpers' line and the row's More name the row by the title it draws; the tooltip keeps the agent's own", () => {
+    store({ "ovis:fold-helpers": "true" });
+    const html = render([machine([
+      pane("w1:p1", { agent_status: "working", title: "Claude Code" }),
+      pane("w1:p2", { agent_status: "working", parent_pane_id: "w1:p1", title: "Explore the relay" }),
+    ])]);
+    expect(texts(html, "agent-title")).toEqual(["checkout-api", "Explore the relay"]);
+    expect(html).toContain('<span class="visually-hidden">Helpers of checkout-api</span>');
+    expect(html).toMatch(/class="agent-helpers-toggle"[^>]* title="Helpers of checkout-api"/);
+    expect(html).toContain('aria-label="More for checkout-api"');
+    expect(tooltips(html)[1]).toContain("Started by checkout-api");
+    // the row's line no longer says "Claude Code": its tooltip, where the whole of a row is read, still does
+    expect(tooltips(html)[0]).toEqual(["w1:p1", "checkout-api", "Claude Code", "workstation", "claude"]);
+    expect(html).not.toContain("Helpers of Claude Code");
+  });
+
   test("Agents order: Waiting first, the default, lifts a waiting agent; a saved Workspaces order keeps herdr's order", () => {
     // both agents busy: the order alone decides, with no resting fold in the way
     const rows = [pane("w1:p1", { agent_status: "working" }), pane("w1:p2", { agent_status: "blocked" })];

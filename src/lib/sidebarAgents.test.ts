@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentInfo, HerdrPane, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/protocol.ts";
-import { agentContext, agentTabName, paneMark, sidebarAgents, workspaceAgentLabels } from "./sidebarAgents.ts";
+import { agentContext, agentTabName, paneMark, sidebarAgents, titleOnlyNamesAgent, workspaceAgentLabels } from "./sidebarAgents.ts";
 
 function workspace(id: string): WorkspaceInfo {
   return { workspace_id: id, active_tab_id: `${id}:t1`, label: id, number: 1, tab_count: 1, pane_count: 1, focused: false, agent_status: "idle" };
@@ -147,5 +147,20 @@ describe("agentTabName", () => {
     // herdr relabels the survivor "1" and leaves its number at 2
     const survivor = { ...tab("w1:t2", "w1"), label: "1", number: 2 };
     expect(agentTabName(survivor, [survivor], t)).toBeNull();
+  });
+});
+
+describe("titleOnlyNamesAgent", () => {
+  it("takes the agent's kind or product name, whatever its case or the glyph before it", () => {
+    const names = ["claude", "Claude Code"];
+    expect(titleOnlyNamesAgent("Claude Code", names)).toBe(true);
+    expect(titleOnlyNamesAgent("✳ Claude Code ", names)).toBe(true);
+    expect(titleOnlyNamesAgent("claude", names)).toBe(true);
+  });
+  it("leaves a title that says more, an empty one, and a row with no names", () => {
+    expect(titleOnlyNamesAgent("Claude Code review of the relay", ["claude", "Claude Code"])).toBe(false);
+    expect(titleOnlyNamesAgent("✳", ["claude"])).toBe(false);
+    expect(titleOnlyNamesAgent("Claude Code", [])).toBe(false);
+    expect(titleOnlyNamesAgent("Claude Code", [null, undefined])).toBe(false);
   });
 });
