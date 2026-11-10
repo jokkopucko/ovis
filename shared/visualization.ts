@@ -2,7 +2,6 @@
 export interface VisualizationReference {
   path: string;
   title?: string;
-  wide: boolean;
 }
 
 /**
@@ -32,14 +31,14 @@ export function visualizationReference(line: string): VisualizationReference | n
   try {
     const data: unknown = JSON.parse(value.slice(11, -1));
     if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
-    const { path, title, mode } = data as Record<string, unknown>;
-    // an absolute local path, never a network share however its two leading separators are written
-    // (`//host`, `/\host`): the preview looks the file up by itself, and on a Windows PC that lookup
-    // would reach out to the share
+    const { path, title } = data as Record<string, unknown>;
+    // An absolute local path, never a network share however its two leading separators are written
+    // (`//host`, `/\host`): the file viewer the card opens looks the file up, and on a Windows PC that
+    // lookup would reach out to the share. `mode` (how Codex's own app lays its preview out) is not
+    // read: the card is the same for every mode, also one this app has never seen.
     if (typeof path !== "string" || !/^(?:\/|[A-Za-z]:[\\/])/.test(path) || /^[\\/]{2}/.test(path)
       || /[\x00-\x1f\x7f]/.test(path) || !/\.html?$/i.test(path)
-      || (mode !== undefined && mode !== "wide")
       || (title !== undefined && (typeof title !== "string" || title.length > 200))) return null;
-    return { path, ...(typeof title === "string" && title.trim() !== "" ? { title: title.trim() } : {}), wide: mode === "wide" };
+    return { path, ...(typeof title === "string" && title.trim() !== "" ? { title: title.trim() } : {}) };
   } catch { return null; }
 }

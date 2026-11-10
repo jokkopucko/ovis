@@ -3,4 +3,5 @@
 .markdown-visualization-text { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .markdown-visualization-name { overflow-wrap: anywhere; }
 .markdown-visualization-title { color: var(--text-dim); font-size: var(--fs-sm); overflow-wrap: anywhere; }
-.markdown-visualization .btn { flex: none; }
+/* the button's words are no part of what a selection of the card copies */
+.markdown-visualization .btn { flex: none; -webkit-user-select: none; user-select: none; }

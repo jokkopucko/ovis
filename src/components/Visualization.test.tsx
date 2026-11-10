@@ -57,13 +57,19 @@ test("a reference's card asks the PC for nothing and draws no frame; Open previe
     renderer = create(createElement(SettingsProvider, { children:
       createElement(OpenFileContext.Provider, { value: (path) => { elsewhere.push(path); }, children:
         createElement(OpenFileContext.Provider, { value: (path) => { here.push(path); }, children:
-          createElement(Visualization, { path: PATH, title: "Transmission comparison", wide: true }) }) }) }));
+          createElement(Visualization, { path: PATH, title: "Transmission comparison" }) }) }) }));
   });
   await settle();
   // Then the card names the file, with the reference's title under it, and has the one button
   expect(text()).toContain("before after.html");
   expect(text()).toContain("Transmission comparison");
   expect(buttons().map((button) => button.children)).toEqual([["Open preview"]]);
+  // the button says which file it opens: its description is the card's name, and only that
+  const described = String(buttons()[0]!.props["aria-describedby"]);
+  expect(renderer!.root.findAll((node) => node.props["id"] === described && typeof node.type === "string").map((node) => node.children)).toEqual([["before after.html"]]);
+  // between the name and the title sits a break the page does not draw: a copy keeps the two apart
+  const row = renderer!.root.findByProps({ className: "markdown-visualization-text" });
+  expect(row.children.map((child) => typeof child === "string" ? child : `${String(child.type)}${child.props["hidden"] ? "[hidden]" : ""}`)).toEqual(["span", "br[hidden]", "span"]);
   // and nothing was looked up, read or framed
   expect(asked).toEqual([]);
   expect(renderer?.root.findAllByType("iframe")).toHaveLength(0);
@@ -79,7 +85,7 @@ test("a reference's card asks the PC for nothing and draws no frame; Open previe
 });
 
 test("where nothing can open a file, the card names it and offers no button", async () => {
-  await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(Visualization, { path: PATH, wide: false }) })); });
+  await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(Visualization, { path: PATH }) })); });
   await settle();
   expect(text()).toContain("before after.html");
   expect(buttons()).toHaveLength(0);
@@ -89,7 +95,7 @@ test("where nothing can open a file, the card names it and offers no button", as
 test("the card shows the file's own name, never the reference's title in its place, with what hides or reorders text taken out", async () => {
   // a title that pretends to be another file, and a name with a right-to-left override in it
   const path = "/w/report\u202Efdp.html", title = "\u202Einvoice.pdf";
-  await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(OpenFileContext.Provider, { value: () => {}, children: createElement(Visualization, { path, title, wide: false }) }) })); });
+  await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(OpenFileContext.Provider, { value: () => {}, children: createElement(Visualization, { path, title }) }) })); });
   const name = renderer!.root.findByProps({ className: "markdown-visualization-name" });
   const second = renderer!.root.findByProps({ className: "markdown-visualization-title" });
   expect(name.children).toEqual(["reportfdp.html"]);

@@ -18,16 +18,16 @@ describe("Codex visualization references", () => {
     // in a list item and in a quote it is the item's and the quote's text
     expect(parseMarkdown(`- Item\n  ${line}\n- Next`)).toEqual([{ type: "list", ordered: false, items: [{ content: [...text("Item"), ...text(" "), ...text(line)] }, { content: text("Next") }] }]);
     expect(parseMarkdown(`> ${line}`)).toEqual([{ type: "blockquote", blocks: [{ type: "paragraph", lines: [text(line)] }] }]);
-    expect(answer(`> ${line}`)).toEqual([{ type: "blockquote", blocks: [{ type: "visualization", path: "/repo/diagram.html", wide: false }] }]);
+    expect(answer(`> ${line}`)).toEqual([{ type: "blockquote", blocks: [{ type: "visualization", path: "/repo/diagram.html" }] }]);
   });
   it("recognizes an absolute HTML file, metadata and Windows paths as a block between prose", () => {
     const line = directive({ path: "/repo/도식 with spaces.html", mode: "wide", title: " Before / After " });
     expect(answer(`Before\n${line}\nAfter`)).toEqual([
       { type: "paragraph", lines: [[{ type: "text", value: "Before" }]] },
-      { type: "visualization", path: "/repo/도식 with spaces.html", title: "Before / After", wide: true },
+      { type: "visualization", path: "/repo/도식 with spaces.html", title: "Before / After" },
       { type: "paragraph", lines: [[{ type: "text", value: "After" }]] },
     ]);
-    expect(visualizationReference(directive({ path: "C:\\work\\diagram.HTM" }))).toEqual({ path: "C:\\work\\diagram.HTM", wide: false });
+    expect(visualizationReference(directive({ path: "C:\\work\\diagram.HTM" }))).toEqual({ path: "C:\\work\\diagram.HTM" });
   });
   it("leaves fenced/inline examples, unfinished JSON and unsupported targets as text", () => {
     const line = directive({ path: "/repo/diagram.html" });
@@ -37,7 +37,7 @@ describe("Codex visualization references", () => {
       // a network share on a Windows PC, however its leading separators are written
       { path: "/\\host/share/a.html" }, { path: "\\\\host\\share\\a.html" }, { path: "\\/host/share/a.html" },
       { path: "relative/a.html" }, { path: "/repo/a.svg" }, { path: "/repo/a.html\n" },
-      { path: "/repo/a.html", mode: "unknown" }, { path: "/repo/a.html", title: 2 }]) {
+      { path: "/repo/a.html", title: 2 }]) {
       expect(visualizationReference(directive(data))).toBeNull();
       expect(answer(directive(data))[0]?.type).toBe("paragraph");
     }
@@ -47,7 +47,7 @@ describe("Codex visualization references", () => {
   });
   it("draws a reference indented under a list item in that item, and the list goes on after it", () => {
     const line = directive({ path: "/repo/diagram.html" });
-    const block = { type: "visualization" as const, path: "/repo/diagram.html", wide: false };
+    const block = { type: "visualization" as const, path: "/repo/diagram.html" };
     const text = (value: string) => [{ type: "text" as const, value }];
     // lazily numbered, as agents write ordered lists: one list of two items, so the second is drawn as 2
     expect(answer(`1. First\n   ${line}\n   More about first\n1. Second`)).toEqual([{ type: "list", ordered: true, items: [
@@ -68,6 +68,13 @@ describe("Codex visualization references", () => {
     }
     // an example of a reference in a list item's text is not a reference
     expect(answer(`- The flow:\n  it reads ${line}`)).toEqual([{ type: "list", ordered: false, items: [{ content: [...text("The flow:"), ...text(" "), ...text(`it reads ${line}`)] }] }]);
+  });
+  it("draws the same card for every mode, also one this app has never seen", () => {
+    // `mode` is how Codex's own app lays its preview out: the card does not use it, so it never turns a reference back into text
+    for (const mode of ["wide", "inline", "unknown", 3, null, { nested: true }]) {
+      expect(visualizationReference(directive({ path: "/repo/a.html", mode, title: "A" }))).toEqual({ path: "/repo/a.html", title: "A" });
+      expect(answer(directive({ path: "/repo/a.html", mode }))).toEqual([{ type: "visualization", path: "/repo/a.html" }]);
+    }
   });
   it("names a card by the file's own name, and shows the reference's title only beside it", () => {
     expect(visualizationName("/repo/out/report.html")).toBe("report.html");

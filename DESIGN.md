@@ -2640,8 +2640,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   **Open preview**. The name is always the path's last part, never the title in its place; bidi
   controls and other invisible format characters are taken out of both, and a long one is cut in
   the middle so the file's type stays. The press opens the file in the file viewer, where an HTML
-  file is its Page view: the dialog that already exists, which holds the focus while it is open
-  and runs the page only until it is closed. The card itself looks nothing up and draws no frame.
+  file is its Page view, as the person has the viewer set: its dialog, which holds the focus
+  while it is open, or with **Show beside the pane** its panel beside the pane, where the rest of
+  the app stays in reach. Either way the page runs only until that viewer is closed. The card
+  itself looks nothing up and draws no frame. Each card's button names its file to a screen reader
+  (`aria-describedby`), since several cards carry the same words. A copied selection of a card is
+  the name and the title on two lines, as plain and as rich text, without the button's words.
+  Codex's `mode` is not read: every mode, also one this app has never seen, draws the same card.
   An inline preview was left out on purpose. Measured in Chrome and WebKit, the Page renderer's
   sandbox keeps a page's script from every other host by a fetch, a form, a popup or a navigation,
   but not by WebRTC (a STUN or TURN server of its choosing; in WebKit a `preconnect` too), and the
