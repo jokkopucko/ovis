@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, ut
 import { platform, tmpdir, uptime } from "node:os";
 import { join } from "node:path";
 
+import { COMMAND_ALIASES } from "./plugin-link.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { readProcessBirth } from "../server/process-owner.ts";
 import { updateStateDir } from "../server/update-state.ts";
@@ -762,6 +763,56 @@ describe("the state dir when run by hand", () => {
     expect(herdrStateDir({}, "darwin", "/h")).toBe(join("/h", ".local", "state", "herdr"));
     expect(herdrStateDir({ LOCALAPPDATA: "C:/L" }, "win32", "/h")).toBe(join("C:/L", "herdr"));
     expect(herdrStateDir({ USERPROFILE: "C:/U" }, "win32", "/h")).toBe(join("C:/U", "AppData", "Local", "herdr"));
+  });
+});
+
+describe("add and login", () => {
+  /** An Ovis on a port of its own whose PC is already in an account: `link` says so and ends. */
+  function linkedPc() {
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      if (path === "/api/account/status") return Response.json({ account: "acct_1", unlinked: [], removals: [], adds: [], blocked: [] });
+      return new Response(null, { status: 404 });
+    } });
+    writeFileSync(join(configDir, ".env"), `PORT=${server.port}\n`);
+    return { server, env: { HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: ROOT, HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" } };
+  }
+
+  it("are names of link", async () => {
+    expect(COMMAND_ALIASES).toEqual({ add: "link", login: "link" });
+    const { server, env } = linkedPc();
+    try {
+      for (const name of ["link", "add", "login"]) {
+        const result = await run(name, env);
+        expect([name, result.out, result.exitCode], result.err).toEqual([name, "This PC is already in an Ovis account (acct_1).\n", 0]);
+      }
+    } finally { server.stop(true); }
+  });
+
+  it("run the release the app updated to as link, the one name a release from before them knows", async () => {
+    const { server, env } = linkedPc();
+    try {
+      const release = join(updateStateDir(ROOT, server.port!, join(scratch, "app-state")), "release-test");
+      mkdirSync(join(release, "scripts"), { recursive: true });
+      writeFileSync(join(release, "scripts", "plugin.ts"), 'console.log("active release", process.argv.slice(2).join(" "));');
+      const revision = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: ROOT, windowsHide: true }).stdout.toString().trim();
+      writeFileSync(join(release, "..", "current.json"), JSON.stringify({ source_revision: revision, directory: release }));
+      for (const name of ["add", "login"]) {
+        const result = await run(name, env);
+        expect([result.out, result.exitCode], result.err).toEqual(["active release link\n", 0]);
+      }
+    } finally { server.stop(true); }
+  });
+
+  it("are in the usage an unknown command gets, with what they do", async () => {
+    const result = await run("constructor", { HERDR_PLUGIN_CONFIG_DIR: configDir });
+    expect(result.exitCode).toBe(2);
+    expect(result.err).toBe([
+      "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup>",
+      "add (also login, link): sign this PC in and add it to your Ovis account. link --code: show a code and a QR code to pair one device instead.",
+      "",
+    ].join("\n"));
   });
 });
 

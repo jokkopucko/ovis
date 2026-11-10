@@ -148,7 +148,18 @@ bun "$root/scripts/plugin.ts" pair   # plugin install
 bun scripts/plugin.ts pair           # from a checkout
 ```
 
-`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. While the [Ovis relay](#through-the-ovis-relay) is online, `pair` also prints the relay's pairing link and its QR code; while it's off, it says where to turn it on. To link the PC through the relay from its terminal, `link` signs it in to your account and approves the device that adds it, and `link --code` shows a code to type and the relay QR code, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). A plugin checkout from before `link` needs a plugin reinstall first, since in-app updates do not replace the checkout. The actions start, stop and report on the server:
+`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. While the [Ovis relay](#through-the-ovis-relay) is online, `pair` also prints the relay's pairing link and its QR code; while it's off, it says where to turn it on.
+
+**Adding the PC to your account, from its terminal:**
+
+```bash
+bun "$root/scripts/plugin.ts" add    # plugin install
+bun scripts/plugin.ts add            # from a checkout
+```
+
+`add` (also `login` and `link`: one command) signs the PC in to your Ovis account with a code you enter on any device, lists it there, and asks y/N in the terminal for the device of your account that adds it. It ends once the PC is in the account you signed in to, and stops by itself after 30 minutes of waiting. `link --code` shows a code to type and the relay QR code instead, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). A plugin checkout from before `link` needs a plugin reinstall first, since in-app updates do not replace the checkout; one from before `add` and `login` still has `link`.
+
+The actions start, stop and report on the server:
 
 ```bash
 herdr plugin action invoke devswha.ovis.start    # leaves a running server alone

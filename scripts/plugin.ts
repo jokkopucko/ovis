@@ -35,7 +35,7 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
-import { link as linkPc, plainLabel } from "./plugin-link.ts";
+import { COMMAND_ALIASES, link as linkPc, plainLabel } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
@@ -878,14 +878,15 @@ async function approvePairings(): Promise<number> {
 }
 
 /**
- * `link [--code] [--github | --google]`: this PC joins the relay from its own terminal (scripts/plugin-link.ts),
- * signed in to the account by a device code, or with a code to type and a QR code.
+ * `link [--code] [--github | --google]`, also `add` and `login`: this PC joins the relay from its own terminal
+ * (scripts/plugin-link.ts), signed in to the account by a device code, or with a code to type and a QR code.
  */
 async function linkCommand(): Promise<number> {
   // the checkout survives in-app updates: the release that runs has the link that fits its server (as phone-setup)
   const active = activePluginScript(ROOT, port, APP_STATE_DIR);
   if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) {
-    // Ctrl+C reaches the release's link too, which takes its code back; this one waits for it
+    // Ctrl+C reaches the release's link too, which takes its code back; this one waits for it.
+    // Always "link", whichever name it was run by: a release from before `add` and `login` knows only that one
     process.on("SIGINT", () => undefined);
     const child = Bun.spawn([process.execPath, active, "link", ...process.argv.slice(3)], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     // a SIGTERM or SIGHUP sent to this process alone is passed on, so the release takes its code back too
@@ -1048,7 +1049,8 @@ async function status(): Promise<number> {
 }
 
 if (import.meta.main) {
-  const command = process.argv[2] ?? "status";
+  const named = process.argv[2] ?? "status";
+  const command = Object.hasOwn(COMMAND_ALIASES, named) ? COMMAND_ALIASES[named] : named;
   if (command === "start") process.exit(await start());
   else if (command === "stop") process.exit(await stop());
   else if (command === "status") process.exit(await status());
@@ -1057,7 +1059,11 @@ if (import.meta.main) {
   else if (command === "phone") process.exit(await phone());
   else if (command === "phone-setup") process.exit(await phoneSetup());
   else {
-    process.stderr.write(`usage: bun scripts/plugin.ts <start|stop|status|pair|link|phone|phone-setup>\n`);
+    process.stderr.write([
+      "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup>",
+      "add (also login, link): sign this PC in and add it to your Ovis account. link --code: show a code and a QR code to pair one device instead.",
+      "",
+    ].join("\n"));
     process.exit(2);
   }
 }
