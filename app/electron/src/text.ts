@@ -1,5 +1,6 @@
 /**
- * The words the app's main process shows itself (the tray, the menu bar), in the languages the
+ * The words the app's main process shows itself (the tray, the menu bar, the notification of a
+ * downloaded update and its line on the connection screen), in the languages the
  * Ovis pages have (src/lib/i18n.ts), chosen from the app's locale (`app.getLocale()`, the system's
  * language or `--lang`). English is the key, as in the pages.
  */
@@ -11,6 +12,8 @@ const ENGLISH = [
   "Also on Battery",
   "Restart Ovis Server",
   "Restart to Update",
+  "Ovis {version} is ready",
+  "Restart to update.",
   "Quit Ovis",
   "Keeping this computer awake: 1 agent working",
   "Keeping this computer awake: {count} agents working",
@@ -32,6 +35,8 @@ const TRANSLATIONS: Record<Exclude<DesktopLocale, "en">, Record<TextKey, string>
     "Also on Battery": "배터리 사용 중에도",
     "Restart Ovis Server": "Ovis 서버 다시 시작",
     "Restart to Update": "다시 시작해서 업데이트",
+    "Ovis {version} is ready": "Ovis {version} 업데이트가 준비되었습니다",
+    "Restart to update.": "다시 시작하면 업데이트됩니다.",
     "Quit Ovis": "Ovis 종료",
     "Keeping this computer awake: 1 agent working": "컴퓨터를 깨워 두는 중: 에이전트 1개 작업 중",
     "Keeping this computer awake: {count} agents working": "컴퓨터를 깨워 두는 중: 에이전트 {count}개 작업 중",
@@ -48,6 +53,8 @@ const TRANSLATIONS: Record<Exclude<DesktopLocale, "en">, Record<TextKey, string>
     "Also on Battery": "バッテリー駆動中も",
     "Restart Ovis Server": "Ovis サーバーを再起動",
     "Restart to Update": "再起動してアップデート",
+    "Ovis {version} is ready": "Ovis {version} のアップデートの準備ができました",
+    "Restart to update.": "再起動するとアップデートされます。",
     "Quit Ovis": "Ovis を終了",
     "Keeping this computer awake: 1 agent working": "スリープを止めています: エージェント 1 個が作業中",
     "Keeping this computer awake: {count} agents working": "スリープを止めています: エージェント {count} 個が作業中",
@@ -64,6 +71,8 @@ const TRANSLATIONS: Record<Exclude<DesktopLocale, "en">, Record<TextKey, string>
     "Also on Battery": "使用电池时也保持",
     "Restart Ovis Server": "重启 Ovis 服务器",
     "Restart to Update": "重启以更新",
+    "Ovis {version} is ready": "Ovis {version} 更新已就绪",
+    "Restart to update.": "重启即可更新。",
     "Quit Ovis": "退出 Ovis",
     "Keeping this computer awake: 1 agent working": "正在保持电脑唤醒: 1 个智能体工作中",
     "Keeping this computer awake: {count} agents working": "正在保持电脑唤醒: {count} 个智能体工作中",

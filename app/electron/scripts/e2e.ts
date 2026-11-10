@@ -7,13 +7,17 @@
  *   bun scripts/e2e.ts dist/mac-arm64/Ovis.app                  macOS (needs a logged-in desktop session)
  *   bun scripts/e2e.ts --update                                 Linux: packages two versions from stage/ and out/
  *                                                               and updates the older one from a local feed
+ *   bun scripts/e2e.ts --update --from-tray                     the same, restarting from the tray with the window's
+ *                                                               line closed (without it: from that line's button)
  *
  * Options: --out <dir> (screenshots and results.json; default a new temporary folder, kept), --keep (leave
  * the temporary HOME behind). Exit code 0 when every check passed.
  *
  * The app's main process is driven through its Node inspector (`--inspect-brk`): before the app's
- * own code runs, the tray's menu and `shell.openExternal` are wrapped so the checks can press the
- * tray's items and see what would open in the browser. Everything else is the app as built.
+ * own code runs, the tray's menu is wrapped, and `shell.openExternal` and the showing of a
+ * notification are replaced, so the checks can press the tray's items, see what would open in the
+ * browser and read (and click) what the app notified of. The app's hourly update check is kept as
+ * it is scheduled, so a check can be run without waiting an hour. Everything else is the app as built.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -21,6 +25,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { UPDATE_CHECK_INTERVAL_MS } from "../src/updates.ts";
 
 type Check = { name: string; ok: boolean; detail: string; known?: string };
 
@@ -32,9 +37,10 @@ const option = (name: string) => {
   return index >= 0 ? argv[index + 1] : undefined;
 };
 const updateMode = flag("--update");
+const fromTray = flag("--from-tray");
 const keep = flag("--keep");
 const appArg = argv.find((arg, index) => !arg.startsWith("--") && argv[index - 1] !== "--out");
-if (!updateMode && !appArg) throw new Error("Usage: bun scripts/e2e.ts <Ovis AppImage or Ovis.app> | --update [--out dir] [--keep]");
+if (!updateMode && !appArg) throw new Error("Usage: bun scripts/e2e.ts <Ovis AppImage or Ovis.app> | --update [--from-tray] [--out dir] [--keep]");
 if (updateMode && process.platform !== "linux") throw new Error("--update runs on Linux only (a macOS update needs a signed app)");
 
 // macOS's own temporary folder is too deep for hc's socket path (at most 103 bytes there)
@@ -226,14 +232,20 @@ class Inspector {
   }
 }
 
-/** run before the app's own code: the tray's menu and the browser opener, made visible to the checks */
+/** run before the app's own code: the tray's menu, the browser opener and the notifications, made visible to the checks */
 const HOOK = `(() => {
   const electron = require("electron");
-  const e2e = globalThis.__ovisE2e = { electron, trayMenu: null, opened: [], loads: [] };
+  const e2e = globalThis.__ovisE2e = { electron, fs: require("fs"), trayMenu: null, opened: [], loads: [], notifications: [], updateChecks: [] };
   electron.app.on("web-contents-created", (_event, contents) => contents.on("did-finish-load", () => e2e.loads.push(contents.getURL())));
   const setContextMenu = electron.Tray.prototype.setContextMenu;
   electron.Tray.prototype.setContextMenu = function (menu) { e2e.trayMenu = menu; return setContextMenu.call(this, menu); };
   electron.shell.openExternal = async (url) => { e2e.opened.push(url); };
+  // kept instead of handed to the desktop, which the run has none of, and told it was shown
+  electron.Notification.prototype.show = function () { e2e.notifications.push(this); this.emit("show"); };
+  e2e.notified = () => e2e.notifications.map((notification) => ({ title: notification.title, body: notification.body }));
+  // the hourly update check, scheduled as the app does and also kept here to be run at once
+  const setTimer = globalThis.setInterval;
+  globalThis.setInterval = function (run, ms, ...rest) { if (ms === ${UPDATE_CHECK_INTERVAL_MS}) e2e.updateChecks.push(run); return setTimer.call(this, run, ms, ...rest); };
   e2e.window = () => electron.BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.getParentWindow() === null) ?? null;
   e2e.tray = () => (e2e.trayMenu ? e2e.trayMenu.items.map((item) => item.type === "separator" ? "-" : item.label + (item.enabled ? "" : " (off)")) : null);
   e2e.press = (label) => { const item = e2e.trayMenu?.items.find((entry) => entry.label === label); if (!item) throw new Error("no tray item " + label); if (!item.enabled) throw new Error("tray item " + label + " is off"); item.click(); return true; };
@@ -316,6 +328,11 @@ function pageText(app: App): Promise<string> {
 /** presses the first button in the page whose text starts with `label`; false when there is none */
 function pressButton(app: App, label: string): Promise<boolean> {
   return app.inspector.eval<boolean>(`e2e.window().webContents.executeJavaScript(${JSON.stringify(`(() => { const button = [...document.querySelectorAll("button")].find((b) => b.innerText.trim().startsWith(${JSON.stringify(label)})); button?.click(); return !!button; })()`)})`);
+}
+
+/** whether the page has a button whose text starts with `label` */
+function hasButton(app: App, label: string): Promise<boolean> {
+  return app.inspector.eval<boolean>(`e2e.window().webContents.executeJavaScript(${JSON.stringify(`[...document.querySelectorAll("button")].some((b) => b.innerText.trim().startsWith(${JSON.stringify(label)}))`)})`);
 }
 
 /** the page's sidebar shows both workspaces this run made */
@@ -518,6 +535,25 @@ async function update(): Promise<void> {
     mkdirSync(join(root, "Applications"));
     copyFileSync(join(builds, "old", oldImage), installed);
     chmodSync(installed, 0o755);
+
+    // in a folder that cannot be written the AppImage cannot replace itself: it says its updates are off, and asks its feed for nothing
+    if (process.getuid?.() === 0) {
+      log("run as root, who can write everywhere: the AppImage in a folder that cannot be written is not checked");
+    } else {
+      const fixedData = join(root, "user-data-fixed");
+      chmodSync(join(root, "Applications"), 0o555);
+      try {
+        const fixed = await launch(installed, fixedData, { label: "5a-update-unwritable", env: { OVIS_UPDATES: "1", OVIS_UPDATE_URL: `https://127.0.0.1:${feed.port}/` }, args: ["--ignore-certificate-errors"] });
+        await ovisLoaded(fixed);
+        const said = await until("the app's word on its updates", () => readFileSync(join(fixedData, "logs", "ovis.log"), "utf8").split("\n").find((line) => line.startsWith("Updates")) ?? null, 30_000).catch(() => "");
+        check("an AppImage in a folder that cannot be written does not update itself", /^Updates are off: the AppImage is in a folder that cannot be written/.test(said) && requests.length === 0, `${said}; feed asked ${requests.length} times`);
+        await quit(fixed, "quit");
+        await within(hc(fixedData, "server", "stop"), 30_000, "hc server stop").catch(() => {});
+      } finally {
+        chmodSync(join(root, "Applications"), 0o755);
+      }
+    }
+
     // the app's default folder, as a user runs it: the relaunch after the update must find the same one
     const app = await launch(installed, null, {
       label: "5-update",
@@ -532,9 +568,102 @@ async function update(): Promise<void> {
     }, 180_000).catch(() => null);
     check("the update downloads and the tray offers Restart to Update", items !== null, `feed asked for: ${[...new Set(requests)].join(", ")}`);
     if (!items) return;
+
+    // the update announces itself: one notification, whose click opens the window
+    const ready = "Ovis 0.0.2 is ready";
+    const notifies = await app.inspector.eval<boolean>("e2e.electron.Notification.isSupported()");
+    if (notifies) {
+      const notified = await until("the update's notification", async () => {
+        const shown = await app.inspector.eval<{ title: string; body: string }[]>("e2e.notified()");
+        return shown.length > 0 ? shown : null;
+      }, 10_000).catch(() => []);
+      check("the update is announced with one notification", notified.length === 1 && notified[0]!.title === ready && notified[0]!.body === "Restart to update.", JSON.stringify(notified));
+      await app.inspector.eval("e2e.window().close()");
+      await until("the window to hide", async () => (await app.inspector.eval<boolean>("e2e.window()?.isVisible() ?? false")) ? null : true, 5_000).catch(() => null);
+      await app.inspector.eval("(e2e.notifications[0]?.emit('click'), true)");
+      const shown = await until("the window to show", () => app.inspector.eval<boolean>("e2e.window()?.isVisible() ?? false"), 5_000).catch(() => false);
+      check("the notification's click opens the window", shown === true);
+      // the checks below look at the window either way
+      if (shown !== true) await app.inspector.eval("(e2e.window()?.show(), true)");
+    } else {
+      log("this PC shows no notifications (no libnotify): the update's notification is not checked");
+    }
+
+    // and a line in the window, with the tray's action
+    await pressButton(app, "I've used Ovis before");
+    const lined = async () => { const text = await pageText(app); return text.includes(`${ready}.`) && await hasButton(app, "Restart to Update"); };
+    const line = await until("the update's line in the window", async () => (await lined()) || null, 30_000).catch(() => false);
+    check("the window says the update is ready, with Restart to Update", line === true);
     await screenshot(app, "7-update-ready");
-    const server = saved(app).server?.pid ?? -1;
-    await app.inspector.eval(`e2e.press("Restart to Update")`).catch(() => {});
+    /** what the app keeps of what it said (src/updates.ts UpdateNotices); nothing while it has written none */
+    const notices = (): { notified: string | null; closed: string | null } => {
+      try { return JSON.parse(readFileSync(join(app.userData, "update-notice.json"), "utf8")); } catch { return { notified: null, closed: null }; }
+    };
+    /** the update's line among the lines over the pane, which share its row and its close button */
+    const inLine = (find: string) => `[...document.querySelectorAll(".update-notice")].find((line) => line.innerText.includes(${JSON.stringify(ready)}))?.querySelector(${JSON.stringify(find)})?.click()`;
+    if (fromTray) {
+      await app.inspector.eval(`e2e.window().webContents.executeJavaScript(${JSON.stringify(inLine(".update-notice-dismiss"))})`);
+      const gone = await until("the line to close", async () => (await lined()) ? null : true, 10_000).catch(() => false);
+      check("the line closes for this version, and the tray keeps Restart to Update", gone === true && notices().closed === "0.0.2" && (await app.inspector.eval<string[] | null>("e2e.tray()"))?.includes("Restart to Update") === true, JSON.stringify(notices()));
+    }
+
+    // an hour later: the feed is asked again, and the version already held is neither downloaded nor announced again
+    const feedAsked = () => requests.filter((name) => name === "latest-linux.yml").length;
+    const downloadsLogged = () => readFileSync(join(app.userData, "logs", "ovis.log"), "utf8").split("\n").filter((line) => line.startsWith("Update 0.0.2 is downloaded")).length;
+    const notifiedCount = async () => (await app.inspector.eval<unknown[]>("e2e.notified()")).length;
+    const before = { asked: feedAsked(), downloads: downloadsLogged(), notified: await notifiedCount() };
+    const hourly = await app.inspector.eval<number>("(e2e.updateChecks.forEach((run) => run()), e2e.updateChecks.length)");
+    const askedAgain = await until("the feed asked again", () => feedAsked() > before.asked || null, 30_000).catch(() => false);
+    // electron-updater answers a download of the version it holds from its file at once: a second download would be logged within these seconds
+    const again = await until("the held version downloaded or announced again", async () => downloadsLogged() > before.downloads || await notifiedCount() > before.notified || null, 10_000).catch(() => false);
+    check("a later check asks the feed and leaves the version already held alone", hourly === 1 && before.downloads === 1 && askedAgain === true && again === false,
+      `hourly checks ${hourly}, feed asked ${before.asked} -> ${feedAsked()}, downloads logged ${before.downloads} -> ${downloadsLogged()}, notifications ${before.notified} -> ${await notifiedCount()}`);
+
+    // the server stopped: the connection screen offers the update too, also with the line closed
+    const stopped = saved(app).server?.pid;
+    // never a pid that is not the server's: kill(-1) would end every process of the user
+    if (stopped === undefined || stopped <= 0) {
+      check("the server runs before it is stopped for the connection screen", false, "no server recorded");
+      return;
+    }
+    process.kill(stopped, "SIGKILL");
+    const offered = await until("the connection screen's update line", async () => {
+      const text = await pageText(app);
+      return (text.includes("Ovis stopped") && text.includes(ready) && await hasButton(app, "Restart to Update")) || null;
+    }, 30_000).catch(() => false);
+    check("the connection screen offers the update when the server has stopped", offered === true);
+    await screenshot(app, "8-update-ready-connection-screen");
+    await pressButton(app, "Try again");
+    await ovisLoaded(app);
+    let server = await until("a new server", () => { const pid = saved(app).server?.pid; return pid !== undefined && pid !== stopped ? pid : null; }, 60_000).catch(() => -1);
+    if (notifies) check("one notification so far, recorded for its version", (await app.inspector.eval<unknown[]>("e2e.notified()")).length === 1 && notices().notified === "0.0.2", JSON.stringify(notices()));
+
+    // the held file goes while the server stops for Restart to Update (as a later download that fails removes it):
+    // Ovis starts again as it was, without the offer, and the next check brings the update back without announcing it twice
+    const heldFile = join(home, ".cache", "ovis-desktop-updater", "pending", newImage);
+    const offers = async () => (await app.inspector.eval<string[] | null>("e2e.tray()"))?.includes("Restart to Update") === true;
+    // pressed and removed in one turn of the app: the press has passed its own look at the file, and the server has not stopped yet
+    const lost = existsSync(heldFile) && await app.inspector.eval<boolean>(`(e2e.press("Restart to Update"), e2e.fs.rmSync(${JSON.stringify(heldFile)}), true)`).catch(() => false);
+    const resumed = await until("Ovis started again", () => { const pid = saved(app).server?.pid; return pid !== undefined && pid !== server ? pid : null; }, 60_000).catch(() => -1);
+    await ovisLoaded(app).catch(() => null);
+    check("an update gone by the time the server has stopped starts Ovis again as it was, without the offer", lost === true && resumed !== -1 && !alive(server) && alive(app.mainPid) && !(await offers()),
+      `server ${server} -> ${resumed}, tray: ${(await app.inspector.eval<string[] | null>("e2e.tray()"))?.join(" / ")}`);
+    if (resumed !== -1) server = resumed;
+    await app.inspector.eval("(e2e.updateChecks.forEach((run) => run()), true)");
+    const back = await until("Restart to Update in the tray again", async () => (await offers()) || null, 120_000).catch(() => false);
+    check("the next check downloads it again, and announces nothing twice", back === true && existsSync(heldFile) && (!notifies || await notifiedCount() === 1), `notifications ${await notifiedCount()}`);
+
+    if (fromTray) {
+      // a reload later, the closed line is still closed
+      await until("the page's sidebar", async () => (await pageText(app)).includes("New workspace") || null, 30_000).catch(() => null);
+      check("the closed line stays closed after the page loads again", !(await lined()));
+      await app.inspector.eval(`e2e.press("Restart to Update")`).catch(() => {});
+    } else {
+      const again = await until("the update's line again", async () => (await lined()) || null, 30_000).catch(() => false);
+      check("the line is back after the page loads again", again === true);
+      // not awaited: the app answers only when it keeps running
+      await app.inspector.eval(`(e2e.window().webContents.executeJavaScript(${JSON.stringify(inLine(".btn-primary"))}), true)`).catch(() => {});
+    }
     app.inspector.close();
     check("Restart to Update quits the old build", await exited(app.proc, 60_000));
     check("Restart to Update stops the old server", !alive(server));

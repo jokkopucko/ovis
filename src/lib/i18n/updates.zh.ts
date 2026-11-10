@@ -44,6 +44,8 @@ export const UPDATES_ZH: Record<string, string> = {
   "How to restart": "如何重新启动",
   "Ovis v{version} is available.": "Ovis v{version} 已发布。",
   "An Ovis update is available.": "Ovis 有可用更新。",
+  "Ovis {version} is ready.": "Ovis {version} 更新已就绪。",
+  "Restart to Update": "重启以更新",
   "Starting the update…": "正在开始更新…",
   "The update could not be installed.": "无法安装更新。",
   "Downloading the update": "正在下载更新",

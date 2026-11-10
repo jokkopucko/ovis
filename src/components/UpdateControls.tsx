@@ -7,6 +7,7 @@ import { useSettings } from "../lib/settings.ts";
 import { announcesUpdate, readAnnounced, readOfferClosed, summaryFor, watchAnnounced, watchOfferClosed, writeAnnounced, writeOfferClosed } from "../lib/updateNotes.ts";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import type { UpdatesModel } from "../lib/updates.ts";
+import type { DesktopUpdateLine } from "../lib/desktopUpdate.ts";
 import { lazyChunkFailed, onLazyChunkFailure } from "../lib/lazyChunk.ts";
 import { Markdown } from "./Markdown.tsx";
 import { RenderBoundary } from "./RenderBoundary.tsx";
@@ -298,6 +299,27 @@ export function UpdateNotice({ updates, onOpen }: { updates: UpdatesModel; onOpe
       writeOfferClosed(offer); setClosedOffer(offer);
       if (focused) document.querySelector<HTMLElement>(".header-more-button")?.focus();
     }}><X /></button>}
+  </div>;
+}
+
+/**
+ * The desktop app's line for an update it has downloaded (lib/desktopUpdate.ts), on the release
+ * line's row: the server such an app carries offers no release of its own. Restart to Update is
+ * the tray's; closed, the line stays closed for that version, in the app.
+ */
+export function DesktopUpdateNotice({ update }: { update: DesktopUpdateLine | null }) {
+  const t = useT();
+  if (update === null) return null;
+  const text = t("Ovis {version} is ready.", { version: update.version });
+  return <div className="update-notice is-line" role="status">
+    <span title={text}>{text}</span>
+    <button type="button" className="btn btn-primary" disabled={update.installing} onClick={update.install}>{t("Restart to Update")}</button>
+    <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={(event) => {
+      // as the release line's Close: a keyboard's focus moves to the header's More, not to the page
+      const focused = event.currentTarget === document.activeElement;
+      update.close();
+      if (focused) document.querySelector<HTMLElement>(".header-more-button")?.focus();
+    }}><X /></button>
   </div>;
 }
 

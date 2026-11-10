@@ -30,11 +30,11 @@ Until the server answers, or when it stops, the window shows the connection scre
 **Show logs**. The logs are in `<user data>/logs/ovis.log` (the run before in `ovis.log.1`),
 with the app's update lines (why updates are off, a failed check or download).
 
-The tray and the menu bar speak the system's language when the Ovis pages have it (Korean,
-Japanese, Chinese; `src/text.ts`), English otherwise.
+The tray, the menu bar and the notification of a downloaded update speak the system's language
+when the Ovis pages have it (Korean, Japanese, Chinese; `src/text.ts`), English otherwise.
 
 - **Tray**: Open Ovis, Open in Browser, Keep Computer Awake, Restart Ovis Server, Restart to Update
-  (once an update is downloaded), Quit Ovis. Closing the window keeps Ovis running in the tray; Quit stops the server.
+  (once an update is downloaded, see [Updates](#updates)), Quit Ovis. Closing the window keeps Ovis running in the tray; Quit stops the server.
   On a Linux desktop without a tray (GNOME without an AppIndicator extension), starting the app
   again shows the window: only one copy runs.
 - **Keep Computer Awake** (tray, off by default): **While an Agent Is Working** holds off system sleep
@@ -120,11 +120,44 @@ when it has a feed:
 | `OVIS_UPDATE_URL=https://…` | run | checks that feed instead of the built-in one (a build without a feed stays off) |
 | `OVIS_UPDATES=0` | run | no checks |
 
-A development run never checks. The app checks after it starts and every 6 hours, downloads in the
-background, and offers **Restart to Update** in the tray. On Linux the AppImage replaces itself; a
-.deb install installs the new .deb with `apt-get install --no-remove` behind the system's password
-prompt (pkexec, or sudo), only from **Restart to Update**, never on a plain quit, and cancelling the
-prompt keeps Ovis running as it was. On macOS an update needs a signed app.
+A development run never checks. The app checks after it starts and every hour (nothing pushes a
+release to it), and downloads in the background. A version it already holds is not downloaded
+again by the next check, unless the updater reported a failure since. An update whose file is
+gone from the updater's folder (a later download that fails empties it) is no longer offered,
+anywhere, until it is downloaded again. Once the app is on its way out for an update, it checks
+no more.
+
+On a Mac the update is offered only once Squirrel, the system's side of the updater, says it
+holds it: the download alone is not enough there, and Squirrel can refuse it (an app run from
+its disk image, a signature it does not accept). An error before that leaves nothing offered,
+and the next check hands the download over again.
+
+A downloaded update says so, in three places:
+
+- **A system notification**, once per version: "Ovis X.Y.Z is ready" with "Restart to update."
+  under it. Its click opens the window. Which version was announced is kept in
+  `<user data>/update-notice.json`, so the next start does not say it again.
+- **A line in the window**: "Ovis X.Y.Z is ready." with **Restart to Update**, on the row where
+  the Ovis pages show their own release line (the server the app carries offers none). Its close
+  button closes it for that version, in the app, so later starts keep it closed; the next
+  version shows it again. The connection screen shows the line too, also once closed: an update
+  may be what a server that cannot start needs. A window a page opens has no line.
+- **Restart to Update** in the tray, as long as the update waits.
+
+The line is drawn by the pages, from what the app's preload tells them (`ovisUpdate`): the
+downloaded version and whether its line was closed. Only the connection screen and the server's
+own pages are answered.
+
+On Linux the AppImage replaces itself, so one kept in a folder the user cannot write (under
+`/opt`, say) does not update itself: the log says why its updates are off. A .deb install
+installs the new .deb with `apt-get install --no-remove` behind the system's password prompt
+(pkexec, or sudo), only from **Restart to Update** (the tray's or the line's), never on a plain
+quit, and cancelling the prompt keeps Ovis running as it was. On macOS an update needs a signed
+app, and so does its notification.
+
+Except for a .deb, Restart to Update stops the server before it installs, since the new copy
+starts at once. An install that then cannot go ahead (the downloaded file gone meanwhile, an
+installer that fails at once) starts Ovis again as it was.
 
 ## Build
 
@@ -182,16 +215,23 @@ bun scripts/e2e.ts dist/Ovis-*.AppImage       # Linux
 bun scripts/e2e.ts dist/mac-arm64/Ovis.app    # macOS, from a logged-in desktop session
 bun scripts/e2e.ts --update                   # Linux: packages 0.0.1 and 0.0.2 from stage/ and out/,
                                               # then updates the first from a local https feed
+bun scripts/e2e.ts --update --from-tray       # the same, restarting from the tray with the line closed
 ```
 
 It covers the first launch (connection screen, then Ovis), a terminal and an agent pane (a
 stand-in `claude`) in the app's core, quit and relaunch (the terminals keep running, the address
 stays), the tray's items, a killed app (the next start ends the server left behind) and, with
-`--update`, Restart to Update. The app's main process is driven through its inspector. Terminals
-are made and typed into through the server's API, and the window is checked to list them. Tray
-items are pressed through their menu (enabled, with their handlers); whether the desktop draws the
-tray icon is not checked. The update feed uses a certificate made for the run, which the app is
-told to accept, and `--update` packages with electron-builder's usual caches.
+`--update`, the app's updates: an AppImage in a folder that cannot be written keeps them off; a
+downloaded update's one notification and that notification's click, its line in the window and
+on the connection screen, a later check that leaves the held version alone, the downloaded file
+lost while the server stops for the install (Ovis starts again, and the next check brings the
+update back), and Restart to Update from the line (with `--from-tray` the line is closed first,
+stays closed, and the tray restarts). The app's main process is driven
+through its inspector. Terminals are made and typed into through the server's API, and the window
+is checked to list them. Tray items are pressed through their menu (enabled, with their handlers);
+whether the desktop draws the tray icon is not checked. The notification is read as the app shows
+it; whether the desktop draws it is not checked. The update feed uses a certificate made for the
+run, which the app is told to accept, and `--update` packages with electron-builder's usual caches.
 
 Screenshots, the app's output and `results.json` go to `--out` (by default a new temporary
 folder, kept); the exit code is 0 when every check passed. A check that fails for a filed bug says

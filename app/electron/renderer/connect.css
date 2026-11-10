@@ -24,4 +24,10 @@ li[data-state="failed"] .state, li[data-state="stopped"] .state { color: var(--d
 .row { display: flex; gap: .6rem; margin-top: 1.25rem; }
 button { font: inherit; border-radius: .6rem; padding: .6rem 1rem; border: 1px solid var(--border); background: var(--panel); color: var(--strong); cursor: pointer; }
 button.primary { background: var(--primary); color: var(--primary-text); border-color: var(--primary); font-weight: 600; }
+button:disabled { opacity: .6; cursor: default; }
 button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* the downloaded update: one line under the steps' buttons, its button plain so Try again stays the one primary action */
+.update { display: flex; align-items: center; gap: .7rem; margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--border); }
+.update[hidden] { display: none; }
+.update span { flex: 1; min-width: 0; color: var(--strong); }
+.update button { background: transparent; }

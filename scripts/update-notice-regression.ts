@@ -8,7 +8,8 @@ import { openSettingsPage } from "./settings-page.ts";
 
 /**
  * The lines under the header, on a phone: a release is installed from its line with one button
- * and shows its steps, the line for a PC that needs a bridge update can be closed for good, and a
+ * and shows its steps, the desktop app's downloaded update has its line with Restart to Update,
+ * the line for a PC that needs a bridge update can be closed for good, and a
  * checkout replaced under the server asks for a restart that a reload does not clear.
  * The update status and the waiting PC are answered here; nothing is installed.
  */
@@ -118,6 +119,53 @@ export async function checkUpdateNotice(browser: Browser, origin: string, shots?
     await page.getByText("Ovis v9.9.9 is available.", { exact: true }).waitFor({ state: "hidden" });
     assert.equal(await page.locator(".update-notice").count(), 0, "an installed update leaves no line");
     console.log("PASS a release installs from its line with one button and shows its steps");
+
+    // the desktop app's downloaded update (app/electron): its line on the same row, from what the app's preload says
+    const desktop = await context.newPage();
+    try {
+      desktop.on("pageerror", (error) => errors.push(error.message));
+      // a stand-in for the preload's `ovisUpdate`: an install the app never answers (it is on its way out), a close it tells every window of
+      await desktop.addInitScript(() => {
+        const asked = { install: 0, closed: [] as string[] };
+        const listeners = new Set<(update: unknown) => void>();
+        let update = { version: "9.9.10", closed: false };
+        Object.assign(window, {
+          __desktopUpdateAsked: asked,
+          ovisUpdate: {
+            current: async () => update,
+            onChange: (listener: (update: unknown) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+            install: () => { asked.install += 1; return new Promise<void>(() => undefined); },
+            close: (version: string) => { asked.closed.push(version); update = { ...update, closed: true }; for (const listener of listeners) listener(update); },
+          },
+        });
+      });
+      const asked = () => desktop.evaluate(() => (window as unknown as { __desktopUpdateAsked: { install: number; closed: string[] } }).__desktopUpdateAsked);
+      await desktop.goto(origin);
+      const ready = desktop.locator(".pane-column > .update-notice.is-line").filter({ hasText: "Ovis 9.9.10 is ready." });
+      await ready.waitFor();
+      assert.equal(await desktop.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "the desktop app's line overflows nothing sideways");
+      assert.equal(await ready.evaluate((line) => new Set([...line.children].map((item) => Math.round(item.getBoundingClientRect().top + item.getBoundingClientRect().height / 2))).size), 1, "the desktop app's line is one row");
+      if (shots) await desktop.screenshot({ path: join(shots, "1b-desktop-update-ready.png") });
+      const restart = ready.getByRole("button", { name: "Restart to Update", exact: true });
+      await restart.click();
+      await desktop.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>(".update-notice button")].some((button) => button.textContent === "Restart to Update" && button.disabled));
+      // a second press while the app installs asks for nothing
+      await restart.click({ force: true });
+      assert.deepEqual(await asked(), { install: 1, closed: [] }, "Restart to Update asks the app once, and waits for it");
+      await ready.getByRole("button", { name: "Dismiss", exact: true }).click();
+      await ready.waitFor({ state: "hidden" });
+      assert.deepEqual(await asked(), { install: 1, closed: ["9.9.10"] }, "Dismiss closes that version's line in the app");
+      // the app keeps it closed: a reload asks it again, and draws no line
+      await desktop.addInitScript(() => {
+        (window as unknown as { ovisUpdate: { current: () => Promise<unknown> } }).ovisUpdate.current = async () => ({ version: "9.9.10", closed: true });
+      });
+      await desktop.reload();
+      await desktop.locator(".conn-live").waitFor();
+      assert.equal(await desktop.getByText("Ovis 9.9.10 is ready.", { exact: true }).count(), 0, "a closed line stays closed after a reload");
+      console.log("PASS the desktop app's downloaded update is one line with Restart to Update, and closes in the app");
+    } finally {
+      await desktop.close();
+    }
 
     // a PC whose bridge cannot be updated: its line closes, and stays closed
     const line = page.getByText("QA PC needs a bridge update to reconnect.", { exact: true });
