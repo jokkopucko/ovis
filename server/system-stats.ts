@@ -9,9 +9,9 @@
  * FRESH_MS share one reading, so several browsers or tabs never shorten each other's window.
  *
  * Linux is read from /proc (memory is total minus MemAvailable, so the file cache never reads as
- * "used"). Everywhere else gets what Node's `os` can say, and the fields it cannot say are null: a
- * number that was not measured is never shown as zero. macOS memory is one of those: `os` counts
- * the file cache as used there, so it is left out rather than shown high.
+ * "used"). macOS memory is read from `vm_stat` as Activity Monitor's "Memory Used" (`os` counts the
+ * file cache as used there). Everywhere else gets what Node's `os` can say, and the fields it cannot
+ * say are null: a number that was not measured is never shown as zero.
  *
  * Limits worth knowing. In a container without lxcfs, /proc and `os` describe the host, not the
  * container's cgroup limits. libuv leaves iowait, softirq and steal out of the CPU times, so a VM
@@ -77,6 +77,26 @@ export function parseMeminfo(text: string): { total: number; used: number } | nu
   const available = kib("MemAvailable");
   if (total === null || available === null || total <= 0) return null;
   return { total, used: Math.max(0, total - Math.min(available, total)) };
+}
+
+/**
+ * macOS memory in use from `vm_stat`, as Activity Monitor's "Memory Used": App Memory (anonymous
+ * pages less the purgeable ones) plus wired pages plus the pages the compressor occupies, in bytes.
+ * The file cache and free pages are not used memory. Null when the page size or a count is missing.
+ */
+export function parseVmStat(text: string, total: number): { total: number; used: number } | null {
+  const size = /page size of (\d+) bytes/.exec(text);
+  const pages = (name: string): number | null => {
+    const match = new RegExp(`^${name}:\\s+(\\d+)\\.?\\s*$`, "m").exec(text);
+    return match ? Number(match[1]) : null;
+  };
+  const anonymous = pages("Anonymous pages");
+  const purgeable = pages("Pages purgeable");
+  const wired = pages("Pages wired down");
+  const compressor = pages("Pages occupied by compressor");
+  if (size === null || anonymous === null || purgeable === null || wired === null || compressor === null || !(total > 0)) return null;
+  const used = (Math.max(0, anonymous - purgeable) + wired + compressor) * Number(size[1]);
+  return { total, used: Math.min(used, total) };
 }
 
 const round = (value: number, places = 1): number => Math.round(value * 10 ** places) / 10 ** places;
@@ -154,7 +174,14 @@ export const realIo: SystemIo = {
     if (osPlatform() === "linux") {
       try { return parseMeminfo(await readFile("/proc/meminfo", "utf8")); } catch { return null; }
     }
-    // `os` counts the file cache as used on macOS, which would read as a full PC: left out there
+    // `os` counts the file cache as used on macOS, which would read as a full PC: vm_stat says what is used
+    if (osPlatform() === "darwin") {
+      try {
+        const child = Bun.spawn(["/usr/bin/vm_stat"], { stdout: "pipe", stderr: "ignore", timeout: 2000 });
+        const text = await new Response(child.stdout).text();
+        return await child.exited === 0 ? parseVmStat(text, totalmem()) : null;
+      } catch { return null; }
+    }
     if (osPlatform() !== "win32") return null;
     const total = totalmem();
     return total > 0 ? { total, used: Math.max(0, total - freemem()) } : null;

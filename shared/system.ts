@@ -23,7 +23,7 @@ export interface SystemReport {
   cpu_count: number;
   /** the share of CPU time in use since the previous reading; null when there is nothing to compare yet */
   cpu_percent: number | null;
-  /** memory in use without the file cache (Linux: total minus MemAvailable) */
+  /** memory in use without the file cache (Linux: total minus MemAvailable; macOS: from vm_stat) */
   memory: { used: number; total: number; percent: number } | null;
   /** 1, 5 and 15 minute load averages; null on Windows, which has none */
   load: [number, number, number] | null;

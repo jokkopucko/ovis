@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { cpuPercent, cpuTimesOf, createSystemSampler, DISK_STALE_MS, diskOf, diskReader, type ReadPath, handleSystemRequest, parseMeminfo, STALE_MS, type SystemIo } from "./system-stats.ts";
+import { cpuPercent, cpuTimesOf, createSystemSampler, DISK_STALE_MS, diskOf, diskReader, type ReadPath, handleSystemRequest, parseMeminfo, parseVmStat, realIo, STALE_MS, type SystemIo } from "./system-stats.ts";
 
 const MEMINFO = `MemTotal:       16384000 kB
 MemFree:         1000000 kB
@@ -7,11 +7,53 @@ MemAvailable:    8192000 kB
 Buffers:          500000 kB
 `;
 
+// vm_stat on an Apple silicon Mac with 48 GiB (macOS 26.5), the lines parseVmStat reads among the others
+const VM_STAT = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   900855.
+Pages active:                                 932085.
+Pages inactive:                               877074.
+Pages speculative:                             53133.
+Pages wired down:                             169660.
+Pages purgeable:                                2550.
+"Translation faults":                     3418188362.
+File-backed pages:                            691408.
+Anonymous pages:                             1170884.
+Pages stored in compressor:                   478253.
+Pages occupied by compressor:                 138348.
+Swapouts:                                   12049051.
+`;
+const GIB = 1024 ** 3;
+
 describe("system readings", () => {
   it("reads memory as total minus MemAvailable, so the file cache is not used memory", () => {
     expect(parseMeminfo(MEMINFO)).toEqual({ total: 16384000 * 1024, used: 8192000 * 1024 });
     expect(parseMeminfo("MemTotal: 100 kB\n")).toBeNull();
     expect(parseMeminfo("")).toBeNull();
+  });
+
+  it("reads macOS memory as Activity Monitor's Memory Used: App Memory, wired and compressed", () => {
+    // (anonymous 1170884 - purgeable 2550) + wired 169660 + compressor 138348, in 16 KiB pages; the file cache is left out
+    expect(parseVmStat(VM_STAT, 48 * GIB)).toEqual({ total: 48 * GIB, used: 1476342 * 16384 });
+    // an Intel Mac counts 4 KiB pages
+    const intel = VM_STAT.replace("page size of 16384 bytes", "page size of 4096 bytes");
+    expect(parseVmStat(intel, 16 * GIB)).toEqual({ total: 16 * GIB, used: 1476342 * 4096 });
+  });
+
+  it("keeps a macOS reading inside 0 and the total, and says null for one it cannot read", () => {
+    const purged = VM_STAT.replace(/^Pages purgeable:\s+\d+\./m, "Pages purgeable:                             9999999.");
+    expect(parseVmStat(purged, 48 * GIB)?.used).toBe((169660 + 138348) * 16384);
+    expect(parseVmStat(VM_STAT, GIB)).toEqual({ total: GIB, used: GIB });
+    expect(parseVmStat(VM_STAT.replace("Pages occupied by compressor", "Pages held by compressor"), 48 * GIB)).toBeNull();
+    expect(parseVmStat(VM_STAT.replace("page size of 16384 bytes", "page size unknown"), 48 * GIB)).toBeNull();
+    expect(parseVmStat(VM_STAT, 0)).toBeNull();
+    expect(parseVmStat("", 48 * GIB)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "darwin")("reads this Mac's memory from vm_stat", async () => {
+    const memory = await realIo.memory();
+    expect(memory).not.toBeNull();
+    expect(memory!.used).toBeGreaterThan(0);
+    expect(memory!.used).toBeLessThanOrEqual(memory!.total);
   });
 
   it("measures CPU as the change between two readings", () => {
