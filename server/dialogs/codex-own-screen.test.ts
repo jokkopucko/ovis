@@ -32,8 +32,11 @@ describe("codexOwnScreenOpen", () => {
     const names = (open: boolean): string[] => Object.keys(read).filter((name) => read[name]!.every((value) => value === open)).sort();
     // every list, field, editor, view and pager a command or a key of Codex's opens: herdr reported Codex idle under each
     // (the folder question: blocked at 100 columns, idle at 40, and unknown, so typed into, in its first seconds)
-    expect(names(true)).toEqual(["agents", "agents-help", "diff", "experimental", "find", "history-search", "keymap", "model-advanced", "model-effort",
-      "model-effort-last-row", "model-list", "permissions", "rename", "resume", "review", "statusline", "theme", "trust"]);
+    expect(names(true)).toEqual(["agents", "agents-cancel-ctrl", "agents-help", "diff", "experimental", "experimental-cancel-alt", "find", "history-search", "keymap",
+      "keymap-capture", "keymap-edit", "model-advanced", "model-effort", "model-effort-last-row", "model-list", "permissions", "permissions-cancel-alt",
+      "permissions-cancel-ctrl", "rename", "resume", "resume-cancel-alt", "review", "statusline", "theme", "trust"]);
+    // `-cancel-ctrl` and `-cancel-alt`: the same screens with the lists' cancel key remapped in /keymap, which their footers
+    // draw as `^q` and `alt+x`; `keymap-capture` is the view that waits for the new key, with a sentence for a footer
     // the composer: empty, with a draft, with its shortcuts shown (`? / esc close`: it still takes what is typed), with the
     // slash commands' popup over a draft, and at Ultra reasoning effort (its mark `»`, the U L T R A banner under it)
     expect(names(false)).toEqual(["composer-draft", "composer-empty", "composer-shortcuts", "composer-ultra-banner", "composer-ultra-draft", "composer-ultra-empty",
@@ -52,8 +55,16 @@ describe("codexOwnScreenOpen", () => {
       "  space toggle · ←/→ reorder · enter\n  save · esc cancel",
       "  enter submit · esc back",
       "  enter continue · esc cancel",
-      // keys the user remapped
+      // keys the user remapped: a Ctrl chord in caret form and an Alt chord with a plus, as 0.167 draws them, and the
+      // hyphen its keymap and config write a chord with
       "  ctrl+j select · q back",
+      "  enter select · ^q back",
+      "  enter select · alt+x back",
+      "  enter select · ctrl-g back",
+      "  space toggle · enter save · alt-x save/close",
+      // /keymap waiting for the new key: a sentence, also wrapped by a narrow pane
+      "  Remap Shortcut\n  Current: esc\n  Press the new key now. Esc cancels.",
+      "  Remap Shortcut\n  Current: esc\n  Press the new key now. Esc\n  cancels.",
       // Codex 0.162 and before
       "  Press enter to select · esc to go back",
       "  Press enter to confirm or esc to go back",
@@ -84,6 +95,9 @@ describe("codexOwnScreenOpen", () => {
       "working": under("• Working (3s • esc to interrupt)", "", COMPOSER),
       "with a message queued": under("• Messages to be submitted after next tool call (press esc to interrupt and send immediately)", "  ↳ and then", COMPOSER),
       "after one Escape": under("› Ask Codex to do anything", "  esc again to edit previous message"),
+      // words that only end like /keymap's sentence
+      "a status line ending in such words": under("› Ask Codex to do anything", "  GPT-6.1-Sol default · /tmp/proj · Esc cancels."),
+      "a hyphenated word that begins like a chord": under("› Ask Codex to do anything", "  alt-text back"),
       "with its shortcuts shown, as 0.167 ends them": under("  /keymap customize", "› Ask Codex to do anything", "  GPT-6.1-Sol default · /tmp/proj", "  ? / esc close"),
       "at Ultra, the banner under the box": under("» Ask Codex to do anything", "                              U L T R A", "  ← for agents · ? for shortcuts"),
       // the composer as 0.167 drew it with `[tui] fullscreen_transcript = false` (seen, not recorded): one row under the box

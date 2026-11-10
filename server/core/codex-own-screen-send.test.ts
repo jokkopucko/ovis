@@ -80,7 +80,9 @@ it("refuses a Chat send while one of Codex's own screens is open, typing nothing
   // Codex 0.167: /model's lists (Enter under `enter default` saves the row for every new session), /permissions (its Enter
   // changed the permission mode), the folder question (its Enter answered it), and the screens 0.163 did not have
   for (const shown of ["model-list-100", "model-effort-40", "model-advanced-100", "permissions-100", "permissions-40", "trust-100", "trust-40", "review-40", "resume-100", "resume-40",
-    "experimental-40", "statusline-40", "agents-100", "agents-help-40", "keymap-100", "find-40", "history-search-100", "diff-40", "rename-100", "theme-40"]) {
+    "experimental-40", "statusline-40", "agents-100", "agents-help-40", "keymap-100", "find-40", "history-search-100", "diff-40", "rename-100", "theme-40",
+    // /keymap waiting for a new key (an Enter there would be taken as that key), and lists whose cancel key was remapped
+    "keymap-capture-100", "keymap-capture-40", "keymap-edit-40", "permissions-cancel-ctrl-100", "permissions-cancel-alt-40", "experimental-cancel-alt-40"]) {
     screen = recorded167(shown);
     calls = [];
     const refused = await send();

@@ -23,7 +23,10 @@ const PROMPT = "Enter passphrase for key '/tmp/key': ";
  * was read, the last await before the final checks of the paste; `afterPaste` once the paste was written. Both may
  * replace what the pane shows or runs, as another process or a prompt can between a check and herdr's write.
  */
-async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", tabRace = "none", screen = "" }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode; tabRace?: "none" | "birth" | "masked" | "live"; screen?: string }) {
+async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", tabRace = "none", screen = "", beforeDrain = () => {}, afterDrain, behind = 0 }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode; tabRace?: "none" | "birth" | "masked" | "live"; screen?: string;
+  /** once the message is queued (or held), before the agent's turn ends and the queue is drained (or before its Send now) */ beforeDrain?: (pane: Pane) => void;
+  /** after that drain; `turn` is one more turn of the agent, ended, and the drain its end brings */ afterDrain?: (pane: Pane, turn: () => Promise<void>) => Promise<void>;
+  /** how many more messages are queued behind the first */ behind?: number }) {
   spyOn(pi, "piTranscriptPath").mockResolvedValue(null);
   if (mode === "claude") { spyOn(claude, "claudeForegroundSession").mockResolvedValue("session-a"); spyOn(composer, "freeClaudeBox").mockResolvedValue(undefined as never); }
   if (mode === "skill") { spyOn(prompt, "prepareCommandSend").mockReturnValue({} as never); spyOn(prompt, "bindCommandProcess").mockImplementation(() => {}); spyOn(opencode, "startOpenCodeWatch").mockReturnValue(null); }
@@ -69,6 +72,7 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   const agent = mode === "skill" || mode === "missing" ? "gjc" : mode === "codex-queued" ? "codex" : mode;
   const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: "working", cwd: "/tmp", focused: false, revision: 0 } as HerdrPane;
   const frames: ServerMessage[] = [];
+  told = frames;
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as ServerMessage); return 1; } } as unknown as Client;
   owner.data.attached.set("p", { keepSize: false });
   let tail: Promise<unknown> = Promise.resolve();
@@ -86,16 +90,29 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   if (mode === "codex") {
     // a held message's Send now steers the working agent
     const held = frames.flatMap((frame) => frame.type === "submit-result" && frame.pending ? [frame.pending] : [])[0]!;
+    beforeDrain(shown);
     await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id: 2, pane_id: "p", pending_id: held.id, action: "steer" });
     return writes;
   }
   if (mode === "missing") shown.foreground = [];
+  for (let more = 1; more <= behind; more++) await delivery.pendingFrames.submit(owner, { type: "submit", id: 10 + more, pane_id: "p", text: `${text} ${more}`, payload: `${text} ${more}`, delivery: "queue" });
+  beforeDrain(shown);
   pane.agent_status = "idle";
   delivery.pending.status("p", "idle");
   delivery.drainPending("p");
   for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
+  await afterDrain?.(shown, async () => {
+    delivery.pending.status("p", "working");
+    delivery.pending.status("p", "idle");
+    delivery.drainPending("p");
+    for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
+  });
   return writes;
 }
+/** the frames the last drain's connection was sent, and the pending messages its last list holds: state and reason */
+let told: ServerMessage[] = [];
+const listed = (): Array<[string, string | undefined, string | undefined]> => told.flatMap((frame) => frame.type === "pending-messages" ? [frame.messages] : []).at(-1)
+  ?.map((message) => [message.state, message.error?.code, message.error?.message]) ?? [];
 /** `codex-queued`: a message queued to a Codex pane and drained once it is idle (`codex` is a held one's Send now) */
 type Mode = "gjc" | "claude" | "pi" | "codex" | "codex-queued" | "skill" | "missing";
 /** `onScreenRead`: as a read of the live screen is answered, after its text was taken */
@@ -156,14 +173,82 @@ it("pastes a queued message into Codex's composer and sends it", async () => {
   expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER })).toEqual(["paste", "Enter"]);
 });
 
+const HELD_FOR_SCREEN: ReturnType<typeof listed> = [["held", "agent_blocked", "Codex has one of its own screens open in the terminal; close it there, then send"]];
+
 for (const [name, screen] of Object.entries(CODEX_OWN_SCREENS)) {
-  it(`types no queued message into ${name}, which herdr reports as Codex at rest`, async () => {
-    expect(await drain({ mode: "codex-queued", screen })).toEqual([]);
+  it(`types no queued message into ${name} when the turn ends with it up, and holds the message with that reason`, async () => {
+    // queued over the composer while Codex works: the screen is up when the turn ends, which herdr reports as Codex at rest
+    expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = screen; } })).toEqual([]);
+    expect(listed()).toEqual(HELD_FOR_SCREEN);
   });
 }
 
-it("types no queued message into a screen of Codex's own that opens during the last checks before the paste", async () => {
+it("does not send a queued message refused by one of Codex's own screens by itself later: nothing tells that the screen closed", async () => {
+  // the screen is closed, and the agent's next turn ends over the composer: the message still waits for its Send now
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = CODEX_OWN_SCREENS["/rename's field"]; },
+    afterDrain: async (pane, turn) => { pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
+});
+
+it("holds every message queued behind the one refused by one of Codex's own screens, each with that reason", async () => {
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, behind: 2, beforeDrain: (pane) => { pane.screen = CODEX_OWN_SCREENS["the theme list"]; } })).toEqual([]);
+  expect(listed()).toEqual([...HELD_FOR_SCREEN, ...HELD_FOR_SCREEN, ...HELD_FOR_SCREEN]);
+});
+
+// a command's approval as Codex asks it: a card the chat reads, with a footer of its own, which herdr reports blocked
+const CODEX_APPROVAL = "Would you like to run the following command?\n\n$ rm -rf junk\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\nPress enter to confirm or esc to cancel\n";
+
+it("queues a message again when the turn ends on a prompt Codex asks, which herdr reports: its end drains the queue", async () => {
+  // herdr's word for the prompt may come a moment after the screen: the pane still reads at rest here
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = CODEX_APPROVAL; },
+    afterDrain: async (pane, turn) => { expect(listed()).toEqual([["queued", undefined, undefined]]); pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual(["paste", "Enter"]);
+});
+
+it("queues a message again when such a prompt comes up during the last checks before the paste", async () => {
+  // `after` runs in every try: the prompt comes up in the first one only
+  let asked = false;
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, after: (pane) => { if (!asked) pane.screen = CODEX_APPROVAL; asked = true; },
+    afterDrain: async (pane, turn) => { expect(listed()).toEqual([["queued", undefined, undefined]]); pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual(["paste", "Enter"]);
+});
+
+it("holds a message when the turn ends on the folder question while herdr reports Codex at rest, as it does on a narrow pane", async () => {
+  // the folder question as Codex 0.167 draws it at 40 columns, where herdr 0.9.5 says idle: answering it brings no status event
+  const asked = readFileSync(join(import.meta.dir, "../../src/lib/fixtures-input-rows/codex-0.167.0/trust-40.txt"), "utf8");
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = asked; },
+    afterDrain: async (pane, turn) => { pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
+});
+
+it("types none of the queued messages when the screen closes between two of them: all are held in one step, in their order", async () => {
+  // the first try reads the theme list; the user closes it as that read is answered, so the next try would find the composer
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, behind: 2,
+    beforeDrain: (pane) => { pane.screen = CODEX_OWN_SCREENS["the theme list"]; pane.onScreenRead = () => { pane.screen = CODEX_COMPOSER; }; } })).toEqual([]);
+  expect(listed()).toEqual([...HELD_FOR_SCREEN, ...HELD_FOR_SCREEN, ...HELD_FOR_SCREEN]);
+});
+
+it("answers a held message's Send now over one of Codex's own screens with the refusal alone, none of the drain's own notes", async () => {
+  // the screen opens during the Send now's own checks, so the refusal comes from the send itself
+  expect(await drain({ mode: "codex", screen: CODEX_COMPOSER, after: (pane) => { pane.screen = CODEX_OWN_SCREENS["/rename's field"]; } })).toEqual([]);
+  const answer = told.find((frame) => frame.type === "pending-result");
+  expect(answer).toMatchObject({ ok: false, code: "agent_blocked", message: "Codex has one of its own screens open in the terminal; close it there, then send" });
+  expect(Object.keys(answer ?? {}).sort()).toEqual(["code", "id", "message", "ok", "pane_id", "pending_id", "type"]);
+});
+
+it("holds a message queued over /model's levels, a card of a list the user opened, as over any screen of Codex's own", async () => {
+  const levels = readFileSync(join(import.meta.dir, "../../src/lib/fixtures-input-rows/codex-0.167.0/model-effort-100.txt"), "utf8");
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = levels; } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
+});
+
+it("refuses to queue a message while one of Codex's own screens is up, as with a menu herdr reports", async () => {
+  expect(await drain({ mode: "codex-queued", screen: CODEX_OWN_SCREENS["the theme list"] })).toEqual([]);
+  expect(told.flatMap((frame) => frame.type === "submit-result" ? [[frame.ok, frame.code]] : [])).toEqual([[false, "agent_blocked"]]);
+  expect(listed()).toEqual([]);
+});
+
+it("types no queued message into a screen of Codex's own that opens during the last checks before the paste, and holds it", async () => {
   expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, after: (pane) => { pane.screen = CODEX_OWN_SCREENS["/rename's field"]; } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
 });
 
 it("still checks the process a queued Codex message was for after that screen read: another one at its PID gets nothing", async () => {

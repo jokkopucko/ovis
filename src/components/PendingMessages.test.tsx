@@ -60,6 +60,19 @@ describe("a pending row's refusal note", () => {
     expect(html).not.toContain("send or discard the held input first");
   });
 
+  it("says why a message is held for a screen waiting in the terminal in the reader's language, not the bridge's English", () => {
+    // what the bridge holds a queued message with when one of Codex's own screens has the input (server/core/pending.ts)
+    const reason = "Codex has one of its own screens open in the terminal; close it there, then send";
+    for (const language of ["ko", "ja", "zh"] as const) {
+      const note = translate(language, "Not sent: the agent is waiting for an answer in the terminal. Answer it first.");
+      expect(note).not.toBe("Not sent: the agent is waiting for an answer in the terminal. Answer it first.");
+      const html = render("agent_blocked", reason, [language]);
+      expect(html).toContain(note);
+      expect(html).toContain("pending-message-send");
+      expect(html).not.toContain("Codex has one of its own screens");
+    }
+  });
+
   it("keeps Send now on a saved copy whose send never left the browser, and says it was not sent (regression #541)", () => {
     const note = translate("ko", "Not sent: the connection dropped before this message left. Send it again.");
     expect(note).not.toBe("Not sent: the connection dropped before this message left. Send it again.");
@@ -111,7 +124,7 @@ describe("a pending row's refusal note", () => {
   });
 
   it("keeps the server's reason for other refusals", () => {
-    expect(render("agent_blocked", "the agent is busy", ["en"])).toContain("Not sent: the agent is busy");
+    expect(render("pending_lease_lost", "the pane connection changed", ["en"])).toContain("Not sent: the pane connection changed");
   });
 
   it("encodes a live Pi receipt as the existing non-resendable uncertain state", () => {

@@ -49,6 +49,10 @@ folder question: that one read `blocked` at 100 columns and `idle` at 40, and an
   composer: `composer-empty`, `composer-draft`, `composer-shortcuts` (after `?`), `slash-popup`
   (`/mo` typed), and at Ultra reasoning effort (`composer-ultra-*`, after `s` on `/model`'s Ultra
   row; `-banner` is the moment after it, with the banner where the status line belongs).
+- Recorded the same day with the lists' cancel key remapped in `/keymap` (`tui.keymap.list.cancel`):
+  `*-cancel-ctrl-*` (Ctrl+Q, which a footer draws `^q`) and `*-cancel-alt-*` (Alt+X, drawn
+  `alt+x`); `keymap-edit` is the list a shortcut's row opens, and `keymap-capture` the view that
+  waits for the new key (`Press the new key now. Esc cancels.`).
 - Not here: the transcript's own pager. Ctrl+T redraws the history in place in this layout and
   leaves the composer; with `[tui] fullscreen_transcript = false` it opens a pager (seen once,
   not recorded), and that setting draws the composer's rows differently too.

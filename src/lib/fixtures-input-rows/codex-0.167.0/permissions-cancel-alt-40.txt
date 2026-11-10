@@ -1,0 +1,16 @@
+
+• Remapped `list.cancel` to `ctrl-q`.
+
+• Remapped `list.cancel` to `alt-x`.
+
+
+  Update Model Permissions
+
+
+› 1. Ask for approval (current)
+  2. Approve for me
+  3. Full Access
+  4. Read Only
+
+  enter select · alt+x back
+

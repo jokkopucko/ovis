@@ -213,7 +213,8 @@ const CODEX_MODEL_TAIL_LINES = 30;
 
 // Key names a list hint can display, including remapped keys. Restrict the key field so
 // ordinary words before a real footer cannot become a fictitious key name after joining lines.
-const CODEX_LIST_KEY_HINT = String.raw`(?:(?:ctrl|alt|shift|cmd|super)\+)*(?:enter|return|tab|space|esc|escape|backspace|delete|insert|home|end|pageup|pagedown|up|down|left|right|f\d{1,2}|[a-z0-9])`;
+// A chord's parts are joined by `+` in a footer (`alt+x`, Codex 0.167) and by `-` in its keymap and config (`ctrl-g`).
+const CODEX_LIST_KEY_HINT = String.raw`(?:(?:ctrl|alt|shift|cmd|super)[+-])*(?:enter|return|tab|space|esc|escape|backspace|delete|insert|home|end|pageup|pagedown|up|down|left|right|f\d{1,2}|[a-z0-9])`;
 
 const CODEX_MODEL_GUARD_HINT_RE = new RegExp(`^${CODEX_LIST_KEY_HINT}(?:select|default|apply|confirm)·(?:ssession·)?${CODEX_LIST_KEY_HINT}back$`, "i");
 
@@ -288,6 +289,11 @@ const CODEX_FOOTER_LEAVES_RE = new RegExp(
 const CODEX_FOOTER_STARTS_RE = new RegExp(`^(?:(?:press\\s+)?${CODEX_FOOTER_KEYS}\\s+\\S|type to\\b)`, "i");
 /** Codex's search through the prompts sent before (Ctrl+R): its field is the screen's last row, with no footer. */
 const CODEX_HISTORY_SEARCH_RE = /^(?:reverse|forward)-i-search:/;
+/**
+ * /keymap waiting for the key a shortcut is remapped to: `Press the new key now. Esc cancels.` ends the screen, a
+ * sentence where every other screen has a footer. The Enter after a paste would be taken as the new key.
+ */
+const CODEX_KEY_CAPTURE_RE = /(?:^|\s)esc cancels\.$/i;
 
 /** What a chat send to a Codex pane is refused with while one of those screens is open (`agent_blocked`). */
 export const CODEX_OWN_SCREEN_MESSAGE = "Codex has one of its own screens open in the terminal; close it there, then send";
@@ -298,8 +304,8 @@ const CODEX_FOOTER_ROWS = 3;
 /**
  * Whether one of Codex's own screens has the pane's input instead of its composer: a list (`/model` and its levels,
  * `/permissions`, `/review`, `/theme`, `/resume`, `/experimental`, the folder question), a field (`/rename`, the
- * transcript's Find, the search through earlier prompts), an editor (`/statusline`, `/keymap`), the agents view or a
- * pager (`/diff`). herdr reports Codex at rest under each of them, so a chat message would be pasted there: a list
+ * transcript's Find, the search through earlier prompts), an editor (`/statusline`, `/keymap` and its view that waits
+ * for a new key), the agents view or a pager (`/diff`). herdr reports Codex at rest under each of them, so a chat message would be pasted there: a list
  * drops the paste, and the Enter that follows takes the row under the cursor (seen on Codex 0.167: it changed the
  * permission mode, answered the folder question, and under `enter default` would save a model for every new session).
  *
@@ -321,6 +327,10 @@ export function codexOwnScreenOpen(screen: string): boolean {
   if (CODEX_HISTORY_SEARCH_RE.test(filled.at(-1)!.text)) return true;
   const marked = findLastIndex(rows, (row) => /^[›»](?:\s|$)/.test(row));
   const tail = filled.filter(({ at }) => at > marked).slice(-CODEX_FOOTER_ROWS);
+  // the sentence a view ends with instead of a footer, as one row or wrapped onto two, the first of them no status
+  // line (which begins with the model and holds a `·`)
+  const ending = tail.slice(-2);
+  if (ending.some((_, from) => !ending[from]!.text.includes("·") && CODEX_KEY_CAPTURE_RE.test(ending.slice(from).map((row) => row.text).join(" ")))) return true;
   const starts = tail.map(({ text }) => CODEX_FOOTER_STARTS_RE.test(text));
   for (let first = 0; first < tail.length; first += 1) {
     if (!starts[first] || /·$/.test(rows[tail[first]!.at - 1] ?? "")) continue;
