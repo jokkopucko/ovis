@@ -2928,7 +2928,7 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
   });
 
   // the adversarial review of that fix: the same relay, for each way Codex draws the end of an answer its own way
-  const drawings: Record<string, { written: string[]; drawn: string[] }> = {
+  const drawings: Record<string, { written: string[]; drawn: string[]; closing?: string }> = {
     "emphasis and inline code": { written: ["The **nightly** job reads `config.toml` and _skips_ every empty region it finds."], drawn: ["The nightly job reads config.toml and skips every empty region it finds."] },
     "an ordered list it numbers itself": { written: ["1. east region checked and clean", "1. west region checked and late", "1. north region skipped for now"], drawn: ["1. east region checked and clean", "2. west region checked and late", "3. north region skipped for now"] },
     "a table": { written: ["| Region | Status |", "| --- | --- |", "| east | clean |", "| west | late |"], drawn: ["Region  Status", "──────────────", "east    clean", "west    late"] },
@@ -2937,19 +2937,66 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
     "a bare URL": { written: ["Read https://example.com/runbook before the next run."], drawn: ["Read https://example.com/runbook (https://example.com/runbook) before the next run."] },
     "a named entity that is a sign": { written: ["Billing &amp; invoicing were both checked against the ledger."], drawn: ["Billing & invoicing were both checked against the ledger."] },
     "a named entity that is a letter": { written: ["The caf&eacute; ledger and the r&eacute;sum&eacute; of the nightly run were both checked."], drawn: ["The café ledger and the résumé of the nightly run were both checked."] },
+    // the merge pass's last review of #3582: drawings that change every stretch of the end, which has no closing sentence
+    "short autolinks, one on each short row": {
+      written: ["east", "west", "north", "south", "centre", "coast", "plain", "ridge", "delta", "basin"].map((region, row) => `- ${region}: <https://ops.example.com/${region[0]}${row}>`),
+      drawn: ["east", "west", "north", "south", "centre", "coast", "plain", "ridge", "delta", "basin"].map((region, row) => `- ${region}: https://ops.example.com/${region[0]}${row} (https://ops.example.com/${region[0]}${row})`),
+      closing: "",
+    },
+    "short mail autolinks": {
+      written: ["ana", "bo", "cy", "dee", "eli", "fay", "gus", "hal", "ida", "jo"].map((name) => `- ${name}: <${name}@ops.example.com>`),
+      drawn: ["ana", "bo", "cy", "dee", "eli", "fay", "gus", "hal", "ida", "jo"].map((name) => `- ${name}: ${name}@ops.example.com (mailto:${name}@ops.example.com)`),
+      closing: "",
+    },
+    "a table drawn as records": {
+      written: ["| Region | Owner | Status |", "| --- | --- | --- |", ...["east", "west", "north", "south", "centre", "coast"].map((region, row) => `| ${region} | team ${"abcdef"[row]} | ${row % 2 ? "late" : "clean"} |`)],
+      drawn: ["east", "west", "north", "south", "centre", "coast"].flatMap((region, row) => [`Region: ${region}`, `Owner: team ${"abcdef"[row]}`, `Status: ${row % 2 ? "late" : "clean"}`, ""]),
+      closing: "",
+    },
+    "a table whose columns both wrap": {
+      written: ["| What was checked | What was found |", "| --- | --- |", ...["east", "west", "north", "south", "centre", "coast"].map((region) => `| the ${region} ledger of the nightly run | every ${region} entry agrees with its invoice |`)],
+      drawn: ["east", "west", "north", "south", "centre", "coast"].flatMap((region) => [`the ${region} ledger of   every ${region} entry agrees`, `the nightly run       with its invoice`]),
+      closing: "",
+    },
+    "named entities that are letters, all along": {
+      written: Array.from({ length: 8 }, (_, row) => `- r&eacute;sum&eacute; ${"abcdefgh"[row]} du caf&eacute; na&iuml;f, d&eacute;j&agrave; v&eacute;rifi&eacute;`),
+      drawn: Array.from({ length: 8 }, (_, row) => `- résumé ${"abcdefgh"[row]} du café naïf, déjà vérifié`),
+      closing: "",
+    },
+    // each row written "1.": Codex counts them, so the screen shows figures the record does not hold
+    "a table drawn as records, below a list it numbers itself": {
+      written: [...["east", "west", "north", "south", "centre", "coast", "plain", "ridge", "delta", "basin", "marsh", "fjord"].map((region, row) => `1. ${region} region checked and ${row % 2 ? "late" : "clean"}`), "",
+        "| Region | Owner | Status |", "| --- | --- | --- |", ...["east", "west", "north", "south"].map((region, row) => `| ${region} | team ${"abcd"[row]} | ${row % 2 ? "late" : "clean"} |`)],
+      drawn: [...["east", "west", "north", "south", "centre", "coast", "plain", "ridge", "delta", "basin", "marsh", "fjord"].map((region, row) => `${row + 1}. ${region} region checked and ${row % 2 ? "late" : "clean"}`), "",
+        ...["east", "west", "north", "south"].flatMap((region, row) => [`Region: ${region}`, `Owner: team ${"abcd"[row]}`, `Status: ${row % 2 ? "late" : "clean"}`, ""])],
+      closing: "",
+    },
+    // the adversarial review of the follow-up: what Codex draws in parentheses after a link is in no record of the
+    // pane's own (the "mailto:" of a mail autolink, as the mail drawing above models it)
+    "a table of mail autolinks drawn as records": {
+      written: ["| Name | Reach |", "| --- | --- |", ...["ana", "bo", "cy", "dee", "eli", "fay", "gus", "hal", "ida", "jo", "kit", "lou"].map((name) => `| ${name} | <${name}@ops.example.com> |`)],
+      drawn: ["ana", "bo", "cy", "dee", "eli", "fay", "gus", "hal", "ida", "jo", "kit", "lou"].flatMap((name) => [`Name: ${name}`, `Reach: ${name}@ops.example.com (mailto:${name}@ops.example.com)`, ""]),
+      closing: "",
+    },
+    // numeric ones are read as the letters they show (a guard: main read them so too)
+    "numeric entities that are letters, all along": {
+      written: Array.from({ length: 8 }, (_, row) => `- r&#233;sum&#233; ${"abcdefgh"[row]} du caf&#233; na&#239;f, d&#233;j&#224; v&#233;rifi&#233;`),
+      drawn: Array.from({ length: 8 }, (_, row) => `- résumé ${"abcdefgh"[row]} du café naïf, déjà vérifié`),
+      closing: "",
+    },
   };
-  for (const [at, [name, { written, drawn }]] of Object.entries(drawings).entries()) {
+  for (const [at, [name, { written, drawn, closing: ending }]] of Object.entries(drawings).entries()) {
     it(`binds no conversation that ended on the drawn text of the pane's own answer, its prompt off screen (${name})`, async () => {
-      const closing = "That is everything the nightly check found this time.";
+      const closing = ending === undefined ? ["That is everything the nightly check found this time."] : [];
       for (const [shape, head] of [["its start scrolled off", Array.from({ length: 40 }, (_, row) => `Step ${row} of the rollout was checked against its region and reported clean.`)],
         ["under its bullet, below a tool's row", ["The nightly check, region by region, with what it found in each of them:"]]] as const) {
         // the pane's own recorded `written`; another conversation of the folder read the pane and ended on what it drew
-        finishedRollout(path, thread, [["Summarize the nightly check", [...head, ...written, closing].join("\n\n")]]);
-        const relayed = [...head, ...drawn, closing];
+        finishedRollout(path, thread, [["Summarize the nightly check", [...head, ...written, ...closing].join(written[0]!.startsWith("|") || written[0]!.startsWith("- ") || ending === "" ? "\n" : "\n\n")]]);
+        const relayed = [...head, ...drawn, ...closing].filter((row, row_at, rows) => row !== "" || row_at < rows.length - 1);
         const fileA = join(home, "sessions", `rollout-${threadB}.jsonl`);
         if (shape === "its start scrolled off") conversationB([["Relay what the other pane says", relayed.join("\n")]]);
         else finishedRollout(fileA, threadB, [["Relay what the other pane says", relayed.join("\n")]]);
-        foreground = fresh(2147483560 + at * 2 + (shape === "its start scrolled off" ? 0 : 1));
+        foreground = fresh(2147483400 + at * 2 + (shape === "its start scrolled off" ? 0 : 1));
         screen = (shape === "its start scrolled off" ? [...relayed.slice(-28).map((row) => `  ${row}`)]
           : ["• Ran bun run nightly-check", "  └ 164 regions read", "", `• ${relayed[0]}`, ...relayed.slice(1).map((row) => `  ${row}`)]).concat(["", footer, ...idle]).join("\n");
         const found = await resolve();
@@ -2957,6 +3004,76 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
       }
     });
   }
+
+  // what the words of the end are weighed against: one record, never a read as a whole, and only while no prompt tells
+  const findings = ["The eastern ledger agrees with every invoice filed before the audit began.",
+    "Northern warehouses reported two pallets missing after the storm closed the harbour.",
+    "Quarterly figures therefore stay provisional until the insurers confirm their estimate."];
+  const backwards = (sentence: string) => sentence.replace(/\.$/, "").split(" ").reverse().join(" ");
+
+  it("binds the pane's own scrolled answer beside a conversation that holds every word of its end, in records apart", async () => {
+    const rows = [...Array.from({ length: 40 }, (_, row) => `Step ${row} of the rollout was checked against its region and reported clean.`), ...findings];
+    finishedRollout(path, thread, [["Report on the audit", rows.join("\n")]]);
+    // B said the words of each closing sentence in an answer of its own, backwards: no answer of it holds them all
+    conversationB(findings.map((sentence, at) => [`Say sentence ${at} backwards`, backwards(sentence)] as const));
+    foreground = fresh(2147483430);
+    screen = [...rows.slice(-30).map((row) => `  ${row}`), "", footer, ...idle].join("\n");
+    expect(await resolve()).toBe(path);
+  });
+
+  it("binds no scrolled answer beside a conversation one of whose answers holds every word of its end, in another order", async () => {
+    const rows = [...Array.from({ length: 40 }, (_, row) => `Step ${row} of the rollout was checked against its region and reported clean.`), ...findings];
+    finishedRollout(path, thread, [["Report on the audit", rows.join("\n")]]);
+    // nothing on screen tells whose turn this is, and B may have recorded it as Codex drew it here (a table's rows as records)
+    conversationB([["Say the three sentences backwards", findings.map(backwards).reverse().join(", ")]]);
+    foreground = fresh(2147483431);
+    screen = [...rows.slice(-30).map((row) => `  ${row}`), "", footer, ...idle].join("\n");
+    expect(await resolve()).toBeNull();
+  });
+
+  it("binds the pane's own fenced answer under its prompt beside a conversation one of whose answers holds every word of it, in another order", async () => {
+    finishedRollout(path, thread, [[fencedPrompt, fenced]]);
+    // B was asked something else: the prompt on screen is the pane's own conversation's, and no other was asked it
+    conversationB([["Say it backwards", fenced.replace(/[^A-Za-z]+/g, " ").trim().split(" ").reverse().join(" ")]]);
+    foreground = fresh(2147483432);
+    screen = fencedScreen();
+    expect(await resolve()).toBe(path);
+  });
+
+  // the adversarial review of the follow-up: a run of entities that are signs stood for any short word
+  it("binds the pane's own scrolled answer beside a conversation whose tool printed a run of named entities that are signs", async () => {
+    const rows = [...Array.from({ length: 40 }, (_, row) => `Step ${row} of the rollout was checked against its region and reported clean.`),
+      "Let me know if you want me to run the whole suite again before the next push."];
+    finishedRollout(path, thread, [["Report on the rollout", rows.join("\n")]]);
+    const fileB = conversationB([]);
+    const record = (payload: Record<string, unknown>, type = "event_msg") => `${JSON.stringify({ type, payload })}\n`;
+    appendFileSync(fileB, record({ type: "task_started", turn_id: "turn-0" }) + record({ type: "user_message", message: "Show the page" })
+      + record({ type: "function_call_output", call_id: "c1", output: JSON.stringify({ output: "<tr><td>a&nbsp;&nbsp;&nbsp;b</td><td>&lt;&amp;&gt;</td></tr>", metadata: { exit_code: 0 } }) }, "response_item")
+      + record({ type: "agent_message", message: "Shown." }) + record({ type: "task_complete", turn_id: "turn-0", last_agent_message: "Shown." }));
+    foreground = fresh(2147483434);
+    screen = [...rows.slice(-30).map((row) => `  ${row}`), "", footer, ...idle].join("\n");
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("binds no scrolled answer beside a loaded conversation of another folder whose read was cut inside a tool's output that holds it", async () => {
+    finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
+    const elsewhere = "01a16b22-7e1f-7072-8897-d5e46a0d5f78";
+    const file = elsewhereThread(elsewhere, []);
+    const record = (payload: Record<string, unknown>, type = "event_msg") => `${JSON.stringify({ type, payload })}\n`;
+    const filler = "an unrelated line of output that the read has to carry past its budget. ".repeat(16_000);
+    appendFileSync(file, record({ type: "task_started", turn_id: "turn-0" }) + record({ type: "user_message", message: "Show the script" })
+      + record({ type: "function_call_output", call_id: "c1", output: JSON.stringify({ output: `${filler}\n${script}`, metadata: { exit_code: 0 } }) }, "response_item")
+      + record({ type: "agent_message", message: "Shown." }) + record({ type: "task_complete", turn_id: "turn-0", last_agent_message: "Shown." }));
+    expect(statSync(file).size).toBeGreaterThan(1024 * 1024);
+    foreground = fresh(2147483433);
+    screen = scrolled();
+    const holder = await loaded(elsewhere);
+    expect(await resolve()).toBeNull();
+    // once it is unloaded, only this folder's can be the one shown
+    holder.kill();
+    await holder.exited;
+    expect(await resolve()).toBe(path);
+  });
 
   it("binds no scrolled answer whose visible end holds too few letters to tell who else may have said it", async () => {
     // the pane's own wrote "1." on every row, each a figure with its unit in parentheses; Codex counts the rows.
@@ -3631,6 +3748,64 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     });
   }
 
+  // the merge pass's last review of #3582 (Codex): the loaded threads are sampled before the pane is read the last time
+  it.skipIf(process.platform !== "linux")("answers nothing when a conversation that ended on the exchange shown was loaded after the loaded threads were read", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", "thanks", "You're welcome!"));
+    // X, of another folder: a resume through the picker puts it on this pane, and its replay is this very screen
+    const resumed = "01a16b22-7e1f-7072-8897-d5e46a0d5f70";
+    elsewhereThread(resumed, turn("x1", "thanks", "You're welcome!"));
+    await loaded(resumed);
+    screen = footed(["› thanks"], ["• You're welcome!"]);
+    // the first read of the lock folder comes before the picker opened X: it lists nothing
+    const list = fs.readdirSync;
+    let scans = 0;
+    const scan = spyOn(fs, "readdirSync").mockImplementation(((directory: string, ...rest: unknown[]) =>
+      String(directory).endsWith("thread-writer-locks") && ++scans === 1 ? [] : (list as (...args: unknown[]) => unknown)(directory, ...rest)) as typeof fs.readdirSync);
+    try {
+      expect(await resolve()).toBeNull();
+      expect(scans).toBeGreaterThan(1);
+    } finally { scan.mockRestore(); }
+  }, 20_000);
+
+  it.skipIf(process.platform !== "linux")("answers nothing when what Codex has loaded cannot be read once the pane is read the last time", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", "thanks", "You're welcome!"));
+    const other = "01a16b22-7e1f-7072-8897-d5e46a0d5f79";
+    elsewhereThread(other, turn("x1", "Something else", "Unrelated."));
+    // a process whose open files cannot be listed holds a lock: which thread it loaded since is not known
+    await loadedUnreadably(other);
+    screen = footed(["› thanks"], ["• You're welcome!"]);
+    // the first read of the lock folder comes before that process took its lock: it lists nothing
+    const list = fs.readdirSync;
+    let scans = 0;
+    const scan = spyOn(fs, "readdirSync").mockImplementation(((directory: string, ...rest: unknown[]) =>
+      String(directory).endsWith("thread-writer-locks") && ++scans === 1 ? [] : (list as (...args: unknown[]) => unknown)(directory, ...rest)) as typeof fs.readdirSync);
+    try {
+      expect(await resolve()).toBeNull();
+      expect(scans).toBeGreaterThan(1);
+    } finally { scan.mockRestore(); }
+  }, 20_000);
+
+  it.skipIf(process.platform !== "linux")("keeps the conversation when a loaded thread that was weighed is unloaded before the pane is read the last time", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", "thanks", "You're welcome!"));
+    // of another folder, about something else: weighed, and it leaves the pane its conversation
+    const other = "01a16b22-7e1f-7072-8897-d5e46a0d5f76";
+    elsewhereThread(other, turn("x1", "Something else", "Unrelated."));
+    await loaded(other);
+    screen = footed(["› thanks"], ["• You're welcome!"]);
+    // the second read of the lock folder comes after Codex unloaded it: it lists nothing
+    const list = fs.readdirSync;
+    let scans = 0;
+    const scan = spyOn(fs, "readdirSync").mockImplementation(((directory: string, ...rest: unknown[]) =>
+      String(directory).endsWith("thread-writer-locks") && ++scans > 1 ? [] : (list as (...args: unknown[]) => unknown)(directory, ...rest)) as typeof fs.readdirSync);
+    try {
+      expect(await resolve()).toBe(path);
+      expect(scans).toBeGreaterThan(1);
+    } finally { scan.mockRestore(); }
+  }, 20_000);
+
   it("takes neither conversation for either of two panes that answered the same short text to the same prompt", async () => {
     foreground = live;
     writeRollout(path, thread, turn("t1", asked, "ok"));
@@ -3701,7 +3876,7 @@ describe("a Codex pane keeps its conversation beside a second Codex that only st
     expect(await resolve()).toBe(path);
   });
 
-  it("keeps a pane showing an answer Codex renders its own way once a second Codex starts, through a draft, until /new", async () => {
+  heldIt("keeps a pane showing an answer Codex renders its own way once a second Codex starts, through a draft, until /new", async () => {
     foreground = live;
     // Given a pane bound on a finished turn whose answer Codex rendered its own way: only the footed turn ties it
     writeRollout(path, thread, turn("t1", longPrompt, rendered));
@@ -3730,7 +3905,7 @@ describe("a Codex pane keeps its conversation beside a second Codex that only st
     expect(await resolve()).toBeNull();
   });
 
-  it("binds a pane showing a scrolled code block (case 1) beside a second Codex that only started, not while that one's turn runs", async () => {
+  heldIt("binds a pane showing a scrolled code block (case 1) beside a second Codex that only started, not while that one's turn runs", async () => {
     foreground = live;
     const script = Array.from({ length: 60 }, (_, at) => `value_${at} = compute_step(${at}) + carried_${at}`).join("\n");
     writeRollout(path, thread, turn("t1", "Print the script", `\`\`\`python\n${script}\n\`\`\``));
@@ -3764,7 +3939,133 @@ describe("a Codex pane keeps its conversation beside a second Codex that only st
     });
   }
 
-  it("keeps the pane beside a peer pane that claims nothing, while the second Codex was asked nothing", async () => {
+  // the merge pass's last review of #3582 (Codex): the second match leaves out the thread that only started, and
+  // must not leave out the conversations Codex has loaded from other folders
+  heldIt("answers nothing when a loaded conversation of another folder was asked the prompt shown, beside a second Codex that only started", async () => {
+    foreground = [{ pid: 2147483645, argv: ["/usr/bin/codex"] }];
+    writeRollout(path, thread, turn("t1", longPrompt, rendered));
+    startSecondCodex([], -5);
+    // X, of another folder: resumed on this pane through the picker, asked the same and ended the same
+    const resumed = "01a16b22-7e1f-7072-8897-d5e46a0d5f71";
+    elsewhereThread(resumed, turn("x1", longPrompt, rendered));
+    const holder = await loaded(resumed);
+    screen = finished(longPrompt, renderedShown, "7:05 PM");
+    expect(await resolve()).toBeNull();
+    // once X is unloaded, only this folder's conversation can be the one shown
+    holder.kill();
+    await holder.exited;
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("keeps the pane beside a second Codex that only started here and another, loaded, that only started in another folder", async () => {
+    foreground = [{ pid: 2147483644, argv: ["/usr/bin/codex"] }];
+    writeRollout(path, thread, turn("t1", longPrompt, rendered));
+    startSecondCodex([], -5);
+    // asked nothing either: read whole, it shows no turn, this pane's or any other
+    const started = "01a16b22-7e1f-7072-8897-d5e46a0d5f73";
+    elsewhereThread(started, []);
+    await loaded(started);
+    screen = finished(longPrompt, renderedShown, "7:05 PM");
+    expect(await resolve()).toBe(path);
+  });
+
+  it.skipIf(process.platform !== "linux")("answers nothing beside a second Codex that only started while what Codex has loaded cannot be read", async () => {
+    foreground = [{ pid: 2147483643, argv: ["/usr/bin/codex"] }];
+    writeRollout(path, thread, turn("t1", longPrompt, rendered));
+    startSecondCodex([], -5);
+    const elsewhere = "01a16b22-7e1f-7072-8897-d5e46a0d5f74";
+    elsewhereThread(elsewhere, turn("x1", "Something else", "Unrelated."));
+    // held by a process whose open files cannot be listed: which thread it has loaded is not known
+    const holder = await loadedUnreadably(elsewhere);
+    screen = finished(longPrompt, renderedShown, "7:05 PM");
+    expect(await resolve()).toBeNull();
+    holder.kill();
+    await holder.exited;
+    expect(await resolve()).toBe(path);
+  }, 20_000);
+
+  // the adversarial review of the follow-up: the binding the second match made answered where a later one refused
+  heldIt("drops the binding the second match made once a loaded conversation of another folder may be the one that turn is of", async () => {
+    foreground = [{ pid: 2147483638, argv: ["/usr/bin/codex"] }];
+    writeRollout(path, thread, turn("t1", longPrompt, rendered));
+    startSecondCodex([], -5);
+    const proving = finished(longPrompt, renderedShown, "7:05 PM");
+    screen = proving;
+    expect(await resolve()).toBe(path);
+    // X, of another folder, asked the same and ended the same: a resume through the picker replays these very rows
+    const resumed = "01a16b22-7e1f-7072-8897-d5e46a0d5f7b";
+    elsewhereThread(resumed, turn("x1", longPrompt, rendered));
+    const holder = await loaded(resumed);
+    const got = [await resolve()];
+    // nor is it kept for a screen that proves nothing (a draft typed), as a binding would be
+    screen = proving.replace("› Ask Codex to do anything", "› hello there");
+    got.push(await resolve());
+    expect(got).toEqual([null, null]);
+    // once X is unloaded, the turn on screen can only be this folder's again
+    holder.kill();
+    await holder.exited;
+    screen = proving;
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("reads no loaded rollout again for the second match while the screen and every rollout stand as they were", async () => {
+    foreground = [{ pid: 2147483639, argv: ["/usr/bin/codex"] }];
+    writeRollout(path, thread, turn("t1", longPrompt, rendered));
+    startSecondCodex([], -5);
+    // of another folder, about something else: read for the second match, which it leaves to this folder's
+    const other = "01a16b22-7e1f-7072-8897-d5e46a0d5f7a";
+    const file = elsewhereThread(other, turn("x1", "Something else", "Unrelated."));
+    await loaded(other);
+    screen = finished(longPrompt, renderedShown, "7:05 PM");
+    const read = spyOn(fs, "readSync");
+    try {
+      const reads = async () => { const from = read.mock.calls.length; const found = await resolve(); return [found, read.mock.calls.length - from] as const; };
+      const [first, weighed] = await reads();
+      const [second, unchanged] = await reads();
+      appendFileSync(file, lines([{ type: "event_msg", payload: { type: "token_count", info: "one more" } }]));
+      const [third, changed] = await reads();
+      expect([first, second, third]).toEqual([path, path, path]);
+      expect([weighed > unchanged, changed > unchanged]).toEqual([true, true]);
+    } finally { read.mockRestore(); }
+  });
+
+  // the second match reads the loaded threads after the screen, as the last-turn lookup does
+  for (const moved of ["a conversation that was asked the prompt shown was loaded", "the pane was redrawn by /new"] as const) {
+    it.skipIf(process.platform !== "linux")(`answers nothing beside a second Codex that only started when, while the loaded threads were read, ${moved}`, async () => {
+      foreground = [{ pid: 2147483641 + (moved === "the pane was redrawn by /new" ? 1 : 0), argv: ["/usr/bin/codex"] }];
+      writeRollout(path, thread, turn("t1", longPrompt, rendered));
+      startSecondCodex([], -5);
+      const resumed = "01a16b22-7e1f-7072-8897-d5e46a0d5f75";
+      if (moved === "the pane was redrawn by /new") mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
+      else {
+        // X, of another folder: a resume through the picker puts it on this pane, and its replay is this very screen
+        elsewhereThread(resumed, turn("x1", longPrompt, rendered));
+        await loaded(resumed);
+      }
+      const proving = finished(longPrompt, renderedShown, "7:05 PM");
+      screen = proving;
+      const list = fs.readdirSync;
+      let scans = 0;
+      const scan = spyOn(fs, "readdirSync").mockImplementation(((directory: string, ...rest: unknown[]) => {
+        if (!String(directory).endsWith("thread-writer-locks")) return (list as (...args: unknown[]) => unknown)(directory, ...rest);
+        scans++;
+        if (moved === "the pane was redrawn by /new") screen = redrawn;
+        // the first read of the lock folder comes before the picker opened X: it lists nothing
+        return moved !== "the pane was redrawn by /new" && scans === 1 ? [] : (list as (...args: unknown[]) => unknown)(directory, ...rest);
+      }) as typeof fs.readdirSync);
+      try {
+        expect(await resolve()).toBeNull();
+        expect(scans).toBeGreaterThan(moved === "the pane was redrawn by /new" ? 0 : 1);
+      } finally { scan.mockRestore(); }
+      // nothing was remembered of it: with the pane as it was and X unloaded or never there, the lookup binds
+      if (moved === "the pane was redrawn by /new") {
+        screen = proving;
+        expect(await resolve()).toBe(path);
+      }
+    }, 20_000);
+  }
+
+  heldIt("keeps the pane beside a peer pane that claims nothing, while the second Codex was asked nothing", async () => {
     foreground = live;
     writeRollout(path, thread, turn("t1", longPrompt, rendered));
     screen = finished(longPrompt, renderedShown, "7:05 PM");
