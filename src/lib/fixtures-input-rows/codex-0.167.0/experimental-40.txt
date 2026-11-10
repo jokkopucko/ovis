@@ -1,0 +1,15 @@
+
+  Experimental features
+  Checked features are configured
+  on. Some experimental features take
+  effect only in new tasks or after
+  restarting the Codex server.
+
+
+› [ ] Analytics plan history
+  [ ] Bundled tools in login shells
+  [ ] Network proxy
+  [ ] System proxy
+↓
+  space toggle · enter save · esc save/
+  close

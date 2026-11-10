@@ -232,6 +232,17 @@ describe("inputRowState on recorded screens", () => {
     expect(inputRowState("claude", await screenOf("  Side question\n\n  Press Space, Enter, or Escape to dismiss", 60))).toBe("gone");
   });
 
+  test("Codex at Ultra reasoning effort marks its composer »: the same row, read the same way", async () => {
+    // recorded on Codex 0.167.0 (fixtures-input-rows/codex-0.167.0): the composer after /model's Ultra row, empty, with a draft, and under its shortcuts
+    const ultra = (name: string): Promise<ScreenSnapshot> => screenOf(readFileSync(join(FIXTURES, "codex-0.167.0", `${name}.ansi`), "utf8"), columnsOf(`${name}.ansi`));
+    expect(inputRowState("codex", await ultra("composer-ultra-empty-100"))).toBe("ready");
+    expect(inputRowState("codex", await ultra("composer-ultra-empty-40"))).toBe("ready");
+    expect(inputRowState("codex", await ultra("composer-ultra-draft-100"))).toBe("draft");
+    // a numbered row under either mark is a list's choice, not the composer (0.163's /permissions, its cursor's mark swapped)
+    const swapped = readFileSync(join(FIXTURES, "codex", "permissions-open-120.ansi"), "utf8").replace("›", "»");
+    expect(inputRowState("codex", await screenOf(swapped, 120))).toBe("gone");
+  });
+
   test("a blank screen says nothing, and an agent without a recognizer is not read", async () => {
     const blank = await screenOf("", 40);
     expect(inputRowState("codex", blank)).toBe("unknown");

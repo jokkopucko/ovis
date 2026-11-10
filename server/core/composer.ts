@@ -18,6 +18,7 @@ import { isOmpProcess, ompLoadsIntegration } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
 import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
 import { registry } from "../dialogs/registry.ts";
+import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "../dialogs/claude.ts";
 import { type PendingIdentity, PendingInputError } from "../pending-input.ts";
 import { startOpenCodeWatch, openCodeSkillsToType, skillsNotAttached } from "../opencode-native.ts";
@@ -228,6 +229,20 @@ export async function freeHermesInput(paneId: string, identity?: PendingIdentity
     throw new InputDraftError(null, identity, null, HERMES_INPUT_DRAFT_MESSAGE);
   }
   return live;
+}
+
+/**
+ * Codex's screen as every chat send reads it last, right before herdr is written to. herdr reports Codex at rest
+ * with one of its own screens up (a list such as `/model` or `/permissions`, `/rename`'s field, the `/diff` pager:
+ * dialogs/codex.ts codexOwnScreenOpen), so agent.prompt would paste the message there and its Enter would take the
+ * row under the cursor. While one is on screen the send is refused as for a menu herdr does report, and the message
+ * stays where it was written. herdr cannot compare and write in one step: a screen that opens during this read's
+ * answer or herdr's write is not seen.
+ */
+export async function freeCodexInput(paneId: string): Promise<void> {
+  if (codexOwnScreenOpen((await paneRead({ paneId, source: "detection", format: "text" })).text)) {
+    throw new HerdrError("agent_blocked", CODEX_OWN_SCREEN_MESSAGE);
+  }
 }
 
 /**
@@ -605,6 +620,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             throw new HerdrError("submit_partial", "Part of the message was typed into OpenCode's input, but sending was not confirmed. Your chat text stayed here. Check the terminal before sending again.");
           }
         }
+        // the last read before herdr is written to: one of Codex's own screens gets no paste and no Enter
+        if (agent === "codex") await freeCodexInput(paneId);
         const watch = pane ? startOpenCodeWatch(pane, command, options.openCodeStateDir) : null;
         try {
           inTime();

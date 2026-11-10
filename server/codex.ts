@@ -1030,7 +1030,8 @@ function codexScreenParts(screen: string): { prompt: boolean; tool?: true; text:
   const parts: { prompt: boolean; tool?: true; text: string }[] = [];
   for (const line of screen.split("\n")) {
     const last = parts.at(-1);
-    const prompt = /^(?:\u203a|\s*\u21b3(?:\s|$))/.test(line);
+    // the input box is marked "»" at Ultra reasoning effort (Codex 0.164 on): a draft in it is no answer shown either
+    const prompt = /^(?:[\u203a\u00bb]|\s*\u21b3(?:\s|$))/.test(line);
     // "You ran": a shell command the user ran from the composer, as Codex 0.163 titles it. An answer that
     // starts with one of these words is taken for a call too: telling them apart could show another's chat
     const tool = !prompt && (/^\s+\u2514(?:\s|$)/.test(line)
@@ -1168,8 +1169,9 @@ function noticeStart(rows: readonly { line: string }[], end: number, kind: "limi
  */
 function idleTurnFooter(lines: readonly string[]): number | null {
   const rows = lines.map((line, at) => ({ line, at })).filter(({ line }) => line.trim() !== "");
-  const composer = rows.length - 1 - [...rows].reverse().findIndex(({ line }) => line.startsWith("\u203a"));
-  if (composer >= rows.length || !/^\u203a(?:\s+Ask Codex to do anything)?$/.test(rows[composer]!.line.trim())) return null;
+  // the composer's mark is "»" at Ultra reasoning effort (Codex 0.164 on)
+  const composer = rows.length - 1 - [...rows].reverse().findIndex(({ line }) => /^[\u203a\u00bb]/.test(line));
+  if (composer >= rows.length || !/^[\u203a\u00bb](?:\s+Ask Codex to do anything)?$/.test(rows[composer]!.line.trim())) return null;
   const status = rows.slice(composer + 1);
   if (status.length === 0 || status.length > 4 || !status.every(({ line }) => FOOTER.test(line.trim()))) return null;
   let before = composer - 1;
@@ -1527,7 +1529,7 @@ const HINT_ROW = /^\s*(?:←|\?\s+for\b)/;
 function footedView(screen: string): string {
   const lines = screen.split("\n");
   let composer = -1;
-  for (let at = lines.length - 1; at >= 0; at--) if (lines[at]!.startsWith("›")) { composer = at; break; }
+  for (let at = lines.length - 1; at >= 0; at--) if (/^[›»]/.test(lines[at]!)) { composer = at; break; }
   const kept: string[] = [];
   for (let at = 0; at < lines.length; at++) {
     if (composer >= 0 && at > composer && HINT_ROW.test(lines[at]!)) continue;
@@ -2103,7 +2105,8 @@ function displayedFirstExchange(screen: string, keepCompletionFooter = false): C
   }
   if (answerAt < 0) return null;
   const user = lines.slice(promptAt, answerAt).map((line, index) => index === 0 ? line.slice(1) : line).join("\n");
-  const nextPrompt = lines.findIndex((line, index) => index > answerAt && /^›(?:[ \t]|$)/.test(line));
+  // the next prompt sent, or the composer, which Codex marks "»" at Ultra reasoning effort (0.164 on)
+  const nextPrompt = lines.findIndex((line, index) => index > answerAt && /^[›»](?:[ \t]|$)/.test(line));
   const responseLines = lines.slice(answerAt, nextPrompt < 0 ? undefined : nextPrompt);
   // Codex's completed-turn footer is terminal chrome, after a blank line and before the composer.
   const footer = responseLines.findIndex((line, index) => index > 0 && responseLines[index - 1]!.trim() === ""

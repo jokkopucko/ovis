@@ -30,7 +30,8 @@ function claudeScreen(lines: string[]): Screen {
   return { model: `claude-${named[1]!.toLowerCase()}-${named[2]}${named[3] === undefined ? "" : `-${named[3]}`}`, reasoning_effort: null };
 }
 
-const CODEX_PROMPT = /^\s*›(?:\s|$)/u;
+/** A prompt line of Codex's: one sent (`›`), or its composer, which it marks `»` at Ultra reasoning effort (0.164 on, its `prompt_glyph`). */
+const CODEX_PROMPT = /^\s*[›»](?:\s|$)/u;
 
 /** The lines under the last Codex session header down to its composer footer, the model and
  * effort that footer states, or null when the screen does not show both. */
@@ -41,7 +42,7 @@ function codexLayout(lines: string[]): { header: number; visible: string[]; end:
   if (header < 0) return null;
   const visible = lines.slice(header + 1);
   // one word: OpenAI's `GPT-6-Luna`, or the name a custom model provider gives it (`gpt-6.1-terra`, `DeepSeek4.1flash(OpenCode)`, #3263)
-  const footer = new RegExp(`^\\s*([^\\s·]+) (${EFFORT})(?: \\w+)? · `, "u");
+  const footer = new RegExp(`^\\s*([^\\s·]+) (${EFFORT}|ultra)(?: \\w+)? · `, "u");
   let end = visible.length - 1;
   while (end >= 0 && visible[end]!.trim() === "") end--;
   if (end < 1 || !/^\s*[←?].*(?:for agents|shortcuts)/u.test(visible[end]!)) return null;

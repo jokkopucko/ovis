@@ -3681,6 +3681,29 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   composer's refusal of a Claude box that may not be empty and t3code's composer banner stack;
   Warp and Zed give an interactive program the input until it exits, which this bridge only sees
   on the screen.
+- For Codex the bridge holds that line itself, whatever the page saw. herdr reports Codex at rest
+  while one of its own screens has the input: a list (`/model` and its levels, `/permissions`,
+  `/review`, `/theme`, `/resume`, `/experimental`), a field (`/rename`, the transcript's Find, the
+  search through earlier prompts), an editor (`/statusline`, `/keymap`), the agents view, a pager
+  (`/diff`, the transcript's where Codex draws one). The folder question reads blocked on a wide
+  pane, but at rest at 40 columns and unknown in its first seconds. `agent.prompt` would paste a
+  message into it: a list drops the paste, and the Enter that follows takes the row under the
+  cursor. On Codex 0.167 that Enter changed the permission mode, answered the folder question
+  with **Trust and continue**, and opened a model's levels, where `enter default · s session ·
+  esc back` saves the row for every new session. Every chat send to a Codex pane therefore reads the live screen
+  last, right before herdr is written to (the queued path in the read it already made for a masked
+  prompt), and is refused (`agent_blocked`, the note of a waiting menu) when the screen ends in a
+  footer of Codex's own. That is a row below the last `›` or `»` that begins with a key and what
+  it does (or `Type to …`), holds the item naming the key that leaves, whole (`esc back`,
+  `esc cancel`, `esc exit`, `esc save/close`, `q close`), by itself or with the rows a narrow pane
+  wrapped it onto, and has nothing but rows of keys under it; the search through earlier prompts
+  has no footer and is known by its `reverse-i-search:` row. The message stays in the box, **Send
+  anyway** included, and a queued or held one stays held. The composer never ends that way: its
+  last rows are its status line, which begins with the model, and `← for agents · ? for
+  shortcuts`; with its shortcuts shown the last row is `? / esc close`, where no item starts at
+  `esc`, and the composer still takes what is typed. A screen whose footer names no such key is
+  not held. The terminal's own input line is not read: it stands in for the keyboard, and a key
+  typed there is the answer to the list.
 - The peek follows Warp's full-screen handoff of an interactive program
   ([Warp's agent workflow](https://docs.warp.dev/agents/)), where the program takes over the
   conversation's area and the conversation is back as it was when the program exits, and Zed's

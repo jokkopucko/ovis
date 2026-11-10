@@ -1,0 +1,14 @@
+ Resume a previous session
+ Filter: Cwd   Active  Sort: Updated
+
+ Type to search
+
+  No sessions yet
+
+
+
+
+
+───────────────────────── 0 / 0 · 100% ─
+ enter resume   esc exit   ^c exit
+ ^o comfy   ^t preview   ↑/↓ browse

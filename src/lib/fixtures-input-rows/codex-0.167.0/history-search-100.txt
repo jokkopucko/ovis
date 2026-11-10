@@ -1,0 +1,30 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/.cache/ovis-tmp/codex-cap/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol default · /home/tester0/.cache/ovis-tmp/codex-cap/work
+  reverse-i-search:

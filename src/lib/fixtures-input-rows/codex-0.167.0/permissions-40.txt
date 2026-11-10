@@ -1,0 +1,15 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/…/codex-cap/work
+
+
+
+  Update Model Permissions
+
+
+› 1. Ask for approval (current)
+  2. Approve for me
+  3. Full Access
+  4. Read Only
+
+  enter select · esc back

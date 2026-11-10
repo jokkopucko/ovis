@@ -1,0 +1,15 @@
+
+  Select Syntax Theme
+  Move up/down to live preview themes
+
+  Type to filter themes...
+↑
+  catppuccin-latte
+  catppuccin-macchiato
+› catppuccin-mocha (current)
+↓
+
+  12  fn greet(name: &str) -> String {
+  13 -    format!("Hello, {}!", name)
+  13 +    format!("Hello, {name}!")
+  enter select · esc back

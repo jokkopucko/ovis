@@ -1,0 +1,15 @@
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/…/codex-cap/work
+
+
+  Select Reasoning Level for
+  GPT-6.1-Sol
+
+
+  1. Low (default)
+  2. Medium
+  3. High
+  4. Extra high
+› 5. More reasoning…
+
+  enter select · esc back

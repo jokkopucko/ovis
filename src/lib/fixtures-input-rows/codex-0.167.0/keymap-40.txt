@@ -1,0 +1,15 @@
+
+  Keymap
+  All configurable shortcuts.
+  154 actions, 0 customized, 6 unbound
+
+   All   Common   Customized (0)     ›
+
+  Type to search shortcuts
+
+› Global       - Open Agen… unbound
+  Global         Open Tran… ctrl-t
+  Global         Find Tran… f3
+↓
+  left/right group · enter edit shortcut
+  · * custom · - unbound · esc close

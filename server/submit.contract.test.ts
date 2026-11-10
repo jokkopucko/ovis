@@ -1424,7 +1424,8 @@ describe("WebSocket submit", () => {
       socket.send({ type: "submit", id: 30, pane_id: codex.pane, text: "follow up", payload: paste("follow up") });
       expect(await socket.result(30)).toMatchObject({ ok: true, pane_id: codex.pane });
       expect(prompt).toHaveBeenCalledWith(codex.pane, "follow up", undefined, expect.any(Function));
-      expect(read).not.toHaveBeenCalled();
+      // Codex's live screen once, for one of its own screens over the composer (composer.ts freeCodexInput); no box is read
+      expect(read.mock.calls.map(([options]) => [options.paneId, options.source])).toEqual([[codex.pane, "detection"]]);
     } finally {
       prompt.mockRestore();
       read.mockRestore();
@@ -1570,7 +1571,9 @@ describe("WebSocket submit", () => {
       expect(await socket.result(21)).toMatchObject({ ok: true });
       await received(codex, from, 1);
       expect(typed(codex, from)).toBe(`${paste("follow up")}\r`);
-      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["detection"]);
+      // the live screen twice, never the viewport: before herdr is written to (one of Codex's own screens gets nothing),
+      // and after herdr's refusal, for the collapsed queue
+      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["detection", "detection"]);
     } finally {
       read.mockRestore();
       socket.close();

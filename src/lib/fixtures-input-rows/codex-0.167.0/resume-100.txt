@@ -1,0 +1,29 @@
+ Resume a previous session
+
+ Filter:  Cwd  All    Status:  Active  Archived    Sort:  Updated  Created
+
+ Type to search
+
+  No sessions yet
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────── 0 / 0 · 100% ─
+ enter resume   esc exit   ^c exit   tab focus   ←/→ option
+ ^o comfy   ^t preview   ^e exp   ↑/↓ browse

@@ -26,3 +26,31 @@ matched, the frame writes it out), and each frame was replayed to check that non
 Screens opened to list the account's own sessions, usage, MCP servers or status (Codex `/status`,
 gjc `/sessions` open, Devin `/status` and `/mcp`, agy `/resume` and `/usage`) are not here. The
 scratch folder paths under the temporary directory are kept.
+
+## `codex-0.167.0/`: Codex's own screens, as the bridge reads them
+
+Recorded 2026-11-11 in an isolated herdr session (herdr 0.9.5) for the bridge's rule that no chat
+message is typed into one of Codex's own screens (`server/dialogs/codex.ts` `codexOwnScreenOpen`),
+read by `server/dialogs/codex-own-screen.test.ts`, `server/core/codex-own-screen-send.test.ts` and,
+for the Ultra composer, `src/lib/inputRow.test.ts`. Codex 0.167.0 ran with a scratch `CODEX_HOME`
+and a loopback stand-in for its provider (no account, no request to a model) in a scratch git
+folder, with no `[tui]` setting. herdr reported the pane `idle` under every screen here but the
+folder question: that one read `blocked` at 100 columns and `idle` at 40, and any screen reads
+`unknown` for the first seconds after Codex starts.
+
+- `<screen>-<cols>.txt`: the screen as `pane.read` with `source: "detection"`, `format: "text"`
+  gave it, at 100 columns by 30 rows and at 40 by 15. Trailing spaces are cut.
+- `<screen>-<cols>.ansi`: the same screen as `herdr pane read --format ansi` gave it (the Ultra
+  composer only), for the recognizer that reads cells.
+- Screens: `/model` (`model-list`, `model-effort` with the cursor on a level, `model-effort-last-row`
+  on the row that opens more, `model-advanced`), `/permissions`, `/review`, `/theme`, `/resume`,
+  `/statusline`, `/experimental`, `/rename`, `/agents` and its `?` help, `/keymap`, `/diff`, Find
+  (F3), the search through earlier prompts (Ctrl+R), and the folder question (`trust`). The
+  composer: `composer-empty`, `composer-draft`, `composer-shortcuts` (after `?`), `slash-popup`
+  (`/mo` typed), and at Ultra reasoning effort (`composer-ultra-*`, after `s` on `/model`'s Ultra
+  row; `-banner` is the moment after it, with the banner where the status line belongs).
+- Not here: the transcript's own pager. Ctrl+T redraws the history in place in this layout and
+  leaves the composer; with `[tui] fullscreen_transcript = false` it opens a pager (seen once,
+  not recorded), and that setting draws the composer's rows differently too.
+
+Redacted: the scratch folder's user name reads `tester0`, at its original width.

@@ -27,6 +27,7 @@ import { claudeForegroundSession, isClaudeProcess } from "../claude-store.ts";
 import { HerdrError, paneProcessInfo, paneRead, paneSendKeys, paneSendText, type ProcessInfo } from "../herdr/client.ts";
 import { bindCommandProcess, claudeHeldIsGrey, codexQuestionsCollapsed, isClaudeHeld, heldCandidate, noteSubmitted, parseInteractivePrompt, piRunsCommand, piListsTemplate, prepareCommandSend, shownInputBox } from "../prompt.ts";
 import { registry } from "../dialogs/registry.ts";
+import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
 import { secretPrompt } from "../../shared/secret-prompt.ts";
 import { PendingInputs, samePendingIdentity, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
 import { NO_AGENT_MESSAGE, PASTED_NOT_SENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
@@ -580,14 +581,17 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   }
   /**
    * The screen once more, right before a write and after every other check: a masked prompt that came up while those were
-   * awaited gets no paste and no Enter. Then the bound process's start again, which costs no herdr call: one that took
+   * awaited gets no paste and no Enter, and neither does a screen of Codex's own (a list, a field, a pager), which herdr
+   * reports as Codex at rest. Then the bound process's start again, which costs no herdr call: one that took
    * its PID during this read is not written to. herdr cannot compare and write in one step, so what changes during the
    * last reads or herdr's write is still not seen: the window is those reads and the write's own call.
    */
   async function noMaskedPrompt(paneId: string, cols: number | undefined, pinned: PendingIdentity | null): Promise<void> {
-    if (secretPrompt((await paneRead({ paneId, source: "detection", format: "text" })).text, cols) !== null) {
+    const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
+    if (secretPrompt(screen, cols) !== null) {
       throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
     }
+    if (pinned?.agent === "codex" && codexOwnScreenOpen(screen)) throw new HerdrError("agent_blocked", CODEX_OWN_SCREEN_MESSAGE);
     await sameStart(pinned);
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false, agentOnly = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null; collapsed: boolean; agentInFront: boolean }> {
@@ -627,6 +631,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const prompt = current.agent ? parseInteractivePrompt(current.agent, screen, null, true, [], held) : null;
     // as the card's own reader decides it: Claude's grey text under a hint left behind is no held message
     const waits = prompt !== null && !(pasted && isClaudeHeld(prompt)) && !(await claudeHeldIsGrey(paneId, prompt));
+    // one of Codex's own screens (a list, a field, a pager) has the input while herdr reports Codex at rest: as a menu
+    // herdr does report, nothing is typed into it
+    const ownScreen = current.agent === "codex" && codexOwnScreenOpen(screen);
+    if (ownScreen) throw new HerdrError("agent_blocked", CODEX_OWN_SCREEN_MESSAGE);
     if (current.agent && (waits || registry.waits(current.agent, screen) || (pane.agent_status === "blocked" && !collapsed))) {
       throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
     }

@@ -1,0 +1,29 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/.cache/ovis-tmp/codex-cap/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› /model  choose what model and reasoning effort to use
+
+› /mo
+
+  GPT-6.1-Sol default · /home/tester0/.cache/ovis-tmp/codex-cap/work

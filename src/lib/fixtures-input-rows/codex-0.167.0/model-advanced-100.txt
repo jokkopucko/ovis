@@ -1,0 +1,30 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/.cache/ovis-tmp/codex-cap/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Advanced Reasoning
+  ⚠ Consumes usage limits faster
+
+
+› 1. Max    For difficult problems when quality matters more than speed · higher usage
+  2. Ultra  For demanding work using multiple agents · highest usage
+
+  enter default · s session · esc back

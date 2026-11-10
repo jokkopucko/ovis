@@ -1,0 +1,15 @@
+
+  Configure Status Line
+  Select which items to display in the
+  status line.
+
+  Type to search
+
+› [x] Use theme colors      Apply color…
+  ───────────────────────
+  [x] model-with-reasoning  Current mod…
+  [x] current-dir           Current wor…
+↓
+  GPT-6.1-Sol default · /home/tester0…
+  space toggle · ←/→ reorder · enter
+  save · esc cancel

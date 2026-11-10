@@ -1,0 +1,30 @@
+  Agent command center  Group: Project  g
+   All 1   Needs you 0   Working 0   Ready 1   Inactive 0                     tab/shift+tab filter
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+      Tasks                                               │ Task details
+  /home/tester0/.cache/ovis-tmp/codex-cap/work/  1        │
+  › ○ Untitled task                                       │ Untitled task
+                                                          │ ○ Ready
+                                                          │
+                                                          │ Model: gpt-6.1-sol
+                                                          │ Reasoning: Unknown
+                                                          │
+                                                          │ Project
+                                                          │ /home/tester0/.cache/ovis-tmp/codex-
+                                                          │ cap/work
+                                                          │
+                                                          │ Prompt
+                                                          │ No prompt available.
+                                                          │
+                                                          │
+                                                          │
+                                                          │
+                                                          │
+                                                          │
+                                                          │
+                                                          │
+                                                          │
+                                                          │
+                                                          │
+                                                          │
+  ? help  esc back  ↑/↓ move  enter open  n new

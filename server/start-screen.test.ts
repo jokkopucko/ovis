@@ -90,6 +90,16 @@ describe("startScreenMetadata", () => {
     expect(codexStartScreenUnused(CODEX.replace("GPT-6-Luna medium fast", "DeepSeek4.1flash(OpenCode) low").replace("  \u2190 for agents \u00b7 ? for shortcuts", ""))).toBeFalse();
   });
 
+  it("reads Codex's start screen at Ultra reasoning effort, where the composer's mark is » (Codex 0.164 on)", () => {
+    const ultra = CODEX.replace("› Ask Codex to do anything", "» Ask Codex to do anything").replace("GPT-6-Luna medium fast", "GPT-6-Sol ultra");
+    expect(startScreenMetadata("codex-transcript", ultra)).toEqual({ model: "gpt-6-sol", reasoning_effort: "ultra" });
+    // a new pane's start screen, so its chat is an empty new conversation
+    expect(codexStartScreenUnused(ultra)).toBeTrue();
+    expect(codexStartScreenUnused(ultra.replace("» Ask Codex to do anything", "» fix the\n  build"))).toBeTrue();
+    // a conversation above the composer still says it is used
+    expect(codexStartScreenUnused(ultra.replace("» Ask", "› hello\n\n• Hi! What should we work on?\n\n» Ask"))).toBeFalse();
+  });
+
   it("reads nothing of a Codex screen without its header or its status line", () => {
     expect(startScreenMetadata("codex-transcript", "  GPT-6-Luna medium fast · /tmp/test-project")).toEqual({ model: null, reasoning_effort: null });
     expect(startScreenMetadata("codex-transcript", "  >_ OpenAI Codex (v0.162.1)\n  Trust this folder?\n› 1. Trust and continue")).toEqual({ model: null, reasoning_effort: null });

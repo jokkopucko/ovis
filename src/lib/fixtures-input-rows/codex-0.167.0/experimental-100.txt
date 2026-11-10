@@ -1,0 +1,30 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/.cache/ovis-tmp/codex-cap/work
+
+
+
+
+
+
+
+
+
+
+
+  Experimental features
+  Checked features are configured on. Some experimental features take effect only in new tasks or
+  after restarting the Codex server.
+
+
+› [ ] Analytics plan history         Preview five-hour and weekly allowance history for consumer
+                                     accounts in /analytics.
+  [ ] Bundled tools in login shells  Keep bundled tools such as ripgrep available when login shell
+                                     startup resets PATH.
+  [ ] Network proxy                  Apply network proxy restrictions to sandboxed sessions that
+                                     already have network access.
+  [ ] System proxy                   Use macOS or Windows system proxy settings for Codex requests.
+  [ ] Prevent sleep while running    Keep your computer awake while Codex is running a thread.
+
+
+  space toggle · enter save · esc save/close

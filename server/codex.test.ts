@@ -772,6 +772,12 @@ describe("Codex rollout resolution", () => {
       expect(matchCodexTranscript(done(recordedAnswer, below), [own])).toBe("own");
     }
     expect(matchCodexTranscript(done(recordedAnswer, footer, "\u203a\n  GPT-6-Luna low \u00b7 ~/proj"), [own])).toBe("own");
+    // at Ultra reasoning effort Codex marks its composer "\u00bb" (0.164 on): the same turn, idle or with a draft in the box
+    const ultra = idle.replace("\u203a", "\u00bb").replace("low", "ultra");
+    expect(matchCodexTranscript(done(recordedAnswer, footer, ultra), [own])).toBe("own");
+    // a draft in that box is no answer shown: one quoting another conversation's answer binds nothing to it
+    const quoting = ultra.replace("Ask Codex to do anything", "Another conversation's answer, long enough to be looked for on any screen that shows it.");
+    expect(matchCodexTranscript(done(recordedAnswer, footer, quoting), [other])).toBeNull();
     // and only one of this folder: a conversation herdr reported, or a title named, of another folder owns no footer
     expect(matchCodexTranscript(recordedScreen, [own], new Set(), new Map(), false, new Set(["another-own"]))).toBeNull();
     expect(matchCodexTranscript(recordedScreen, [own], new Set(), new Map(), false, new Set(["own"]))).toBe("own");
@@ -1110,6 +1116,12 @@ describe("Codex submitted first exchange", () => {
     expect(matchCodexFirstExchange(screen, [row()], started)).toBe("new");
     expect(matchCodexFirstExchange(screen.replace(prompt, "Check\n  fixture"), [row()], started)).toBe("new");
     expect(matchCodexFirstExchange(screen, [row(), row("old", started - 60_000, "Other fixture", "Different answer")], started)).toBe("new");
+  });
+
+  it("ends the first answer at the composer also at Ultra reasoning effort, where its mark is \u00bb", () => {
+    const ultra = screen.replace(/\u203a $/, "\u00bb Ask Codex to do anything\n\n  GPT-6-Sol ultra \u00b7 ~/proj\n  \u2190 for agents \u00b7 ? for shortcuts");
+    expect(matchCodexFirstExchange(ultra, [row()], started)).toBe("new");
+    expect(matchCodexFirstExchange(ultra.replace("Ask Codex to do anything", "a draft"), [row()], started)).toBe("new");
   });
 
   it("matches a short greeting only when the complete exchange is unique", () => {
@@ -1618,6 +1630,13 @@ describe("a Codex pane whose last answer the screen never shows whole (#3262 cas
     // however the pane wraps its rows
     const wrapped = tail.flatMap((line) => [line.slice(0, 24), `  ${line.slice(24)}`]);
     expect(footedTailTranscript(codexTurnScreen(null, wrapped), candidates, owners)).toBe(path);
+  });
+
+  it("reads the idle composer under the footer also at Ultra reasoning effort, where its mark is »", () => {
+    const ultra = codexTurnScreen(null, tail).replace("› Ask Codex to do anything", "» Ask Codex to do anything").replace("GPT-6-Luna low", "GPT-6-Luna ultra");
+    expect(footedTailTranscript(ultra, candidates, owners)).toBe(path);
+    // a draft in the box is a message on its way: no finished turn is read then, as under ›
+    expect(footedTailTranscript(ultra.replace("» Ask Codex to do anything", "» and then"), candidates, owners)).toBeNull();
   });
 
   it("binds an answer with a code block shown whole under its bullet, which matchCodexTranscript cannot read", () => {

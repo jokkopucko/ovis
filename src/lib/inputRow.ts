@@ -158,8 +158,8 @@ export const claudeInputRow: InputRowRecognizer = (screen) => {
 const CODEX_HINT = /\besc (back|cancel|close|exit|dismiss)\b|\bq close\b|\benter (select|submit|save|continue|open|resume)\b/;
 
 /**
- * Codex: the bottom-most `› ` row (not a numbered `› 1.` choice), its `›` not inverse, every cell
- * after `› ` blank or dim (the placeholder rotates, so it is never matched), no picker or field hint
+ * Codex: the bottom-most `› ` row (`» ` at Ultra reasoning effort; not a numbered `› 1.` choice), its mark not
+ * inverse, every cell after it blank or dim (the placeholder rotates, so it is never matched), no picker or field hint
  * under it, and `? for shortcuts` (`? for shortc` at 40 columns) in one of the next 4 rows: the hint
  * leaves while the composer holds text. Picker rows (`› catppuccin-mocha`, `› [x] Use theme colors`)
  * and /rename's field (`› Type a name and press Enter`, over `enter submit · esc back`) look alike.
@@ -168,7 +168,8 @@ export const codexInputRow: InputRowRecognizer = (screen) => {
   const rows = filled(screen);
   const candidates = rows.filter((index) => {
     const text = screen.rows[index]!.text;
-    return (text === "›" || text.startsWith("› ")) && !/^› \d+\./.test(text);
+    // `»` is the composer's mark at Ultra reasoning effort (Codex 0.164 on); a list's cursor stays `›`
+    return /^[›»](?: |$)/.test(text) && !/^[›»] \d+\./.test(text);
   });
   const at = candidates.at(-1);
   if (at === undefined) return "gone";

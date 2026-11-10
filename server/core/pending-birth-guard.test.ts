@@ -23,11 +23,11 @@ const PROMPT = "Enter passphrase for key '/tmp/key': ";
  * was read, the last await before the final checks of the paste; `afterPaste` once the paste was written. Both may
  * replace what the pane shows or runs, as another process or a prompt can between a check and herdr's write.
  */
-async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", tabRace = "none" }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode; tabRace?: "none" | "birth" | "masked" | "live" }) {
+async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", tabRace = "none", screen = "" }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode; tabRace?: "none" | "birth" | "masked" | "live"; screen?: string }) {
   spyOn(pi, "piTranscriptPath").mockResolvedValue(null);
   if (mode === "claude") { spyOn(claude, "claudeForegroundSession").mockResolvedValue("session-a"); spyOn(composer, "freeClaudeBox").mockResolvedValue(undefined as never); }
   if (mode === "skill") { spyOn(prompt, "prepareCommandSend").mockReturnValue({} as never); spyOn(prompt, "bindCommandProcess").mockImplementation(() => {}); spyOn(opencode, "startOpenCodeWatch").mockReturnValue(null); }
-  const shown: Pane = { birth: 1_000 as number | null, screen: "", foreground: [{ pid: 41001, name: "gjc", argv: ["gjc"] }] };
+  const shown: Pane = { birth: 1_000 as number | null, screen, foreground: [{ pid: 41001, name: "gjc", argv: ["gjc"] }] };
   spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => shown.birth);
   spyOn(client, "paneProcessInfo").mockImplementation(async () => {
     shown.onProcessRead?.();
@@ -38,7 +38,11 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   let visible = 0;
   const selected = readFileSync(join(import.meta.dir, "../fixtures/opencode-autocomplete-2.0.32-ansi-first-selected.ansi"), "utf8");
   spyOn(client, "paneRead").mockImplementation(async (options) => {
-    if (mode !== "skill" || options.source !== "visible") return { text: shown.screen } as Awaited<ReturnType<typeof client.paneRead>>;
+    if (mode !== "skill" || options.source !== "visible") {
+      const text = shown.screen;
+      shown.onScreenRead?.();
+      return { text } as Awaited<ReturnType<typeof client.paneRead>>;
+    }
     if (++visible === 2 && tabRace === "birth") shown.birth = 5_000;
     // the visible viewport, scrolled, still shows the row while the live screen has a masked prompt
     if (visible === 2 && tabRace === "live") shown.screen = PROMPT;
@@ -62,7 +66,7 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
     }
   });
 
-  const agent = mode === "skill" || mode === "missing" ? "gjc" : mode;
+  const agent = mode === "skill" || mode === "missing" ? "gjc" : mode === "codex-queued" ? "codex" : mode;
   const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: "working", cwd: "/tmp", focused: false, revision: 0 } as HerdrPane;
   const frames: ServerMessage[] = [];
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as ServerMessage); return 1; } } as unknown as Client;
@@ -92,8 +96,10 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
   return writes;
 }
-type Mode = "gjc" | "claude" | "pi" | "codex" | "skill" | "missing";
-interface Pane { birth: number | null; screen: string; foreground: Array<{ pid: number; name: string; argv: string[] }>; onProcessRead?: () => void }
+/** `codex-queued`: a message queued to a Codex pane and drained once it is idle (`codex` is a held one's Send now) */
+type Mode = "gjc" | "claude" | "pi" | "codex" | "codex-queued" | "skill" | "missing";
+/** `onScreenRead`: as a read of the live screen is answered, after its text was taken */
+interface Pane { birth: number | null; screen: string; foreground: Array<{ pid: number; name: string; argv: string[] }>; onProcessRead?: () => void; onScreenRead?: () => void }
 
 it("types nothing into another process that took the agent's PID before the paste", async () => {
   expect(await drain({ after: (pane) => { pane.birth = 5_000; } })).toEqual([]);
@@ -135,6 +141,38 @@ it("types no OpenCode skill into a masked prompt that comes up during the check 
 
 it("sends no steering Escape into a masked prompt that comes up during the steering's check", async () => {
   expect(await drain({ mode: "codex" })).toEqual(["paste", "Enter"]);
+});
+
+// One drain per test: its mocks wrap what they replace, and are taken down after each test.
+const CODEX_COMPOSER = "› Ask Codex to do anything\n  GPT-6-Astra default fast · main · Context 100% left\n  ← for agents · ? for shortcuts\n";
+// /rename's field, the theme list and the /diff pager, as Codex 0.163 draws them: none is a card the chat can answer
+const CODEX_OWN_SCREENS = {
+  "/rename's field": "  Name thread\n› Type a name and press Enter\n  enter submit · esc back\n",
+  "the theme list": "  catppuccin-macchiato\n› catppuccin-mocha (current)\n↓\n  enter select · esc back\n",
+  "the /diff pager": "~\n~\n─────────────────── 100% ─\n ↑/↓ to scroll · pgup/pgdn to page · home/end to jump\n q close\n",
+};
+
+it("pastes a queued message into Codex's composer and sends it", async () => {
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER })).toEqual(["paste", "Enter"]);
+});
+
+for (const [name, screen] of Object.entries(CODEX_OWN_SCREENS)) {
+  it(`types no queued message into ${name}, which herdr reports as Codex at rest`, async () => {
+    expect(await drain({ mode: "codex-queued", screen })).toEqual([]);
+  });
+}
+
+it("types no queued message into a screen of Codex's own that opens during the last checks before the paste", async () => {
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, after: (pane) => { pane.screen = CODEX_OWN_SCREENS["/rename's field"]; } })).toEqual([]);
+});
+
+it("still checks the process a queued Codex message was for after that screen read: another one at its PID gets nothing", async () => {
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, after: (pane) => { pane.birth = 5_000; } })).toEqual([]);
+});
+
+it("types no queued Codex message into a process that took the agent's PID while the last screen read was answered", async () => {
+  // the next screen read is the last one before the paste: the composer is what it shows, and the PID is another's as it returns
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, after: (pane) => { pane.onScreenRead = () => { pane.birth = 5_000; }; } })).toEqual([]);
 });
 
 it("keeps a Pi receipt waiting while the agent's start reads as unknown for a moment, and confirms it after", async () => {
