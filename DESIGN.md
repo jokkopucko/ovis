@@ -1938,28 +1938,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Codex's `/status` (its "Credits" row), whose own readings these are; no code is borrowed.
 
 ### PC load (`.machine-stats`)
-- Shown while Settings → Remote PCs → **PC load in the sidebar** is on, for this device only. Until
-  it is flipped it follows the roster: on while two or more PCs are connected, off for a lone PC,
-  whose load is not what tells PCs apart.
-- Under an expanded, connected PC's name and above its workspaces: one button holding three
-  meters in a row, each a label, the percent in `tabular-nums` and a 3px bar on a `--border-strong`
-  track (the plan meters' construction): **CPU**, **Memory** (without the file cache) and
-  **Disk** (the fullest of the disks that hold the root and home folder), and a caret at the end
-  that opens the numbers behind them: memory used and total, load average and core count, uptime
-  and a bar per disk. From 85% the percent and bar take `--status-blocked`, as the plan meters do
-  from 80%; amber stays chrome. The open or closed choice is kept per PC in this browser.
+- Shown while Settings → Devices and PCs → **PC load in the status bar** is on, for this device
+  only. It is on until it is turned off: the reading is one small ask every 5 s for the selected PC
+  while the page is visible, read from counters the kernel keeps anyway.
+- In the desktop status bar (a `.status-bar-text` item), as one line of plain text for the selected PC:
+  `CPU 4% · Memory 22% · Disk 50%`, memory without the file cache and the disk the fullest of
+  those that hold the root and home folder. It is text only: no bar, no colour at a high figure
+  and nothing to open. Selecting another PC shows that PC's load. A phone has no status bar and
+  shows none; the sidebar draws no load.
 - It is drawn only for a PC that can say: a PC whose bridge is from before `GET /api/system`
-  shows nothing, and so does one that has not answered yet. A figure the PC cannot measure
-  is a dash, never `0%`. The meters are drawn only; the button's label carries the numbers for a
-  screen reader ("Show system details for Work PC. CPU 4%, Memory 22%, Disk 50%").
-- Nothing is read for a PC that is folded, offline or in a hidden tab, nor while the sidebar, its
-  PCs list or a phone's drawer is closed. The next ask starts 5 s after the last one came back or
-  timed out, so a stuck PC never has more than one open, and a reading no ask has renewed for a
-  minute is dropped rather than shown as now. A herdr-core machine shows none: its server runs on
-  the PC that reaches it, which cannot read that machine's load.
-- Reference: no app listed in `src/AGENTS.md` shows a machine's load in its project list that I
-  know of (they assume one machine); this follows the app's own plan meters and PC group header,
-  and differs only in measuring a PC instead of a subscription. No code is borrowed.
+  shows nothing, and so does one that has not answered yet. A figure the PC cannot measure is
+  left out of the line, never shown as `0%`.
+- Nothing is read for a PC that is not selected, is offline or is in a hidden tab. The next ask
+  starts 5 s after the last one came back or timed out, so a stuck PC never has more than one
+  open, and a reading no ask has renewed for a minute is dropped rather than shown as now. A
+  herdr-core machine shows none: its server runs on the PC that reaches it, which cannot read
+  that machine's load.
+- Reference: no app listed in `src/AGENTS.md` shows a machine's load that I know of (they assume
+  one machine); this follows the app's own status bar text. No code is borrowed.
 
 ### New workspace dialog
 - Agent select comes from `GET /api/agents`; shell-only is always available. The bridge offers the

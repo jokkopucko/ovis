@@ -542,14 +542,14 @@ it("ignores what was saved for the rows Settings no longer has", () => {
   expect(telemetrySettingsSnapshot(settings).alertInApp).toBe(true);
 });
 
-it("shows no PC's load until this device chooses it, however many PCs are connected", () => {
+it("shows the selected PC's load until this device turns it off, however many PCs are connected", () => {
   const pc = (state: string) => ({ state });
   expect(sanitizeSettings({}).pcLoad).toBeNull();
   for (const pcLoad of ["true", 1, null]) expect(sanitizeSettings({ pcLoad }).pcLoad).toBeNull();
   expect(sanitizeSettings({ pcLoad: false }).pcLoad).toBe(false);
-  // unchosen: off, also with two PCs connected
-  expect(pcLoadOn({ pcLoad: null }, [pc("connected")])).toBe(false);
-  expect(pcLoadOn({ pcLoad: null }, [pc("connected"), pc("connected")])).toBe(false);
+  // unchosen: on, also with a lone PC
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected")])).toBe(true);
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected"), pc("connected")])).toBe(true);
   // a choice holds whatever the roster says
   expect(pcLoadOn({ pcLoad: true }, [pc("connected")])).toBe(true);
   expect(pcLoadOn({ pcLoad: false }, [pc("connected"), pc("connected")])).toBe(false);

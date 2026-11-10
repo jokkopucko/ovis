@@ -10,10 +10,10 @@ import { openSettingsPage } from "./settings-page.ts";
 // The PC load line (components/MachineStats.tsx PcLoadStatus) on the unmodified app over the demo's fixture transport,
 // at a phone's and a desktop's width. Only this disposable fixture rewrites the roster into three connected PCs: the
 // Host "Laptop", "Work PC" under load and "Lab", a herdr-core machine; no herdr session is opened. PC load lives in
-// the bottom status bar only (App.tsx StatusBar pcLoad), off until Settings -> Devices and PCs -> PC load in the
-// status bar turns it on, in a key of its own. On: the selected PC's figures in the status bar at a desktop's width,
+// the bottom status bar only (App.tsx StatusBar pcLoad), on until Settings -> Devices and PCs -> PC load in the
+// status bar turns it off, in a key of its own. On: the selected PC's figures in the status bar at a desktop's width,
 // none for the herdr-core machine (never asked), and no CPU, memory or disk text in the sidebar; a phone has no status
-// bar, so none in the drawer either. Off again: none anywhere. Screenshots go to UI_EVIDENCE_DIR when set.
+// bar, so none in the drawer either. Off: none anywhere and no PC asked. Screenshots go to UI_EVIDENCE_DIR when set.
 const app = mkdtempSync(join(tmpdir(), "ovis-pc-load-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 const patch = `(() => {
@@ -144,11 +144,20 @@ try {
         try {
           const label = `${width}px`;
           await showSidebar(page, phone, true);
-          // nothing chosen: off, so no PC is asked and nothing shows its load
-          await page.clock.runFor(10_000);
-          await noLoadAnywhere(page, `${label} by default`);
-          assert.equal(await total(page), 0, `${label}: off by default, no PC is asked`);
+          // nothing chosen: on, the selected PC's load in a desktop's status bar
+          if (!phone) await page.locator(".status-bar .status-bar-load").waitFor();
+          assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), null, `${label}: nothing chosen yet`);
 
+          // turned off: none anywhere, and no PC is asked any more
+          await setPcLoad(page, false);
+          assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), "false");
+          const asked = await total(page);
+          await page.clock.runFor(10_000);
+          await showSidebar(page, phone, true);
+          await noLoadAnywhere(page, `${label} off`);
+          assert.equal(await total(page), asked, `${label}: off, no PC is asked`);
+
+          await showSidebar(page, phone, true);
           await setPcLoad(page, true);
           assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), "true");
           assert.equal(await page.evaluate(() => "pcLoad" in JSON.parse(localStorage.getItem("ovis:settings") ?? "{}")), false, "not in ovis:settings");
@@ -179,14 +188,8 @@ try {
             await page.waitForFunction(() => document.querySelector(".status-bar .status-bar-load")?.textContent === "CPU 93% · Memory 89% · Disk 93%");
           }
 
-          // turned off again: none anywhere
-          await showSidebar(page, phone, true);
-          await setPcLoad(page, false);
-          assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), "false");
-          await showSidebar(page, phone, true);
-          await noLoadAnywhere(page, `${label} off`);
           assert.deepEqual(errors, []);
-          console.log(`PASS ${label}: off by default; on, ${phone ? "no load in the drawer and no status bar" : "the selected PC's load in the status bar (none for the herdr-core machine) and none in the sidebar"}; off again, none anywhere, kept in its own key`);
+          console.log(`PASS ${label}: on by default; off, none anywhere and no PC asked, kept in its own key; on again, ${phone ? "no load in the drawer and no status bar" : "the selected PC's load in the status bar (none for the herdr-core machine) and none in the sidebar"}`);
         } finally { await close(); }
       }
     } finally { await browser.close(); }

@@ -114,7 +114,7 @@ export function MachineStats({ machine, active }: { machine: Machine; active: bo
 
 /**
  * Settings → Devices and PCs' switch for the selected PC's load in the status bar, on this device only.
- * It stays off until it is flipped.
+ * It stays on until it is flipped.
  */
 export function PcLoadSetting({ machines }: { machines: readonly Machine[] }) {
   const t = useT();
