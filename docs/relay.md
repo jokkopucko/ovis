@@ -294,8 +294,8 @@ it is off, and wait until it is online.
   device, open it, check the code, choose **Continue with GitHub** or **Continue with Google**, sign
   in, and confirm. An account service without that page, or `--github` / `--google`, uses the
   provider's own device page and its code instead. Signing in adds nothing by itself. Then it lists this PC in your
-  account ([Adding a PC](account.md#adding-a-pc)) and waits. On a phone already in your account,
-  tap **Add** on this PC; the terminal shows the request with its six digits
+  account ([Adding a PC](account.md#adding-a-pc)) and waits. On a device already signed in to this
+  account (the Ovis app or app.ovis.sh), choose **Add** on this PC; the terminal shows the request with its six digits
   (**… wants to join your account. Approve it only if its screen shows 123 456**) and asks
   y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
   this PC only. The waiting goes on under that question: a request that stops waiting unanswered

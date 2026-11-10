@@ -338,15 +338,22 @@ messages):
    The PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens
    a pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. What that window takes is decided on
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
-   once the PC has members. The screen keeps the window open while it waits. The window is kept
+   once the PC has members. The screen keeps the window open while it waits: it asks for the link again
+   every 30 seconds while its page shows (that call writes nothing to the directory) and lists the PC anew
+   every nine minutes, for 30 minutes a press, then offers **Keep waiting**; **Stop waiting** ends it
+   sooner. Either way the screen does not close the window already open: it closes by itself, up to ten
+   minutes later. A reloaded tab
+   goes on waiting only for the same PC under the same sign-in. Once a device added the PC the screen says
+   so, and that the account's other devices can open it only when the PC's status no longer says `enrolling`.
+   The window is kept
    across a restart of the PC's server (an update) for the rest of its ten minutes, local-only as it
    was opened, and is closed by `POST /api/relay/link/close`, **Revoke all**,
    **Reset relay identity** or turning the relay off.
    A close declines the comparisons the PC was showing and one whose digits arrive after it, and is
    written to disk (as is a window that ran out). A close does not reach an Add-this-PC screen that
-   is still open on the PC: that screen asks for its window again at its next relist, which is an
-   act of the PC's own page, so leaving that screen is what ends the wait. A comparison approved
-   before a close makes no device when the other side confirms after it.
+   is still waiting on the PC: that screen asks for its window again at its next reopen, which is an
+   act of the PC's own page, so **Stop waiting** on it (or leaving that screen) is what ends the wait.
+   A comparison approved before a close makes no device when the other side confirms after it.
 2. On any device already in the account, the dashboard lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the

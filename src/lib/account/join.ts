@@ -343,7 +343,8 @@ export const PEER_STATUS_MS = 8_000;
 /** Keys one enrollment holds at most (server/account/holds.ts ACCOUNT_HELD_MAX). */
 const HELD_MAX = 4096;
 
-function within<T>(ms: number, promise: Promise<T>): Promise<T> {
+/** `promise`, or a refusal once it has not settled within `ms`: what it then answers is dropped. */
+export function within<T>(ms: number, promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   // fixed wait: a deadline for a PC that does not answer, not a pause
   const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("The PC did not answer in time")), ms); });

@@ -415,7 +415,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     let away = false;
     out([
       `Signed in. This PC is listed in your account as ${name}.`,
-      `On a phone already in your account, open the Ovis app and tap Add on ${name}.`,
+      `On a device already signed in to this account (the Ovis app or app.ovis.sh), choose Add on ${name}.`,
       "Its request shows here to approve. Press Ctrl+C to stop.",
       "",
     ].join("\n"));
