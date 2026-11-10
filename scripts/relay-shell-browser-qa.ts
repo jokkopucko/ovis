@@ -1245,8 +1245,10 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const offer = await serverOffer();
       await relay!.stop();
       relay = null;
-      const { context, page, bridge } = await open();
+      // held until Connecting is seen: a refused connection ends that screen within milliseconds, before a wait for it can start
+      const { context, page, bridge } = await open({ mode: "hold" });
       await pairFrom(page, offer);
+      bridge.release.resolve();
       await state(page, "relay-unreachable").waitFor();
       await page.getByRole("heading", { name: "The relay could not be reached" }).waitFor();
       assert.equal(bridge.sockets.length, 1);
