@@ -272,9 +272,12 @@ jobs:
             app/electron/dist/Ovis-*
             app/electron/dist/beta*.yml
           if-no-files-found: error
-  # the write token runs no repository code: it only uploads what the builds made
+  # the write token runs no repository code: it only uploads what the builds made. It says for itself
+  # when it runs: host-publish is skipped whenever the host was built before, and a job that names no
+  # status function is skipped once any job its needs lead back to was, although every build passed
   desktop-publish:
     needs: [pick, desktop]
+    if: ${{ !cancelled() && needs.desktop.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
