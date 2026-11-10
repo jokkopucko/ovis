@@ -23,6 +23,8 @@ process.stdout.write("\\x1b[2J\\x1b[HPassword:");
 process.stdin.on("data", chunk => {
   const text = chunk.toString();
   if (text === "\\x10") { count = 0; process.stdout.write("\\x1b[2J\\x1b[HEnter passphrase for key '/tmp/my private key for testing':"); return; }
+  if (text === "\\x0e") { count = 0; process.stdout.write("\\x1b[2J\\x1b[HPassword for 'https://alice@github.com':"); return; }
+  if (text === "\\x0f") { count = 0; process.stdout.write("\\x1b[2J\\x1b[HEnter passphrase (empty for no passphrase):"); return; }
   if (text === "\\x03") { count = 0; process.stdout.write("\\r\\nCancelled>"); return; }
   count += text.length;
   if (text.includes("\\r")) { writeFileSync(${JSON.stringify(result)}, String(count)); count = 0; process.stdout.write("\\r\\nAccepted\\r\\nReady>"); }
@@ -93,9 +95,13 @@ process.stdin.on("data", chunk => {
     await field.fill("fixture-secret");
     await page.locator(".secret-input").getByRole("button", { name: "Send", exact: true }).click();
     await field.waitFor({ state: "detached" });
-    const deadline = Date.now() + 5000;
-    while (!existsSync(result)) { if (Date.now() > deadline) throw new Error("Masked input never reached fixture"); await Bun.sleep(25); }
-    assert.equal(readFileSync(result, "utf8"), String("fixture-secret\r".length));
+    /** The fixture took one line of that many characters, Enter counted. */
+    const accepted = async (value: string): Promise<void> => {
+      const deadline = Date.now() + 5000;
+      while (!existsSync(result)) { if (Date.now() > deadline) throw new Error("Masked input never reached fixture"); await Bun.sleep(25); }
+      assert.equal(readFileSync(result, "utf8"), String(`${value}\r`.length));
+    };
+    await accepted("fixture-secret");
     assert.deepEqual(sent, ["secret"]);
     assert.equal(await page.evaluate(() => JSON.stringify({ ...localStorage }).includes("fixture-secret")), false);
     assert.equal(await page.locator("body").innerText().then((text) => text.includes("fixture-secret")), false);
@@ -107,6 +113,27 @@ process.stdin.on("data", chunk => {
     await page.locator(".secret-input").getByRole("button", { name: "Send", exact: true }).click();
     await field.waitFor({ state: "detached" });
     assert.deepEqual(sent, ["secret", "secret"]);
+    // git's HTTPS password, a prompt of the wider set (the server says secret-prompts-2): masked like the others,
+    // the input line gone, and sent as a secret
+    rmSync(result, { force: true });
+    await paneSendText(pane, "\u000e");
+    await field.waitFor();
+    assert.equal(await page.locator(".terminal-input").count(), 0);
+    await field.fill("git-token-secret");
+    await page.locator(".secret-input").getByRole("button", { name: "Send", exact: true }).click();
+    await field.waitFor({ state: "detached" });
+    await accepted("git-token-secret");
+    assert.deepEqual(sent, ["secret", "secret", "secret"]);
+    assert.equal(await page.evaluate(() => JSON.stringify({ ...localStorage }).includes("git-token-secret")), false);
+    // ssh-keygen's offer of no passphrase: the empty field is an answer there, and the program gets Enter alone
+    rmSync(result, { force: true });
+    await paneSendText(pane, "\u000f");
+    await field.waitFor();
+    assert.equal(await field.inputValue(), "");
+    await page.locator(".secret-input").getByRole("button", { name: "Send", exact: true }).click();
+    await field.waitFor({ state: "detached" });
+    await accepted("");
+    assert.deepEqual(sent, ["secret", "secret", "secret", "secret"]);
     await paneSendText(pane, "\u0010");
     await field.waitFor();
     await page.getByTitle(/^Live terminal \(.+\)$/).click();
@@ -115,7 +142,7 @@ process.stdin.on("data", chunk => {
     await field.fill("discarded-secret");
     await page.locator(".secret-input").getByRole("button", { name: "Cancel", exact: true }).click();
     await field.waitFor({ state: "detached" });
-    assert.deepEqual(sent, ["secret", "secret", "input"]);
+    assert.deepEqual(sent, ["secret", "secret", "secret", "secret", "input"]);
     assert.deepEqual(errors, []);
     // On a desktop (no key bar, which a touch screen hides while the masked input is up) the masked
     // input floats over the grid's last rows: its arrival leaves the grid's height, the shared pty's

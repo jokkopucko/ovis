@@ -281,7 +281,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
       });
       try {
         if (!Number.isSafeInteger(message.id) || typeof message.pane_id !== "string"
-          || typeof message.prompt !== "string" || secretPrompt(message.prompt) !== message.prompt || !validSecret(message.secret)) {
+          || typeof message.prompt !== "string" || secretPrompt(message.prompt) !== message.prompt || !validSecret(message.secret, message.prompt)) {
           result(false, "invalid_secret"); return;
         }
         if (connectionOf(client).mode === "observe") { result(false, "read_only"); return; }
@@ -311,7 +311,8 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
             // so a send herdr refused is answered as failed, not as entered.
             const allowed = () => mayType(client) && connectionOf(client).roles === roles && typingGuards.mirrorSecret(sighting.facts());
             try {
-              await paneSendText(message.pane_id, message.secret, undefined, allowed);
+              // no passphrase (validSecret): the Enter key alone
+              if (message.secret) await paneSendText(message.pane_id, message.secret, undefined, allowed);
             } catch (error) {
               if (error instanceof HerdrError && error.code === "cancelled") { result(false, "not_attached"); return; }
               throw error;

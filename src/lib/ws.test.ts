@@ -406,7 +406,7 @@ it("requires acknowledgement kind and target to match, so pending results cannot
   socket.open();
   socket.receive(snapshot(["submit", "pending-input", "secret-input"]));
   const immediate = client.submit("w1:p1", "immediate", "immediate");
-  const secret = client.sendSecret("w1:p1", "Password:", "private");
+  const secret = client.sendSecret("w1:p1", "Password:", "private", () => true);
   const action = client.pendingAction("w1:p1", "pending-1", "steer");
   const settled: string[] = [];
   void immediate?.then(() => settled.push("immediate"));
@@ -553,7 +553,7 @@ it("sends a secret entered before the reconnect's snapshot arrived, once the sna
   const socket = FakeSocket.last;
   socket.open();
   // terminal output is already on screen and the masked field is up; the snapshot is still on its way
-  const result = client.sendSecret("w1:p1", "Password:", "hunter2");
+  const result = client.sendSecret("w1:p1", "Password:", "hunter2", () => true);
   expect(result).not.toBeNull();
   await Promise.resolve();
   expect(secrets(socket)).toEqual([]);
@@ -566,13 +566,130 @@ it("sends a secret entered before the reconnect's snapshot arrived, once the sna
   client.close();
 });
 
+it("types a secret for a prompt only a newer bridge takes as direct input to a bridge that does not say it takes it", async () => {
+  const git = "Password for 'https://alice@github.com':";
+  const typed = (socket: FakeSocket) => socket.sent.filter((frame) => frame.type === "input");
+  // the value, then Enter in a frame of its own, neither with an id
+  const asTyped = [{ type: "input", pane_id: "w1:p1", text: "hunter2" }, { type: "input", pane_id: "w1:p1", text: "\r" }];
+  // a bridge with masked input but not the wider prompts, and one with neither: both would refuse the `secret`
+  for (const features of [["submit", "secret-input"], ["submit"]]) {
+    const { client, socket } = liveClient(features);
+    expect(await client.sendSecret("w1:p1", git, "hunter2", () => true)).toEqual({ ok: true });
+    expect(secrets(socket)).toEqual([]);
+    expect(typed(socket)).toEqual(asTyped);
+    // a prompt every bridge takes still goes as a `secret` where masked input is known
+    const earlier = client.sendSecret("w1:p1", "Password:", "hunter2", () => true);
+    if (features.includes("secret-input")) {
+      for (let turn = 0; turn < 10 && secrets(socket).length === 0; turn++) await Promise.resolve();
+      expect(secrets(socket)).toMatchObject([{ type: "secret", pane_id: "w1:p1", prompt: "Password:", secret: "hunter2" }]);
+    } else expect(await earlier).toMatchObject({ ok: false, code: "unsupported" });
+    expect(typed(socket)).toEqual(asTyped);
+    client.close();
+  }
+  // a released bridge gives typing an id and keeps it until the bridge has read it, to hold it for review when the
+  // connection ends first: a typed secret gets no id and is never kept
+  const { client, socket } = liveClient(["submit", "secret-input", "ping", "input-receipt"]);
+  expect(await client.sendSecret("w1:p1", git, "hunter2", () => true)).toEqual({ ok: true });
+  expect(typed(socket)).toEqual(asTyped);
+  socket.disconnect();
+  expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+  client.close();
+  // a pane that takes no typing: nothing goes out, and the field says to check the terminal
+  const idle = new HerdrSocket("ws://test/ws");
+  idle.connect();
+  const idleSocket = FakeSocket.last;
+  idleSocket.open();
+  idleSocket.receive(snapshot(["submit", "secret-input"]));
+  expect(await idle.sendSecret("w1:p1", git, "hunter2", () => true)).toMatchObject({ ok: false, code: "input_unavailable" });
+  expect([...secrets(idleSocket), ...typed(idleSocket)]).toEqual([]);
+  idle.close();
+});
+
+it("types no secret into another attachment, past a prompt that left, or before the bridge said what it takes", async () => {
+  const git = "Password for 'https://alice@github.com':";
+  const sent = (socket: FakeSocket) => socket.sent.filter((frame) => frame.type === "input" || frame.type === "secret");
+  // nothing on an older bridge checks its screen for typing, so the page does
+  const left = liveClient(["submit", "secret-input"]);
+  expect(await left.client.sendSecret("w1:p1", git, "hunter2", () => false)).toMatchObject({ ok: false, code: "prompt_changed" });
+  expect(sent(left.socket)).toEqual([]);
+  left.client.close();
+  // the pane was let go and attached again while the features were awaited: the field was sent for the first attachment
+  const again = new HerdrSocket("ws://test/ws");
+  again.attach("w1:p1", 100, 30);
+  again.connect();
+  const againSocket = FakeSocket.last;
+  againSocket.open();
+  againSocket.receive({ type: "input-ready", pane_id: "w1:p1" });
+  const waiting = again.sendSecret("w1:p1", git, "hunter2", () => true);
+  again.detach("w1:p1");
+  again.attach("w1:p1", 100, 30);
+  againSocket.receive(snapshot(["input-ready", "submit", "secret-input"]));
+  againSocket.receive({ type: "input-ready", pane_id: "w1:p1" });
+  expect(await waiting).toMatchObject({ ok: false, code: "prompt_changed" });
+  expect(sent(againSocket)).toEqual([]);
+  again.close();
+  // a snapshot that never came: a bridge that takes the prompt would have checked its own screen (#1591)
+  jest.useFakeTimers();
+  const late = new HerdrSocket("ws://test/ws");
+  late.attach("w1:p1", 100, 30);
+  late.connect();
+  const lateSocket = FakeSocket.last;
+  lateSocket.open();
+  lateSocket.receive({ type: "input-ready", pane_id: "w1:p1" });
+  try {
+    const result = late.sendSecret("w1:p1", git, "hunter2", () => true);
+    jest.advanceTimersByTime(2_000);
+    expect(await result).toMatchObject({ ok: false, code: "capabilities_unknown" });
+    expect(sent(lateSocket)).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+    late.close();
+  }
+});
+
+it("types no secret behind a send of this page that the pane has not answered, and an empty one as Enter alone", async () => {
+  const git = "Password for 'https://alice@github.com':";
+  const typed = (socket: FakeSocket) => socket.sent.filter((frame) => frame.type === "input");
+  const { client, socket } = liveClient(["submit", "secret-input"]);
+  const message = client.submit("w1:p1", "chat message", "chat message");
+  for (let turn = 0; turn < 10 && submissions(socket).length === 0; turn++) await Promise.resolve();
+  expect(submissions(socket)).toHaveLength(1);
+  // an older bridge types that message first, into the prompt, and the value would land on whatever follows it
+  expect(await client.sendSecret("w1:p1", git, "hunter2", () => true)).toMatchObject({ ok: false, code: "pane_busy" });
+  expect(typed(socket)).toEqual([]);
+  socket.receive({ type: "submit-result", id: submissions(socket)[0]!["id"], pane_id: "w1:p1", ok: true });
+  await message;
+  // the screen is asked last, after every wait: a prompt that left meanwhile gets nothing
+  let visible = true;
+  const gone = client.sendSecret("w1:p1", git, "hunter2", () => visible);
+  visible = false;
+  expect(await gone).toMatchObject({ ok: false, code: "prompt_changed" });
+  expect(typed(socket)).toEqual([]);
+  // ssh-keygen's offer of no passphrase: Enter alone, with no frame of empty text before it
+  expect(await client.sendSecret("w1:p1", "Enter passphrase (empty for no passphrase):", "", () => true)).toEqual({ ok: true });
+  expect(typed(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "\r" }]);
+  client.close();
+});
+
+it("sends a secret for a prompt of the wider set as a secret to a bridge that takes it", async () => {
+  const git = "Password for 'https://alice@github.com':";
+  const { client, socket } = liveClient(["submit", "secret-input", "secret-prompts-2"]);
+  const result = client.sendSecret("w1:p1", git, "hunter2", () => true);
+  for (let turn = 0; turn < 10 && secrets(socket).length === 0; turn++) await Promise.resolve();
+  expect(secrets(socket)).toMatchObject([{ type: "secret", pane_id: "w1:p1", prompt: git, secret: "hunter2" }]);
+  expect(socket.sent.filter((frame) => frame.type === "input")).toEqual([]);
+  socket.receive({ type: "secret-result", id: secrets(socket)[0]!["id"], pane_id: "w1:p1", ok: true });
+  expect(await result).toEqual({ ok: true });
+  client.close();
+});
+
 it("answers unsupported, sending nothing, when the snapshot lists no masked input", async () => {
   const client = new HerdrSocket("ws://test/ws");
   client.connect();
   const socket = FakeSocket.last;
   socket.open();
   socket.receive(snapshot(["submit"]));
-  expect(await client.sendSecret("w1:p1", "Password:", "hunter2")).toMatchObject({ ok: false, code: "unsupported" });
+  expect(await client.sendSecret("w1:p1", "Password:", "hunter2", () => true)).toMatchObject({ ok: false, code: "unsupported" });
   expect(secrets(socket)).toEqual([]);
   client.close();
 });
@@ -1766,7 +1883,7 @@ it("holds a submit, a pending action and a secret until the probe's pong, then s
     client.wake();
     const submit = client.submit("w1:p1", "later", "later");
     const steer = client.pendingAction("w1:p1", "pending-1", "steer");
-    const secret = client.sendSecret("w1:p1", "Password:", "hunter2");
+    const secret = client.sendSecret("w1:p1", "Password:", "hunter2", () => true);
     // waiting, not offline: the composer keeps its text and does not say the PC is gone
     expect(submit).not.toBeNull();
     expect(steer).not.toBeNull();
@@ -1790,7 +1907,7 @@ it("settles a submit that waited on a probe as not transmitted when the socket i
     // a submit already on its way when the page comes back, still before its snapshot wait ends
     const submit = client.submit("w1:p1", "later", "later");
     client.wake();
-    const secret = client.sendSecret("w1:p1", "Password:", "hunter2");
+    const secret = client.sendSecret("w1:p1", "Password:", "hunter2", () => true);
     await settle();
     jest.advanceTimersByTime(6_000);
     expect(FakeSocket.last).not.toBe(socket);
@@ -2128,7 +2245,7 @@ it("keeps a submit and a secret waiting when the page hides during a probe, and 
   try {
     client.wake();
     const submit = client.submit("w1:p1", "later", "later");
-    const secret = client.sendSecret("w1:p1", "Password:", "hunter2");
+    const secret = client.sendSecret("w1:p1", "Password:", "hunter2", () => true);
     await settle();
     page.visibilityState = "hidden";
     listeners.get("visibilitychange")!();

@@ -1,6 +1,7 @@
 import type { ClientMessage, ClientRole, PendingMessage, ServerFeature, ServerMessage } from "../../shared/protocol.ts";
 import { receiptResumeId } from "./receiptResume.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
+import { secretPrompt } from "../../shared/secret-prompt.ts";
 import { ConnectionTrace } from "./connectionTrace.ts";
 import { abandonNativeReads, getTransport, type WebSocketLike } from "./transport.ts";
 
@@ -1219,15 +1220,40 @@ export class HerdrSocket {
     return result;
   }
 
-  /** Send once on this connection. Only a result callback is retained, never the value. */
-  sendSecret(paneId: string, prompt: string, secret: string): Promise<SubmitResult> | null {
+  /**
+   * Send once on this connection. Only a result callback is retained, never the value. A prompt that only a bridge
+   * with `secret-prompts-2` takes (shared/secret-prompt.ts) goes to any other bridge as typing at a masked prompt does:
+   * the value, then Enter, as `input`, never kept. That bridge would answer `invalid_secret`, and the masked field has
+   * taken the input line's place, so nothing else could answer the prompt. No bridge checks its screen for typing, so
+   * it goes only into the attachment the field was sent for, behind no send of this connection that the pane has yet to
+   * answer (the bridge would type that into the prompt first), and only while the page still shows the prompt: `shown`,
+   * asked last. What stays open against such a bridge is what the page cannot see: a prompt that left on the PC while
+   * its output or these frames were on their way, and another connection's send queued for the pane.
+   */
+  sendSecret(paneId: string, prompt: string, secret: string, shown: () => boolean): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
+    // the pane's input as it was when the field was sent, as insert reads it
+    const lease = this.inputLease(paneId);
     return (async (): Promise<SubmitResult> => {
       // right after a reconnect the terminal's output can arrive before the frame that says
       // whether the server takes masked input: wait for it, as a submit does
       await Promise.race([this.featuresSeen, new Promise((resolve) => window.setTimeout(resolve, FEATURES_WAIT_MS))]);
       if (!(await this.probeSettled(socket))) { secret = ""; return DISCONNECTED; }
+      if (secretPrompt(prompt, Infinity, true) !== prompt) {
+        // the wait ended before the bridge said what it takes: one that takes the prompt checks its own screen, so
+        // nothing is typed past it
+        if (!this.featuresKnown) { secret = ""; return CAPABILITIES_UNKNOWN; }
+        if (!this.features.has("secret-prompts-2")) {
+          if ([...this.requests.values()].some((request) => request.paneId === paneId)) { secret = ""; return { ok: false, code: "pane_busy", message: "Check the terminal before trying again." }; }
+          if (this.inputLease(paneId) !== lease || !shown()) { secret = ""; return { ok: false, code: "prompt_changed", message: "Check the terminal before trying again." }; }
+          // Enter in a frame of its own, as the input line's Enter is sent: a mirrored pane's shell may not take a `\r`
+          // inside the text for it. No passphrase (validSecret) is Enter alone
+          const typed = (secret === "" || this.sendInput(paneId, secret, false, false, true)) && this.sendInput(paneId, "\r", false, false, true);
+          secret = "";
+          return typed ? { ok: true } : { ok: false, code: "input_unavailable", message: "Check the terminal before trying again." };
+        }
+      }
       if (!this.features.has("secret-input")) { secret = ""; return { ok: false, code: "unsupported", message: "Update this PC to use masked input." }; }
       const id = this.nextSubmit++;
       this.requests.set(id, { type: "secret", paneId });

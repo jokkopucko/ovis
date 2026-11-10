@@ -32,7 +32,7 @@ export function SecretInput({ prompt, active = true, onSend, onCancel }: {
     if (busy.current || !input.current) return;
     let value = input.current.value;
     input.current.value = "";
-    if (!validSecret(value)) { setError(t("Enter a single-line password or PIN.")); return; }
+    if (!validSecret(value, prompt)) { setError(t("Enter a single-line password or PIN.")); return; }
     busy.current = true; setPending(true); setError(null);
     const result = onSend(value);
     value = "";

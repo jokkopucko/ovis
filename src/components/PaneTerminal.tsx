@@ -1118,7 +1118,7 @@ export function PaneTerminal({
 
   const secretInput = presented && paneId !== null && secretActive && !observing && !ended && connected && outputReady ? <SecretInput
     key={`${paneId}:${secret.prompt}`} prompt={secret.prompt} active={active}
-    onSend={(value) => socketRef.current?.sendSecret(paneId, secret.prompt, value) ?? null}
+    onSend={(value) => socketRef.current?.sendSecret(paneId, secret.prompt, value, () => secretRef.current === secret.prompt) ?? null}
     onCancel={() => { if (socketRef.current?.connected) { cancelTouchRef.current(); socketRef.current.sendInput(paneId, "\u0003"); } }}
   /> : null;
   // the input line's row, kept while the masked input stands in for it

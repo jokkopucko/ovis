@@ -14,15 +14,48 @@ export function displayWidth(text: string): number {
   return width;
 }
 
-/** Deliberately narrow: prose mentioning passwords must not become an input prompt. */
-export function secretPrompt(screen: string, columns = Infinity): string | null {
+/** The line a program prints before it reads a secret, up to its colon, as each of these writes it. */
+const SECRET_PROMPT = new RegExp(`^(?:${[
+  // sudo
+  /\[sudo\] password for [^:]+/,
+  // ssh: user@host, and an IPv6 host is written with colons
+  /[^\s@]+@\S+['’]s password/,
+  // su and login; git over HTTPS names the remote in quotes, its scheme's and port's colons and all
+  /password(?: for (?:['’][^'’\r\n]+['’]|[^:]+))?/,
+  // ssh names its key in quotes, ssh-keygen in double quotes, ssh-add as it is: a path or the key's comment, which
+  // may hold colons (`/keys/id:work`, `C:\Users\…`), so the prompt ends at the line's last one. ssh-add asks again
+  /enter passphrase(?: for [^\r\n]+)?/,
+  /bad passphrase, try again for [^\r\n]+/,
+  // ssh-keygen's other asks: a new key's passphrase and its repeat, and -p's old and new one
+  /enter (?:old |new |same )?passphrase(?: again)?(?: \(empty for no passphrase\))?/,
+  /enter pin(?: for [^:]+)?/,
+  /(?:repeat|verify|confirm) password/,
+].map((prompt) => prompt.source).join("|")}):$`, "i");
+
+// a yes/no choice is no secret: `y/n` in brackets, with more options or not (`[Y/n]`, `(y/n/q)`), or as the last
+// thing before a space, the colon or the line's end, after a space or a mark (` y/n:`, `,y/n:`, `-y/n:`). Not inside
+// a name: the letters around a path's slash (`/home/andy/notes/key`), two of its folders (`/home/y/n/key`), a
+// repository (`team-y/n-tools.git`), or the start of a wrapped row, which is tested before the rows above it are
+// joined (`…/compan` then `y/n-prod:`)
+const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|[^a-z0-9/]y\s*\/\s*n(?=\s|:|$)/i;
+
+// Both as a server without the `secret-prompts-2` feature has them: it answers `invalid_secret` to a
+// masked input for any other prompt, so a page sends such a server one only for these (ws.ts sendSecret).
+const EARLIER_PROMPT = /^(?:\[sudo\] password for [^:]+|[^\s@]+@[^\s:]+['’]s password|password(?: for [^:]+)?|enter passphrase(?: for key ['’][^\r\n]+['’])?|enter pin(?: for [^:]+)?|(?:repeat|verify|confirm) password):$/i;
+const EARLIER_CHOICE = /\?|y\s*\/\s*n/i;
+
+/**
+ * Deliberately narrow: prose mentioning passwords must not become an input prompt. `earlier`: only
+ * the prompts a server without `secret-prompts-2` takes too, each of them a prompt without it as well.
+ */
+export function secretPrompt(screen: string, columns = Infinity, earlier = false): string | null {
   const lines = screen.split(/\r?\n/);
   while (lines.length && !lines.at(-1)?.trim()) lines.pop();
   let line = lines.pop()?.trimEnd() ?? "";
   for (;;) {
     const candidate = line.trimStart();
-    if (!candidate || candidate.length > 120 || /\?|y\s*\/\s*n/i.test(candidate)) return null;
-    if (/^(?:\[sudo\] password for [^:]+|[^\s@]+@[^\s:]+['’]s password|password(?: for [^:]+)?|enter passphrase(?: for key ['’][^\r\n]+['’])?|enter pin(?: for [^:]+)?|(?:repeat|verify|confirm) password):$/i.test(candidate)) return candidate;
+    if (!candidate || candidate.length > 120 || (earlier ? EARLIER_CHOICE : ASKS_CHOICE).test(candidate)) return null;
+    if ((earlier ? EARLIER_PROMPT : SECRET_PROMPT).test(candidate)) return candidate;
     // herdr's screen-diff stream does not preserve xterm's soft-wrap flags. Only
     // continue a row that reached the right edge (a final space can be trimmed).
     const previous = lines.pop()?.trimEnd();
@@ -62,7 +95,14 @@ export function looksLikeKey(text: string): boolean {
     && (!run.includes("/") || run.length === 40) && (/\d/.test(run) || run.length >= 40));
 }
 
-/** A secret is one line of literal keystrokes; never allow terminal controls. */
-export function validSecret(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f-\x9f]/.test(value);
+// where no passphrase is an answer: ssh-keygen says so when it asks for a new one, and asks for the same again
+const TAKES_NONE = /\(empty for no passphrase\):$|^enter same passphrase again:$/i;
+
+/**
+ * A secret is one line of literal keystrokes; never allow terminal controls. An empty one is an answer only to a
+ * `prompt` that takes none (Enter alone): anywhere else it is a field sent by mistake.
+ */
+export function validSecret(value: unknown, prompt?: string): value is string {
+  return typeof value === "string" && (value.length > 0 || (prompt !== undefined && TAKES_NONE.test(prompt)))
+    && value.length <= 4096 && !/[\x00-\x1f\x7f-\x9f]/.test(value);
 }
