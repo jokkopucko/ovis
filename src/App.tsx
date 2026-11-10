@@ -634,7 +634,7 @@ export function App() {
         const found = newTabTarget();
         // the workspaces the sidebar and the palette offer worktrees for (lib/repositoryWorkspaces.ts)
         const machine = machinesRef.current.find((candidate) => candidate.id === found?.machineId);
-        if (!found || machine?.state !== "connected" || !worktreesStartHere(found.machineId, found.workspace)) return;
+        if (!found || machine?.state !== "connected" || !worktreesStartHere(found.machineId, found.workspace, machine.snapshot?.herdr_lifetime)) return;
         setDrawerOpen(false);
         setWorktreeFor({ machineId: found.machineId, machineName: machine.name, workspace: found.workspace, mode });
       },
