@@ -7,7 +7,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, ty
 import { createPortal } from "react-dom";
 import { Check, X } from "lucide-react";
 
-import { NEW_PC_MS, type MyPc } from "../lib/account/myPcs.ts";
+import type { MyPc } from "../lib/account/myPcs.ts";
 import { useLocale, useT } from "../lib/i18n.ts";
 import type { RelayFailure, RelayShellState } from "../lib/relay/shellState.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
@@ -91,7 +91,6 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  const windowExpired = mode === "join" || (pc?.added_at != null && Date.now() - Date.parse(pc.added_at) >= NEW_PC_MS);
   const pendingTyped = phase === "compare" && state.kind === "compare" && state.typed === true && submittedFor === challenge;
 
   const submitDigits = (event: FormEvent<HTMLFormElement>): void => {
@@ -108,16 +107,18 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
   if (phase === null || pc === null) {
     title = t("Add a PC");
     sub = t("A PC joins through your account, or pairs with this device alone.");
-    body = <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs to add it to your account, or pair with the QR code or pairing code it shows.")}</p>;
+    body = <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here with Add.")}</p>;
     actions = pairActions(<button key="close" type="button" className="btn" onClick={onClose}>{t("Close")}</button>, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={onPairByQr}>{t("Pair with a QR or code")}</button>);
   } else {
     title = mode === "new" ? t("Add {name} to your account", { name }) : t("Add this device to {name}", { name });
     sub = mode === "new"
-      ? (windowExpired && phase !== "failed" ? t("Add window closed · an account member must approve.") : t("Type the number {name} shows on its own screen, then approve there.", { name }))
+      ? t("Type the number {name} shows on its own screen, then approve there.", { name })
       // only a device connected to the PC hears its join request (docs/account.md "Who may admit a device"), so none is named
-      : t("Add window closed · an account member must approve on a device connected to {name}.", { name });
+      : t("A device of your account that is connected to {name} approves this one.", { name });
     switch (phase) {
       case "start":
+        // a join is heard only by a device with the PC open, so that comes before the press
+        if (mode !== "new") body = <p className="relay-shell-copy">{t("First open {name} in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.", { name })}</p>;
         actions = mode === "new"
           ? pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc, { typed: true })}>{t("Add this PC")}</button>)
           : pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc)}>{t("Ask to join")}</button>);
@@ -179,16 +180,12 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         actions = pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => (onOpenPc ?? onClose)()}>{t("Open PC")}</button>);
         break;
       case "failed": {
-        const failureKind = state.kind === "failed" ? state.failure : null;
-        // a connection that failed says why even after the window closed: the window is not what stopped it
-        // (so does the relay's refusal of a new device: the PC's account is past its limits, whatever the window)
-        const connectionFailure = failureKind === "pc-offline" || failureKind === "pc-unresponsive" || failureKind === "relay-unreachable" || failureKind === "new-devices-refused";
-        const expiredWindowFailure = mode === "new" && (failureKind === "pair-unavailable" || (windowExpired && !connectionFailure));
-        const failure = state.kind === "failed" ? relayFailureText(t, state.failure, name, state.detail) : null;
+        // the sheet's flow picks the words of a refusal: what stopped a new PC or a join is not what stops a pairing link
+        const failure = state.kind === "failed" ? relayFailureText(t, state.failure, name, state.detail, mode === "new" ? "new" : "join") : null;
         body = failure && (
           <div role="alert">
-            <p className="add-pc-problem">{expiredWindowFailure ? t("Add window closed · an account member must approve") : failure.title}</p>
-            <p className="relay-shell-copy">{expiredWindowFailure ? t("The 10-minute window on {name} has closed. Ask an account member to approve this device, or open {name} again.", { name }) : failure.copy}</p>
+            <p className="add-pc-problem">{failure.title}</p>
+            <p className="relay-shell-copy">{failure.copy}</p>
             {failure.detail !== null && <p className="relay-shell-detail"><code>{failure.detail}</code></p>}
           </div>
         );

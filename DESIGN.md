@@ -4668,8 +4668,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   ("Reachable now: {direct} direct · {relay} via relay · {none} no answer"). Then the attention list: PCs that
   need you, most urgent first, at most three rows of state dot, name, reason (or relay / last seen
   when the reason is shared) and action, with **View all N** above when more than three need you.
-  When the rows share one reason it's said once as a caption above them ("Add window closed · an
-  account member must approve") rather than on every row. Then the PC table (below), and last the
+  When the rows share one reason it's said once as a caption above them ("Join · a device of your
+  account connected to it approves") rather than on every row. Then the PC table (below), and last the
   **Connection map**, a 44 px disclosure row that opens `#relay` with "N relays · M PCs" on its right.
   A first-time account gets one empty state instead of the strip: an icon, one title ("No PCs yet"),
   then three numbered steps read from the start edge: install Ovis on the PC (the macOS or Linux
@@ -4696,7 +4696,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Open it to try again." on a `paired` or `unchecked` row where **Open** retries setup, or "Account
   setup is incomplete." otherwise, and a dim subline for a fresh Add countdown "new · {n} min
   left", "Update Ovis on it", or this device's check result after **Check now**; on a phone row a
-  closed Add window also shows "Add window closed · an account member must approve", which is the
+  closed Add window also shows "Join · a device of your account connected to it approves", which is the
   state word's `title` in the table), **Relay** (how this device reaches a paired PC right now and
   the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms", the answering relay host as
   a mono chip followed by " · 62 ms", or "Checking…" / "No answer" / "Not checked", or the assigned
@@ -4734,14 +4734,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   starts pairing at once on `/s/<id>/` (`start` -> `connecting` -> `compare`) without a second
   "Pair with {name}?" step; "Pair with {name}?" with **Pair** remains only for pairing links and QR
   codes opened from outside the dashboard (or when `sessionStorage` is blocked). **Add a
-  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs to add it to
-  your account, or pair with the QR code or pairing code it shows.") and leads to the QR and code
+  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs → Account, sign
+  in, then choose Add this PC to my account. It then shows here with Add.") and leads to the QR and code
   modal sheet (`PairQrDialog`, over the scrimmed inert dashboard), whose QR and code screens name
   only the current path ("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay
   and scan the QR code." and "On the PC, open Settings → Devices and PCs → Add a connection → Ovis
   relay and type the code it shows."). The sheet drives the
-  shell's existing join, Pair, match and Cancel; failure stays in the sheet in the shell's own
-  words, except a new identity, which keeps the shell's screen with its ids and Forget. Ready shows
+  shell's existing join, Pair, match and Cancel; failure stays in the sheet, in words of the sheet's
+  own flow where the cause differs from a pairing link's (a new PC that is no longer waiting says
+  to keep its Account screen open; a join nobody approved says to open the PC on a device that
+  already uses it, or to pair with a QR or code), each with **Try again**, and in the shell's own
+  words otherwise, except a new identity, which keeps the shell's screen with its ids and Forget. Ready shows
   at once when local pairing finishes ("{name} is ready to open on this device." with **Open PC**),
   without waiting on account enrollment. While account enrollment runs (`enrollment: "pending"`),
   `EnrollmentStatus` shows a spinner and "Adding it to your account…"; when enrollment finishes, it

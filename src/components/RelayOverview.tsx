@@ -17,6 +17,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { skeletonRows } from "../lib/skeleton.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
+import { askToJoinReason } from "./relayPcState.tsx";
 import { INSTALLER_COMMAND } from "./RelayShellScreens.tsx";
 import { Skeleton } from "./Skeleton.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
@@ -81,7 +82,7 @@ export function attentionReasonText(
   switch (pc.state) {
     case "needs-approval":
       if (expiresAt !== null) return t("new · {n} min left", { n: Math.max(1, Math.ceil((expiresAt - options.now) / 60_000)) });
-      return pc.added_at !== null ? t("Add window closed · an account member must approve") : t("Needs approval");
+      return askToJoinReason(pc, t) ?? t("Needs approval");
     case "needs-update":
       return t("update to {version}", { version: options.targetVersion });
     case "offline": {

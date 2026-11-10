@@ -478,12 +478,12 @@ describe("RelayPcTable", () => {
   it("keeps a Join row's State cell to one line by putting the closed-window reason in the state word's title (while the phone list keeps the line), so rows stay 44px without clipping (PF-1)", async () => {
     const html = renderHtml(buildProps());
     const joinRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.join}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "";
-    expect(joinRow).toContain('<span class="relay-pc-state-word" title="Needs approval · Add window closed · an account member must approve">Needs approval</span>');
+    expect(joinRow).toContain('<span class="relay-pc-state-word" title="Needs approval · Join · a device of your account connected to it approves">Needs approval</span>');
     expect(joinRow).not.toContain("relay-pc-probe-line");
     phoneMatches = true;
     await mount(buildProps());
     const joinPhone = rootOf(renderer).find((n) => n.type === "li" && n.props["data-pc-id"] === IDS.join);
-    expect(textOf(joinPhone)).toContain("Add window closed · an account member must approve");
+    expect(textOf(joinPhone)).toContain("Join · a device of your account connected to it approves");
   });
 
   it("names the specific state in the State cell (Needs approval, Needs update, Offline · when, Ready) with the full text in a title, while the filter chip keeps Needs you", () => {

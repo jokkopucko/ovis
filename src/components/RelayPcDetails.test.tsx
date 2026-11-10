@@ -275,6 +275,9 @@ describe("RelayPcDetails", () => {
     const stateOf = (html: string) => /<dt>State<\/dt><dd><span class="relay-pc-details-value">([^<]+)<\/span>/.exec(html)?.[1];
     const approval = renderHtml({ pc: makeRow({ state: "needs-approval", paired: false, linked: false, join: { server_public_key: "k", relay: GLOBAL } }), onClose: none, onOpenSheet: none });
     expect(stateOf(approval)).toBe("Needs approval");
+    // a listed PC past its ten minutes says how this device gets in, in the table's and the overview's words
+    expect(approval).toContain("Join · a device of your account connected to it approves");
+    expect(approval).not.toContain("Add window closed");
     const update = renderHtml({ pc: makeRow({ state: "needs-update" }), onClose: none });
     expect(stateOf(update)).toBe("Needs update");
     expect(update).toContain("Update Ovis on it");

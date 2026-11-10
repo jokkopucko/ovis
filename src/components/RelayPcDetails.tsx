@@ -13,7 +13,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { KeyId } from "./KeyId.tsx";
-import { formatAbsoluteTime, formatProbeLine, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
+import { askToJoinReason, formatAbsoluteTime, formatProbeLine, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 
 const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
@@ -101,9 +101,7 @@ export function RelayPcDetails({
       : pc.state === "needs-approval"
         ? fresh
           ? t("{name} is new in your account. Type the number it shows on its own screen to add it.", { name: pc.name })
-          : pc.join !== undefined && pc.added_at !== null
-            ? t("Add window closed · an account member must approve")
-            : t("{name} has not approved this device yet.", { name: pc.name })
+          : askToJoinReason(pc, t) ?? t("{name} has not approved this device yet.", { name: pc.name })
         : null;
 
   const probeLine = formatProbeLine(pc.check, t) ?? t("Not checked");

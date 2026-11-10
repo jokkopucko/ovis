@@ -338,9 +338,10 @@ describe("RelayOverview", () => {
 
 
   it("says a reason shared by every shown attention row once, as the list caption, keeps those rows to name and relay or last seen, and draws them on the plain surface", () => {
-    const html = renderMarkup({ pcs: f4Pcs(), mode: "account", defaultRelay: GLOBAL, now: NOW });
+    // every row can be joined: one without a route reads "Needs approval" and the reason is no longer shared
+    const html = renderMarkup({ pcs: f4Pcs().map((pc) => pc.server_id === "id_old" ? { ...pc, join: { server_public_key: "k3", relay: AP } } : pc), mode: "account", defaultRelay: GLOBAL, now: NOW });
     const section = /<section class="relay-overview-attention-section"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
-    const reason = "Add window closed · an account member must approve";
+    const reason = "Join · a device of your account connected to it approves";
     expect(section.match(new RegExp(reason, "g"))).toHaveLength(1);
     expect(section).toContain(`<p class="relay-overview-attention-caption">${reason}</p>`);
     // PF-1: the shared reason and View all share one head row above the list, so the head costs the table no second line
@@ -394,8 +395,15 @@ describe("RelayOverview", () => {
       targetVersion: "1.9",
     });
     expect(html).toContain("new · 8 min left");
-    expect(html).toContain("Add window closed · an account member must approve");
+    expect(html).toContain("Join · a device of your account connected to it approves");
     expect(html).toContain("update to 1.9");
+
+    // a listed PC whose directory row gives no route to join by has no Join button, so its reason names none
+    const { join: _join, ...noRoute } = expiredPc;
+    const routeless = renderMarkup({ pcs: [noRoute], mode: "account", defaultRelay: GLOBAL, now: NOW });
+    expect(routeless).toContain("Needs approval");
+    expect(routeless).not.toContain("a device of your account connected to it approves");
+    expect(routeless).not.toContain('data-attention-action="join"');
 
     const offlineReasons = (lang: "en" | "ko" | "ja" | "zh"): string[] => [
       ...renderMarkup({ pcs: [offlinePaired, offlineMins], mode: "account", defaultRelay: GLOBAL, now: NOW }, lang)

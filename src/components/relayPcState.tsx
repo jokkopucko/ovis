@@ -49,6 +49,16 @@ export function localStateWord(check: PcStatus | null, t: Translate): string {
   return check.kind === "answered" ? t("Answers") : t("No answer");
 }
 
+/**
+ * What a listed PC past its 10-minute Add window asks of this device, in the same words wherever it is drawn,
+ * or null when it has no such line: a PC the account never listed, or one whose directory row gives no route
+ * to join by, so no Join button stands beside it. It names the button it sits next to.
+ */
+export function askToJoinReason(pc: { readonly added_at: string | null; readonly join?: unknown }, t: Translate): string | null {
+  if (pc.added_at === null || pc.join === undefined) return null;
+  return t("Join · a device of your account connected to it approves");
+}
+
 export function formatAbsoluteTime(iso: string): string {
   try { return new Date(iso).toLocaleString(currentLocale()); } catch { return iso; }
 }

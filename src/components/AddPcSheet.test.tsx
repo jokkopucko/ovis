@@ -181,14 +181,17 @@ describe("the Add-a-PC sheet", () => {
     expect(calls).toMatchObject({ closes: 1, cancels: 0 });
   });
 
-  it("walks an account join: expired Add window explanation, approval on a device connected to the PC, 90-second wait, and refusal", async () => {
+  it("walks an account join: who approves it and what to open first, approval on a device connected to the PC, 90-second wait, and refusal", async () => {
     // a PC this device paired by QR knows nothing of desk2's requests: it is never named as the approver
     const unrelated = pcOf({ server_id: "a".repeat(32), name: "Work MacBook", state: "paired", paired: true });
     const pc = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
     const stateWithPcs: RelayShellState = { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [unrelated, pc] } };
     await mount(props("join", pc, stateWithPcs));
     expect(all()).toContain("Add this device to desk2");
-    expect(all()).toContain("Add window closed · an account member must approve on a device connected to desk2.");
+    expect(text(renderer!.root.findByProps({ className: "add-pc-sub" }))).toBe("A device of your account that is connected to desk2 approves this one.");
+    // the start says what must be open before the press: only a device with the PC open hears the request
+    expect(all()).toContain("First open desk2 in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.");
+    expect(all()).not.toContain("Add window closed");
     expect(all()).toContain("Check the number on a device connected to desk2");
     expect(all()).not.toContain("Work MacBook");
     expect(steps()).toEqual(["current", "todo", "todo", "todo"]);
@@ -209,14 +212,55 @@ describe("the Add-a-PC sheet", () => {
     await update(props("join", pc, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null }));
     expect(steps()).toEqual(["done", "done", "failed", "todo"]);
     expect(all()).not.toContain("Work MacBook");
-    expect(all()).toContain("desk2 did not approve this device");
-    expect(all()).toContain("90 seconds");
-    expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Close"]);
+    // a join is never approved on the PC and has no link to open again: the refusal names the device that approves
+    expect(text(renderer!.root.findByProps({ className: "add-pc-problem" }))).toBe("No device of your account approved this one");
+    expect(all()).toContain("Nobody picked the number within 90 seconds, or it was denied. Open desk2 in Ovis on a device that already uses it, keep it open, then try again. If it keeps failing, pair this device with a QR or code from desk2.");
+    expect(all()).not.toContain("Open the link again");
+    expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Close", "Try again"]);
+    await click("Try again");
     await click("Close");
-    expect(calls).toMatchObject({ closes: 1, cancels: 0, retries: 0 });
+    expect(calls).toMatchObject({ closes: 1, cancels: 0, retries: 1 });
   });
 
-  it("keeps a connection failure's own diagnosis after a new PC's Add window has closed, and the closed window for a refusal", async () => {
+  it("says what stopped a new PC or a join and what to press, with Try again, instead of an add window no one can reopen from here", async () => {
+    const buttons = () => renderer!.root.findAll((instance) => instance.type === "button").map(text);
+    const problem = () => text(renderer!.root.findByProps({ className: "add-pc-problem" }));
+    const expired = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
+    // a new PC that is no longer waiting: its Account screen on the PC is where the wait starts again
+    await mount(props("new", pcOf(), { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(problem()).toBe("desk2 is no longer waiting to be added");
+    expect(all()).toContain("On desk2, open Settings → Devices and PCs → Account and keep that screen open (choose Keep waiting or Add this PC to my account if it shows one), then try again here. If it still refuses, wait a few minutes: it pauses after too many tries.");
+    expect(all()).not.toContain("Copy a new link");
+    expect(buttons()).toEqual(["Close", "Try again"]);
+    await click("Try again");
+    expect(calls.retries).toBe(1);
+    // the same words whatever the row's age: a new PC has no member to ask
+    await update(props("new", expired, { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(problem()).toBe("desk2 is no longer waiting to be added");
+    expect(all()).not.toContain("account member");
+    // a new PC that declined, or was not approved in time, is approved on the PC itself
+    await update(props("new", pcOf(), { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(problem()).toBe("desk2 did not approve this device");
+    expect(all()).toContain("It was declined on desk2, or not approved there within 90 seconds. Try again, then press Approve on desk2.");
+    expect(all()).not.toContain("Open the link again");
+    expect(buttons()).toEqual(["Close", "Try again"]);
+    // a join the PC refused before any digits: it has not learned this device yet, or it is paused (nobody connected is a timeout, not this)
+    await update(props("join", expired, { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(problem()).toBe("desk2 cannot take this device yet");
+    expect(all()).toContain("desk2 did not take this request. It may not know this device yet (it learns your account's devices within a few minutes), or it is paused after too many tries. Wait a moment, then try again. If no device of your account uses desk2 yet, pair this device with a QR or code from desk2 instead.");
+    expect(all()).not.toContain("Copy a new link");
+    expect(buttons()).toEqual(["Close", "Try again"]);
+    // a refused join differs from a refused new PC
+    await update(props("join", expired, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(problem()).toBe("No device of your account approved this one");
+    expect(buttons()).toEqual(["Close", "Try again"]);
+    // without a way to retry, the sheet only closes
+    const { onRetry: _onRetry, ...noRetry } = props("new", pcOf(), { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID });
+    await update(noRetry);
+    expect(buttons()).toEqual(["Close"]);
+  });
+
+  it("keeps a connection failure's own diagnosis after a new PC's Add window has closed, and the same subtitle before and after it", async () => {
     const expired = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
     await mount(props("new", expired, { kind: "failed", failure: "pc-offline", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(all()).toContain("desk2 is offline");
@@ -224,14 +268,26 @@ describe("the Add-a-PC sheet", () => {
     await update(props("new", expired, { kind: "failed", failure: "relay-unreachable", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(all()).toContain("The relay could not be reached");
     expect(all()).not.toContain("Add window closed");
-    // the relay's refusal of a new device is the account's limit, not the window: it says so, and can be tried again
-    await update(props("new", expired, { kind: "failed", failure: "new-devices-refused", name: "desk2", detail: null, server_id: SERVER_ID }));
-    expect(all()).toContain("desk2 cannot add new devices right now");
-    expect(all()).toContain("Devices already added still connect.");
-    expect(all()).not.toContain("Add window closed");
-    expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toContain("Try again");
-    await update(props("new", expired, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
-    expect(all()).toContain("Add window closed · an account member must approve");
+    expect(all()).toContain("Check this device's connection, then try again.");
+    // the relay's refusal of a new device is the account's limit, not the window or the flow: both flows say what the link says, with Try again
+    for (const flow of ["new", "join"] as const) {
+      const plain = relayFailureText((key) => key, "new-devices-refused", "desk2", null);
+      expect(relayFailureText((key) => key, "new-devices-refused", "desk2", null, flow)).toEqual(plain);
+      await update(props(flow, expired, { kind: "failed", failure: "new-devices-refused", name: "desk2", detail: null, server_id: SERVER_ID }));
+      expect(text(renderer!.root.findByProps({ className: "add-pc-problem" }))).toBe("desk2 cannot add new devices right now");
+      expect(all()).toContain("Devices already added still connect.");
+      expect(all()).not.toContain("Add window closed");
+      expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toContain("Try again");
+    }
+    await update(props("join", expired, { kind: "failed", failure: "pc-offline", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(all()).toContain("desk2 is offline");
+    expect(all()).toContain("Start Ovis on the PC");
+    // a new PC's subtitle is the same past its window: nothing there needs an account member
+    for (const pc of [pcOf(), expired]) {
+      await update(props("new", pc, LIST));
+      expect(text(renderer!.root.findByProps({ className: "add-pc-sub" }))).toBe("Type the number desk2 shows on its own screen, then approve there.");
+      expect(renderer!.root.findAll((instance) => instance.props.className === "relay-shell-copy")).toHaveLength(0);
+    }
   });
 
   it("offers Try again on a wrong typed number to start a fresh handshake, and clears the field when the new challenge arrives", async () => {
@@ -319,6 +375,7 @@ describe("the Add-a-PC sheet", () => {
   it("with no PC, says how one is added in one concise sentence and leads to the QR and code screen", async () => {
     await mount(props("add", null, LIST));
     expect(all()).toContain("Add a PC");
+    expect(all()).toContain("On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here with Add.");
     expect(steps()).toEqual([]);
     expect(renderer!.root.findAll((instance) => instance.props.className === "add-pc-bars")).toHaveLength(0);
     await click("Pair with a QR or code");
@@ -366,6 +423,18 @@ describe("the Add-a-PC sheet", () => {
     const id = (s: string, vars?: Record<string, string | number>) => vars ? s.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? "")) : s;
     expect(relayFailureText(id, "pair-declined", "desk2").title).toBe("desk2 did not approve this device");
     expect(relayFailureText(id, "pair-unavailable", "desk2").title).toBe("desk2 is not taking new devices right now");
+    // without a flow the texts are the pairing link's, and a new link is the fix, not Try again
+    expect(relayFailureText(id, "pair-declined", "desk2")).toMatchObject({ copy: "It was declined on the PC, or not approved within 90 seconds. Open the link again to compare new numbers.", retry: false });
+    expect(relayFailureText(id, "pair-unavailable", "desk2")).toMatchObject({ retry: false });
+    expect(relayFailureText(id, "pair-unavailable", "desk2").copy).toContain("Copy a new link on the PC");
+    // a flow changes only the two refusals: every other failure reads the same in the sheet as on the shell's screen
+    for (const flow of ["new", "join"] as const) {
+      expect(relayFailureText(id, "pair-unavailable", "desk2", null, flow).retry).toBe(true);
+      expect(relayFailureText(id, "pair-declined", "desk2", null, flow).retry).toBe(true);
+      for (const failure of ["not-added-yet", "pc-offline", "pc-unresponsive", "relay-unreachable", "needs-update", "revoked", "identity-changed", "code-expired", "bad-offer"] as const) {
+        expect(relayFailureText(id, failure, "desk2", "x", flow)).toEqual(relayFailureText(id, failure, "desk2", "x"));
+      }
+    }
     expect(relayFailureText(id, "relay-unreachable", "desk2").copy).toBe("Check this device's connection, then try again.");
     expect(relayFailureText(id, "revoked", "desk2").title).toBe("This device was removed from desk2");
     expect(relayFailureText(id, "pair-declined", "desk2", "The relay closed the connection (0)").detail).toBeNull();
