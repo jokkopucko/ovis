@@ -81,14 +81,31 @@ describe("relayNoticeFromStatus before the announced date", () => {
   const now = Date.parse("2030-01-01T00:00:00.000Z");
   const future = "2030-02-01T00:00:00.000Z";
 
-  it("shows only the reminder naming the date, refused or not", () => {
+  it("shows only the reminder naming the date while the relay refuses nothing", () => {
     expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "no_account", relay: "missing", enforce_at: future, refused: false } }, false, now))
       .toEqual({ kind: "sign-in-grace", enforceAt: future });
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "ok", relay: "ok", enforce_at: future, refused: false, new_sessions: false } }, true, now)).toBeNull();
+  });
+
+  it("shows a refusal by the relay whatever this browser's clock says of the date", () => {
     expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "no_account", relay: null, enforce_at: future, refused: true } }, false, now))
+      .toEqual({ kind: "sign-in-required", enforceAt: null });
+    expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: true } }, true, now))
+      .toEqual({ kind: "not-listed", enforceAt: null });
+    expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now))
+      .toEqual({ kind: "pc-limit", enforceAt: null });
+  });
+
+  it("does not read the refused flag as a refusal before the date while the relay lets this PC in", () => {
+    // a regional relay's refusal sets the flag too; the status is the global relay's, which is online
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "no_account", relay: "missing", enforce_at: future, refused: true } }, false, now))
       .toEqual({ kind: "sign-in-grace", enforceAt: future });
     expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: true } }, true, now)).toBeNull();
     expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now)).toBeNull();
-    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "ok", relay: "ok", enforce_at: future, refused: false, new_sessions: false } }, true, now)).toBeNull();
+  });
+
+  it("keeps the data limit for the date even when the relay refused this PC", () => {
+    expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "ok", relay: "ok", enforce_at: future, refused: true, new_sessions: false } }, true, now)).toBeNull();
   });
 
   it("shows the limit notices once the date has passed", () => {
@@ -109,6 +126,13 @@ describe("relayNoticeFromStatus before the announced date", () => {
     expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "no_account", relay: "missing", enforce_at: "soon", refused: false } }, false, after))
       .toEqual({ kind: "sign-in-grace", enforceAt: null });
   });
+
+  it("shows a refusal by the relay beside a date that does not parse", () => {
+    expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "limit", relay: null, enforce_at: "soon", refused: true } }, true, now))
+      .toEqual({ kind: "pc-limit", enforceAt: null });
+    expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "no_account", relay: null, enforce_at: "soon", refused: true } }, false, now))
+      .toEqual({ kind: "sign-in-required", enforceAt: null });
+  });
 });
 
 describe("relayNoticeOf", () => {
@@ -127,6 +151,14 @@ describe("relayNoticeOf", () => {
     expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "token", role: "drive" }, relay, security: portal })).toBeNull();
     expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "device", role: "drive" }, relay, security: portal })).toBeNull();
     expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "device", role: "drive" }, relay, security: { ...portal, observed_ingress: "relay" } })).toBeNull();
+  });
+
+  it("shows nothing to a visitor let in by an open server, and still shows where the answer names no way in", () => {
+    const open = { token_configured: false, pairing_gate: "open", bind_scope: "other", observed_ingress: "direct", public_exposure: "unknown" } as const;
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "open", role: "drive" }, relay, security: open })).toBeNull();
+    // the PC itself on that open server is "local", and an answer without `via` (the demo's) hides nothing
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "local", role: "drive" }, relay, security: open })).toEqual({ kind: "pc-limit", enforceAt: null });
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true }, relay })).toEqual({ kind: "pc-limit", enforceAt: null });
   });
 });
 
