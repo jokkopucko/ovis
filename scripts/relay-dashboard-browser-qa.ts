@@ -1272,7 +1272,10 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
   // a custom relay's host wider than the phone wraps inside the route list instead of running off the dashboard
   await check("map-long-host-390", async () => {
     const host = "relay-eu-west-dedicated-instance-for-the-studio-team.customer-internal.example.com";
-    const { page, fleet } = await open({ fleet: "F4", width: 390, directory: async (route) => {
+    // the fleet by name, not the one `open` returns: the directory is asked while `open` is still awaited, and its
+    // answer read that binding before it was set (a ReferenceError on a runner slow enough to ask that early)
+    const fleet = fleetOf("F4");
+    const { page } = await open({ fleet: "F4", width: 390, directory: async (route) => {
       const pcs = directoryOf(fleet, Date.now()).map((pc) => ({ ...pc, relay: `wss://${host}` }));
       await route.fulfill({ status: 200, headers: { "access-control-allow-origin": APP }, contentType: "application/json", body: JSON.stringify({ pcs }) });
     } });
