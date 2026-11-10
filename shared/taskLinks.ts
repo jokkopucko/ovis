@@ -1,32 +1,28 @@
 import type { InlineNode } from "./markdown.ts";
 
 /**
- * Local patch: a work-steward task ID (`T-00042`) in chat text links to the task web view, which
- * runs on the same machine as Ovis on port 7790. The host is the page's own, so the link works on
- * whichever address the device reached Ovis by. Where there is no page (the server), IDs stay text.
+ * Local patch: a work-steward task ID (`T-00042`) in chat text links to the task web view. The
+ * view has one HTTPS address for every device (Caddy, over WireGuard), so the link does not depend
+ * on the address the device reached Ovis by.
  */
-export const TASK_VIEW_PORT = 7790;
+export const TASK_VIEW_BASE = "https://tasks.home.jdsaa.com";
 const TASK_ID = /\bT-\d{5}\b/g;
 const WHOLE_TASK_ID = /^T-\d{5}$/;
 
-export function taskHref(id: string, host = globalThis.location?.hostname): string | null {
-  return host ? taskViewUrl(id, host) : null;
-}
-
-function taskViewUrl(id: string, host: string): string {
-  return `http://${host.includes(":") ? `[${host}]` : host}:${TASK_VIEW_PORT}/t/${id}`;
+export function taskHref(id: string): string {
+  return `${TASK_VIEW_BASE}/t/${id}`;
 }
 
 /** `value` as text nodes, with each task ID in it as a link. */
-export function linkTaskIds(value: string, host = globalThis.location?.hostname): InlineNode[] {
-  if (!host || !value.includes("T-")) return [{ type: "text", value }];
+export function linkTaskIds(value: string): InlineNode[] {
+  if (!value.includes("T-")) return [{ type: "text", value }];
   const nodes: InlineNode[] = [];
   let offset = 0;
   // one linear pass: the pattern has no nested repetition
   for (const match of value.matchAll(TASK_ID)) {
     const index = match.index ?? 0;
     if (index > offset) nodes.push({ type: "text", value: value.slice(offset, index) });
-    nodes.push({ type: "link", href: taskViewUrl(match[0], host), children: [{ type: "text", value: match[0] }] });
+    nodes.push({ type: "link", href: taskHref(match[0]), children: [{ type: "text", value: match[0] }] });
     offset = index + match[0].length;
   }
   if (offset < value.length) nodes.push({ type: "text", value: value.slice(offset) });
@@ -34,8 +30,7 @@ export function linkTaskIds(value: string, host = globalThis.location?.hostname)
 }
 
 /** A code span that holds only a task ID (`` `T-00042` ``) links too, and keeps its code look. */
-export function linkTaskCode(value: string, host = globalThis.location?.hostname): InlineNode {
+export function linkTaskCode(value: string): InlineNode {
   const code: InlineNode = { type: "code", value };
-  const href = WHOLE_TASK_ID.test(value) ? taskHref(value, host) : null;
-  return href === null ? code : { type: "link", href, children: [code] };
+  return WHOLE_TASK_ID.test(value) ? { type: "link", href: taskHref(value), children: [code] } : code;
 }
