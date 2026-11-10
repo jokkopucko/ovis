@@ -634,7 +634,6 @@
 }
 
 .prompt-card-custom .input:focus-visible {
-  border-color: var(--accent);
   outline: var(--ring);
   outline-offset: var(--ring-offset);
 }

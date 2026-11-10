@@ -167,8 +167,8 @@
   transition: border-color var(--dur-fast) var(--ease-out);
 }
 
-.setup-choice:hover:not(:disabled),
-.setup-choice:focus-visible {
+/* the accent border is the pointer's; keyboard focus is the shared ring alone, never both lines */
+.setup-choice:hover:not(:disabled) {
   border-color: var(--accent);
 }
 

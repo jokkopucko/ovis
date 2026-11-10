@@ -128,7 +128,9 @@
   text-overflow: ellipsis;
 }
 
-.terminal-input-text:focus {
+/* one line, as .input (styles.css): the ring with the border at rest, the accent border only for a
+   focus that draws no ring */
+.terminal-input-text:focus:not(:focus-visible) {
   outline: none;
   border-color: var(--accent);
 }

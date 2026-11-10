@@ -156,7 +156,9 @@
   font-size: var(--fs-input);
 }
 
-.reply-comment-field:focus {
+/* one line, as .input (styles.css): the ring with the border at rest, the accent border only for a
+   focus that draws no ring */
+.reply-comment-field:focus:not(:focus-visible) {
   border-color: var(--accent);
   outline: none;
 }

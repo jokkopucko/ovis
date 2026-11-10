@@ -70,6 +70,11 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   font-weight: var(--fw-semibold);
 }
 
+/* inside the field, as a workspace's rename field (Sidebar.css): the list clips a ring drawn outside it */
+.machine-rename-input:focus-visible {
+  outline-offset: var(--ring-inset-offset);
+}
+
 /* a sidebar menu's head, in the popover and in a phone's sheet: Manage PC's names the PC, its state and how it is
    reached, and for a PC herdr manages where the rest is done; the PCs head's hidden menu says what it lists */
 .machine-menu-head {

@@ -3646,19 +3646,19 @@ button {
 .sidebar-filter-input::-webkit-calendar-picker-indicator { display: none !important; }
 .sidebar-filter-input::-webkit-list-button { display: none !important; }
 
-/* pointer focus shows on the field's border; keyboard focus-visible adds the shared offset ring */
-.input:focus,
-.select:focus {
-  border-color: var(--accent);
-}
-
+/* a focused field draws one line. :focus-visible draws the shared offset ring and leaves the field's
+   own border at rest (its resting, contrast or invalid colour): a second accent line inside the ring
+   reads as a drawing error. A text field is :focus-visible however it took the focus (a click, a tap,
+   a dialog's autofocus: the browser's rule for a control that takes typing), and in Chrome a select
+   is too, so the ring is what a field shows; the accent border is left for a focus the browser draws
+   no ring for */
 .input:focus:not(:focus-visible),
 .select:focus:not(:focus-visible) {
+  border-color: var(--accent);
   outline: none;
 }
 
-:is(.input, .select, .terminal-input-text, .reply-comment-input):focus-visible {
-  border-color: var(--accent);
+:is(.input, .select):focus-visible {
   outline: var(--ring);
   outline-offset: var(--ring-offset);
 }

@@ -729,6 +729,13 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   padding: 0 var(--space-2) 0 calc(var(--space-1) - var(--hairline));
 }
 
+/* the list clips what a row draws outside it (the first row's ring lost its top edge), so the ring is
+   drawn inside the field, over its border, as the rows' own rings are */
+.workspace-rename-input:focus-visible,
+.pane-rename-input:focus-visible {
+  outline-offset: var(--ring-inset-offset);
+}
+
 .sidebar-row-action {
   display: inline-flex;
   align-items: center;
