@@ -35,7 +35,7 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
-import { COMMAND_ALIASES, link as linkPc, plainLabel } from "./plugin-link.ts";
+import { approvalPrompt, approves, COMMAND_ALIASES, declinedNote, link as linkPc, plainLabel } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
@@ -867,12 +867,12 @@ async function approvePairings(): Promise<number> {
   }
   const lines = console[Symbol.asyncIterator]();
   for (const pairing of pairings) {
-    const what = pairing.intent === "account" ? "join your account" : "pair with this PC";
-    process.stdout.write(`${plainLabel(pairing.label)} wants to ${what}. Approve it only if its screen shows ${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}. Approve? [y/N] `);
+    process.stdout.write(approvalPrompt(pairing));
     const answer = await lines.next();
-    const decision = !answer.done && /^y(es)?$/i.test(answer.value.trim()) ? "approve" : "decline";
+    // only the request's own digits approve it: a line typed ahead, or for the one before, carries none of them
+    const decision = !answer.done && approves(answer.value, pairing.digits) ? "approve" : "decline";
     const decided = await fetch(`${origin}/api/relay/pairing`, { method: "POST", headers, body: JSON.stringify({ id: pairing.id, decision }) });
-    process.stdout.write(decided.ok ? `${decision === "approve" ? "Approved" : "Declined"}.\n` : `${plainLabel(pairing.label)} is no longer waiting.\n`);
+    process.stdout.write(decided.ok ? decision === "approve" ? "Approved.\n" : declinedNote(answer.done ? null : answer.value) : `${plainLabel(pairing.label)} is no longer waiting.\n`);
   }
   return 0;
 }
@@ -913,6 +913,8 @@ async function linkCommand(): Promise<number> {
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
     out: (text) => process.stdout.write(text),
     lines: console[Symbol.asyncIterator](),
+    // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever (`yes | ovis add`)
+    terminal: process.stdin.isTTY === true,
   });
 }
 

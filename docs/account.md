@@ -119,7 +119,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
 
 - **Approval on the PC itself:** a driving window opened directly on the PC (not a Portal visitor,
   not an open LAN window), or `bun scripts/plugin.ts pair --approve` in the PC's terminal, which
-  shows the digits and asks y/n.
+  shows the digits and asks for them: typing them (or their last three) approves, anything else
+  declines.
 - **Remote approval:** a client connected through the relay with drive access whose row is an
   account member. It must **pick the new device's digits out of three** (two decoys the PC chose at
   random) before it can approve. A tap without looking picks right one time in three, and a wrong
