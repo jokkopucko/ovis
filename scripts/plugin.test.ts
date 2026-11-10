@@ -31,13 +31,18 @@ async function run(command: string, extra: Record<string, string | undefined> = 
   return { out, err, exitCode };
 }
 
-function launch(command: string, extra: Record<string, string | undefined> = {}) {
+/** The environment a command runs in: this test's own home and state, and `extra`. */
+function launchEnv(extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   const bin = join(scratch, "bin");
   const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state") };
   for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "PORT", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
   Object.assign(env, extra);
   for (const [key, value] of Object.entries(extra)) if (value === undefined) delete env[key];
-  return Bun.spawn(["bun", "scripts/plugin.ts", command], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
+  return env;
+}
+
+function launch(command: string, extra: Record<string, string | undefined> = {}) {
+  return Bun.spawn(["bun", "scripts/plugin.ts", command], { cwd: ROOT, env: launchEnv(extra), stdout: "pipe", stderr: "pipe" });
 }
 
 beforeEach(() => {
@@ -793,12 +798,55 @@ describe("add and login", () => {
     } finally { server.stop(true); }
   });
 
+  it("take the code back when the output went away: a write that fails stops the run as its signal would", async () => {
+    const key = generateKeyPair();
+    const calls: string[] = [];
+    let codes = 0;
+    let cancelled: (() => void) | null = null;
+    const taken = new Promise<void>((resolve) => { cancelled = resolve; });
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      calls.push(`${request.method} ${path}`);
+      if (path === "/api/relay") return Response.json({ phase: "online", blocked: null });
+      // a code that runs out in a second, so the next one is written soon
+      const soon = new Date(Date.now() + 1_000).toISOString();
+      if (path === "/api/relay/code") return Response.json({ code: `ABCD-EFGH-J${++codes}`, expires_at: soon, server_id: "0123456789abcdef0123456789abcdef" });
+      if (path === "/api/relay/offer") return Response.json({ url: encodeOffer({ v: 1, server_id: "0123456789abcdef0123456789abcdef", server_public_key: exportPublicKey(key.publicKey), relay: "wss://relay.ovis.sh", code: "123456" }, "https://app.ovis.sh"), expires_at: soon });
+      if (path === "/api/devices/pair/cancel") { cancelled?.(); return Response.json({ ok: true, cancelled: true }); }
+      return new Response(null, { status: 404 });
+    } });
+    writeFileSync(join(configDir, ".env"), `PORT=${server.port}\n`);
+    // its reader takes the first code's lines and ends: the write of the next code fails
+    const child = Bun.spawn(["sh", "-c", "bun scripts/plugin.ts link --code | head -n 2"], {
+      cwd: ROOT, stdout: "pipe", stderr: "pipe",
+      env: launchEnv({ HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: ROOT, HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" }),
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let result: "taken back" | "left valid";
+    try {
+      // a run whose write failed unheard is gone at once, with nothing taken back: its exit is the other end of the wait
+      result = await Promise.race([
+        taken.then(() => "taken back" as const),
+        child.exited.then(() => "left valid" as const),
+        new Promise<"left valid">((resolve) => { timer = setTimeout(() => resolve("left valid"), 15_000); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      child.kill();
+      await child.exited;
+      await server.stop(true);
+    }
+    expect([result, calls.filter((call) => call === "POST /api/relay/offer").length], await new Response(child.stderr).text()).toEqual(["taken back", 2]);
+  }, 30_000);
+
   it("are in the usage an unknown command gets, with what they do", async () => {
     const result = await run("constructor", { HERDR_PLUGIN_CONFIG_DIR: configDir });
     expect(result.exitCode).toBe(2);
     expect(result.err).toBe([
       "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup>",
-      "add (also login, link): sign this PC in and add it to your Ovis account. link --code: show a code and a QR code to pair one device instead.",
+      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
+      "link --code: show a code and a QR code to pair one device instead.",
       "",
     ].join("\n"));
   });

@@ -650,6 +650,11 @@ export class DeviceStore {
     return this.devices.find((d) => d.account !== undefined)?.account ?? null;
   }
 
+  /** Whether the row is a member of `account`, as GET /api/devices tells it (`account` on its row). */
+  isMemberOf(id: string, account: string): boolean {
+    return this.devices.some((d) => d.id === id && d.account === account && d.relay_public_key !== undefined);
+  }
+
   /** A drive account member whose session signed in with the row's current key: a session left from an older key acts as no member. */
   isAccountApproverSession(id: string, sessionKey: string): boolean {
     return sessionKey !== "" && this.relayKeyOf(id) === sessionKey && this.isAccountApprover(id);
@@ -1137,6 +1142,11 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
   setRequestRoute("/api/devices/:device_id");
   if (!/^[0-9a-f]{16}$/.test(id)) return badRequest("invalid_device", "no such device");
   if (request.method === "DELETE") {
+    // `x-ovis-unless-account`: the caller removes the device because that account does not vouch for it (`ovis add`,
+    // of a device its code let in). One that became a member of it since the caller read the list stays. The check
+    // and the revoke are one step here, so no link comes between them
+    const unless = request.headers.get("x-ovis-unless-account");
+    if (unless !== null && store.isMemberOf(id, unless)) return jsonResponse({ error: { code: "account_member", message: "that device is a member of the account by now" } }, 409);
     if (!store.revoke(id, access.level === "full" && access.device ? { device_id: access.device.id, label: access.device.label } : "pc")) return jsonResponse({ error: { code: "not_found", message: "no such device" } }, 404);
     onRevoked?.([id]);
     return noContent();

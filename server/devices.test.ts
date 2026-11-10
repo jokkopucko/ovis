@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DevicePairedEvent } from "../shared/protocol.ts";
-import { DeviceStore, newStreamKey, normalizeLabel, PairingRateLimitedError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
+import { DeviceStore, handleDeviceRequest, newStreamKey, normalizeLabel, PairingRateLimitedError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
 import { privateStateFs } from "./private-state.ts";
 import { isTaggedNode, parseTailscaleOwner } from "./tailscale.ts";
 
@@ -525,6 +525,36 @@ describe("DeviceStore", () => {
     expect(store.revoke(b.device.id)).toBe(true);
     expect(store.gated).toBe(true);
     expect(new DeviceStore(root).gated).toBe(true);
+  });
+});
+
+describe("revoking a device unless an account vouches for it", () => {
+  const revoke = (store: DeviceStore, id: string, unless?: string) => handleDeviceRequest(new Request(`http://127.0.0.1/api/devices/${id}`, {
+    method: "DELETE", headers: { origin: "http://127.0.0.1", "x-herdr-machine": "1", ...(unless === undefined ? {} : { "x-ovis-unless-account": unless }) },
+  }), `/api/devices/${id}`, store, { level: "full", via: "local", role: "drive" }, null);
+
+  it("leaves a device that linked itself to that account since the caller read the list, and removes any other", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "revoke-unless-")));
+    const pair = async (label: string) => {
+      const keys = await relayKeys();
+      return { id: store.pairRelay(store.startPairing().code, label, keys.publicKeySpki)!.device.id, key: keys.publicKeySpki };
+    };
+    // read as paired and in no account; a member of the account that signed in by the time its removal lands
+    const own = await pair("Own phone");
+    expect(store.linkAccountKey(own.id, own.key, own.key, "acct_1")).not.toBeNull();
+    const kept = await revoke(store, own.id, "acct_1");
+    expect([kept.status, await kept.json()]).toEqual([409, { error: { code: "account_member", message: "that device is a member of the account by now" } }]);
+    expect(store.list(null).map((device) => device.id)).toEqual([own.id]);
+    // a member of another account is vouched for by nobody the caller named, and one in no account by nobody at all
+    expect((await revoke(store, own.id, "acct_2")).status).toBe(204);
+    const stray = await pair("Stray");
+    expect((await revoke(store, stray.id, "acct_1")).status).toBe(204);
+    expect(store.list(null)).toEqual([]);
+    // without the header a revoke is what it was: the member goes
+    const member = await pair("Member");
+    store.linkAccountKey(member.id, member.key, member.key, "acct_1");
+    expect((await revoke(store, member.id)).status).toBe(204);
+    expect((await revoke(store, member.id, "acct_1")).status).toBe(404);
   });
 });
 

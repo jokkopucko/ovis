@@ -878,8 +878,9 @@ async function approvePairings(): Promise<number> {
 }
 
 /**
- * `link [--code] [--github | --google]`, also `add` and `login`: this PC joins the relay from its own terminal
- * (scripts/plugin-link.ts), signed in to the account by a device code, or with a code to type and a QR code.
+ * `link [--code | --approve] [--print] [--github | --google]`, also `add` and `login`: this PC joins the relay from
+ * its own terminal (scripts/plugin-link.ts), signed in to the account by a device code and then added by a QR code
+ * (`--approve`: by an approval here), or with a code to type and a QR code.
  */
 async function linkCommand(): Promise<number> {
   // the checkout survives in-app updates: the release that runs has the link that fits its server (as phone-setup)
@@ -900,14 +901,19 @@ async function linkCommand(): Promise<number> {
   const headers: Record<string, string> = {};
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
   const stop = new AbortController();
-  // Ctrl+C, a supervisor's SIGTERM or the terminal closing (SIGHUP): each takes the code back on the way out.
-  // A signal can come twice (to the process group, and passed on by a checkout's link), so every one is
-  // caught, and the clean-up gets ten seconds before the process ends anyway
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => {
+  // Ctrl+C, a supervisor's SIGTERM or the terminal closing (SIGHUP): each takes the code back on the way out, and
+  // removes a device the code let in that nobody kept. A signal can come twice (to the process group, and passed on
+  // by a checkout's link), so every one is caught, and the clean-up gets ten seconds before the process ends anyway
+  const halt = (): void => {
     if (stop.signal.aborted) return;
     stop.abort();
     setTimeout(() => process.exit(1), 10_000).unref();
-  });
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, halt);
+  // An output that went away (the terminal closed, a pipe's reader ended) fails the next write. A failed write nobody
+  // hears ends the process where it stands, or leaves it running with nobody to read it: the code stays valid either
+  // way. It is heard instead, and stops the run as its signal would
+  process.stdout.on("error", halt);
   return linkPc(process.argv.slice(3), {
     origin, headers, signal: stop.signal,
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
@@ -915,6 +921,9 @@ async function linkCommand(): Promise<number> {
     lines: console[Symbol.asyncIterator](),
     // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever (`yes | ovis add`)
     terminal: process.stdin.isTTY === true,
+    // the QR code that adds this PC is a key to it: drawn on a terminal only, unless --print asks for it anyway
+    isTty: process.stdout.isTTY === true,
+    size: () => process.stdout.isTTY === true ? { rows: process.stdout.rows, columns: process.stdout.columns } : null,
   });
 }
 
@@ -1063,7 +1072,8 @@ if (import.meta.main) {
   else {
     process.stderr.write([
       "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup>",
-      "add (also login, link): sign this PC in and add it to your Ovis account. link --code: show a code and a QR code to pair one device instead.",
+      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
+      "link --code: show a code and a QR code to pair one device instead.",
       "",
     ].join("\n"));
     process.exit(2);

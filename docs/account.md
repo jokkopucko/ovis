@@ -129,6 +129,17 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   directly on the PC (any window there with drive access, as before), or by a drive account member
   through the relay (`403 account_required` for any other relay device, `read_only` for a watch
   device). A PC in no account keeps letting any driving relay device start one, as before.
+- **A code the PC's own terminal prints admits whoever scans it**, with no approval on the PC:
+  `bun scripts/plugin.ts add` ends in one QR code, and a signed-in device that scans it links
+  itself as the PC's first member, so the PC joins that device's account. The code is therefore
+  made only by that command, shown only on a terminal and cleared from it (`--print` writes it
+  as plain lines that stay, wherever the output goes), kept for 30 minutes at most, and the
+  command says afterwards which account the PC joined and by which of that account's devices.
+  Any other device the code let in is named and removed unless the person types keep, and when
+  the PC ended in another account than the one the command signed in to, every device that came
+  since the code was shown is removed ([A PC with no screen](relay.md#a-pc-with-no-screen)).
+  `add --approve` keeps the approval in the terminal: no code, and the adding device's digits
+  are compared there.
 - **Every admission is announced** on every device connected to the PC: the new device's name and who
   approved it.
 
@@ -497,6 +508,10 @@ is what authenticates the PC.
 - `GET /api/devices` adds `account`, `account_key` (the member's `relay_public_key`, which is public)
   and `added_by` to account members' rows, for a caller with drive access only; a watching device
   sees none of them.
+- `DELETE /api/devices/{id}` with the header `x-ovis-unless-account: {account}` removes the device
+  only while it is no member of that account, and answers `409 account_member` when it is; the
+  check and the removal are one step. `ovis add` removes a device its code let in this way, so one
+  that linked itself to the account that signed in since the list was read stays.
 
 ## Account service API
 
