@@ -583,8 +583,10 @@ scope, `/s/<server_id>/~/api/…`, which that PC's service worker answers
 - **Rendered HTML pages.** The app fetches the rendered page through the relay, at most 64 MiB, and
   posts it to a render host at `/s/<server_id>/~render` (`render.html` from
   [`scripts/shell-build.ts`](../scripts/shell-build.ts)), in a frame sandboxed with `allow-scripts`
-  alone, which writes it into its own document. The host's Content-Security-Policy is the PC's
-  policy for rendered pages (`pagePolicy(null)`), so the page's inline scripts run, while the
+  alone. Until you press **Run scripts** above the page, the host draws it in a frame of its own
+  that allows no script (`sandbox=""`), so nothing in the page runs; after the press it writes the
+  page into its own document. The host's Content-Security-Policy is the PC's policy for rendered
+  pages (`pagePolicy(null)`), so the page's inline scripts run once you asked for them, while the
   sandbox's opaque origin keeps it away from the app, its device keys and the relay connection.
   As on a direct connection, the PC puts the page's own pictures, scripts and media into it, up to
   8 MiB each and 32 MiB in all (for a page of up to 8 MiB); a larger video or sound gets no address

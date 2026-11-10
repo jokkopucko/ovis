@@ -242,6 +242,32 @@
   background: var(--pdf-page);
 }
 
+/* around the page's frame: beside the pane, a press on a page with scripts comes to this box until the person has
+   put the focus in the page (the frame takes no pointer meanwhile) */
+.file-viewer-page-frame {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: 100%;
+}
+
+.file-viewer-page-frame[data-page-shield] > .file-viewer-page { pointer-events: none; }
+
+/* above the page: its scripts are off, and the button that runs them */
+.file-viewer-scripts {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex: none;
+  align-self: stretch;
+  margin-bottom: var(--space-2);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.file-viewer-scripts .btn { flex: none; }
+
 .web-panel-popup .web-panel-body { padding: 0; }
 
 .web-panel-popup .web-panel-page {
@@ -714,11 +740,17 @@
 .file-viewer-docked video.file-viewer-media { width: 100%; }
 
 .file-viewer-docked .file-viewer-pdf,
-.file-viewer-docked .file-viewer-page {
+.file-viewer-docked .file-viewer-page,
+.file-viewer-docked .file-viewer-page-frame {
   flex: 1 1 auto;
   height: auto;
   min-height: 0;
   border-radius: 0;
+}
+
+.file-viewer-docked .file-viewer-scripts {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
 }
 
 .file-viewer-docked .file-viewer-audio { width: min(calc(100% - var(--space-6)), 480px); }

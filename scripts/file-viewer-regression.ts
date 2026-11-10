@@ -672,6 +672,8 @@ try {
   for (const close of ["Close file", "Escape"]) {
     await activateInTranscript(page, contentsLink);
     const framed = page.frameLocator(".file-viewer-page");
+    // a page's scripts wait for the person: the panel says so, and the press runs them
+    await panel.getByRole("button", { name: "Run scripts", exact: true }).click();
     await framed.getByText("contents ran", { exact: true }).waitFor();
     const opened = await page.evaluate(() => history.length);
     // the frame's own navigation is under test, not where the panel lays the frame out: a pointer
@@ -1647,6 +1649,11 @@ try {
   await page.locator(".work-row-detail .chat-tool-io pre").getByRole("button", { name: "shots/report.html", exact: true }).first().tap();
   const report = page.getByRole("dialog", { name: "report.html", exact: true });
   const frame = page.frameLocator(".file-viewer-page");
+  // the page is drawn without its scripts first: the frame allows none, and the line above it offers them
+  await report.locator(".file-viewer-page").waitFor();
+  assert.equal(await report.locator(".file-viewer-page").getAttribute("sandbox"), "", "a page's scripts do not run by themselves");
+  assert.equal(await report.locator(".file-viewer-scripts").innerText().then((text) => text.replace(/\s+/g, " ").trim()), "Scripts in this page are off. Run scripts");
+  await report.getByRole("button", { name: "Run scripts", exact: true }).click();
   await frame.getByText("script ran", { exact: true }).waitFor();
   await frame.getByText("network blocked", { exact: true }).waitFor();
   await frame.getByText("no storage", { exact: true }).waitFor();
@@ -1685,6 +1692,7 @@ try {
   const contents = page.getByRole("dialog", { name: "toc.html", exact: true });
   for (const close of ["Close file", "scrim"]) {
     await contentsLink.tap();
+    await contents.getByRole("button", { name: "Run scripts", exact: true }).click();
     await frame.getByText("contents ran", { exact: true }).waitFor();
     // the sheet is still rising when the page shows: a click aimed into the frame meanwhile lands beside the anchor
     await sheetsSettled(page);
@@ -1758,6 +1766,8 @@ try {
     }), query);
     const openPage = async () => {
       await mediaLink.tap();
+      // the recording is read from inside the frame, which takes the page's scripts being on
+      await mediaPage.getByRole("button", { name: "Run scripts", exact: true }).click();
       const address = await recording.getAttribute("src") ?? "";
       assert.match(address, new RegExp(`^${origin}/api/fs/page-media/[A-Za-z0-9_-]{32}$`), "the recording plays from its address");
       assert.equal(await loads(), "loaded");

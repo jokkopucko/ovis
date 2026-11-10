@@ -25,25 +25,50 @@ function headerBlocks(text: string): Map<string, string[]> {
 }
 
 describe("the shell's page", () => {
-  it("renders exactly one parent message through document.open/write/close", () => {
+  /** the render host's own script, run against a stand-in for its page: what it wrote, and the frames it put in its body */
+  const renderHost = () => {
     const html = shellFiles(manifest)["render.html"] ?? "";
     const script = /<script>([\s\S]*)<\/script>/.exec(html)?.[1];
     expect(script).toBeDefined();
     const listeners = new Set<(event: unknown) => void>();
     const parent = { postMessage() {} };
-    const calls: string[] = [];
-    const document = { open: () => calls.push("open"), write: (html: string) => calls.push(html), close: () => calls.push("close") };
+    const calls: string[] = [], frames: Array<{ sandbox: string | null; srcdoc: string }> = [];
+    const document = {
+      open: () => calls.push("open"), write: (html: string) => calls.push(html), close: () => calls.push("close"),
+      createElement: (tag: string) => { const attrs = new Map<string, string>(); return { tag, srcdoc: "", style: { cssText: "" }, setAttribute: (name: string, value: string) => { attrs.set(name, value); }, attrs }; },
+      body: { replaceChildren: (node: { tag: string; srcdoc: string; attrs: Map<string, string> }) => { calls.push(`frame:${node.tag}`); frames.push({ sandbox: node.attrs.get("sandbox") ?? null, srcdoc: node.srcdoc }); } },
+    };
     new Function("parent", "document", "addEventListener", "removeEventListener", script ?? "")(parent, document,
       (_type: string, listener: (event: unknown) => void) => listeners.add(listener),
       (_type: string, listener: (event: unknown) => void) => listeners.delete(listener));
     const fire = (source: unknown, data: unknown) => { for (const listener of listeners) listener({ source, data }); };
-    fire({}, { type: "ovis-render", html: "foreign" });
-    fire(parent, { type: "ovis-render", html: 1 });
+    return { parent, calls, frames, listeners, fire };
+  };
+
+  it("renders exactly one parent message through document.open/write/close, when the person asked for the page's scripts", () => {
+    const { parent, calls, frames, listeners, fire } = renderHost();
+    fire({}, { type: "ovis-render", html: "foreign", scripts: true });
+    fire(parent, { type: "ovis-render", html: 1, scripts: true });
     expect(calls).toEqual([]);
-    fire(parent, { type: "ovis-render", html: "<body>owned</body>" });
-    fire(parent, { type: "ovis-render", html: "second" });
+    fire(parent, { type: "ovis-render", html: "<body>owned</body>", scripts: true });
+    fire(parent, { type: "ovis-render", html: "second", scripts: true });
     expect(calls).toEqual(["open", "<body>owned</body>", "close"]);
+    expect(frames).toEqual([]);
     expect(listeners.size).toBe(0);
+  });
+
+  it("draws a page whose scripts were not asked for in a frame of its own that runs none, and never writes it into its own document", () => {
+    // anything but `scripts: true` is a page without its scripts: a message that says nothing about them too
+    for (const scripts of [false, undefined, "true", 1]) {
+      const { parent, calls, frames, listeners, fire } = renderHost();
+      fire({}, { type: "ovis-render", html: "foreign", scripts });
+      expect(calls).toEqual([]);
+      fire(parent, { type: "ovis-render", html: "<body><script>run()</script>owned</body>", ...(scripts === undefined ? {} : { scripts }) });
+      fire(parent, { type: "ovis-render", html: "second", scripts: true });
+      expect(calls).toEqual(["frame:iframe"]);
+      expect(frames).toEqual([{ sandbox: "", srcdoc: "<body><script>run()</script>owned</body>" }]);
+      expect(listeners.size).toBe(0);
+    }
   });
 
   it("carries the shell meta, which the app's page does not", () => {

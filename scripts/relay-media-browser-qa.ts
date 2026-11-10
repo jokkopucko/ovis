@@ -283,6 +283,22 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     await navigate(page, origin + readerHref(machine, path, `/s/${p.id}/`, "relay"));
     await page.locator(".file-reader").waitFor();
   }
+  /**
+   * A page over the relay is drawn without its scripts first: the render host puts it in a frame of its own that
+   * runs none, and nothing in it has run. The press runs it in the render host itself.
+   */
+  async function runPageScripts(page: Page, heading: string): Promise<void> {
+    const host = page.locator("iframe.file-viewer-page");
+    await host.waitFor();
+    assert.equal(await host.getAttribute("data-page-scripts"), "off");
+    const still = page.frameLocator("iframe.file-viewer-page").locator("iframe");
+    await still.waitFor();
+    assert.equal(await still.getAttribute("sandbox"), "", "the page's own frame allows no script");
+    assert.ok((await still.getAttribute("srcdoc") ?? "").includes(heading), "and holds the page");
+    assert.equal(await page.evaluate(() => (window as Window & { isolationResults?: unknown[] }).isolationResults?.length ?? 0), 0, "no script of the page ran before the press");
+    await page.getByRole("button", { name: "Run scripts", exact: true }).click();
+    await page.locator('iframe.file-viewer-page[data-page-scripts="on"]').waitFor();
+  }
   async function image(page: Page): Promise<void> {
     const picture = page.locator("img.file-viewer-media[src]");
     await picture.waitFor();
@@ -421,6 +437,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       note(`${p.name}: attachment image decoded`);
       await pdf(page, p);
       await read(page, p, "page.html");
+      await runPageScripts(page, `${p.name} rendered`);
       isolated(await isolation(page));
       assert.equal(await page.frameLocator("iframe.file-viewer-page").locator("body").getAttribute("data-ran"), "1");
       assert.equal(await page.frameLocator("iframe.file-viewer-page").locator("h1").textContent(), `${p.name} rendered`);
@@ -458,6 +475,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       };
       await check(async (page) => {
         await read(page, first, "page.html");
+        await runPageScripts(page, `${first.name} rendered`);
         isolated(await isolation(page));
       });
       await check(async (page) => {
@@ -473,7 +491,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
         await page.evaluate((html) => {
           const frame = document.createElement("iframe");
           frame.sandbox.add("allow-scripts");
-          frame.onload = () => { frame.onload = null; frame.contentWindow?.postMessage({ type: "ovis-render", html }, "*"); };
+          frame.onload = () => { frame.onload = null; frame.contentWindow?.postMessage({ type: "ovis-render", html, scripts: true }, "*"); };
           frame.src = `${location.pathname}~render`;
           document.body.append(frame);
         }, `<!doctype html><body>${svg}</body>`);
@@ -588,6 +606,8 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       const opened = await mediaPage(ctx);
       assert.ok(href);
       await navigate(opened, href);
+      // the reader is the same viewer: the page's scripts wait for the press there too
+      await runPageScripts(opened, `${first.name} rendered`);
       isolated(await isolation(opened));
       note("copy link: installed blob-mode file viewer copied a stable reader URL; a new tab opened it with its own channel");
       await closeContext(ctx);

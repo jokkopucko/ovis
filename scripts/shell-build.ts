@@ -192,6 +192,17 @@ export function shellFiles(manifest: string): Record<string, string> {
 function render(event) {
   if (event.source !== parent || event.data?.type !== "ovis-render" || typeof event.data.html !== "string") return;
   removeEventListener("message", render);
+  if (event.data.scripts !== true) {
+    // The page's scripts are off until the person asks for them: it is drawn in a frame of its own that runs
+    // none. That frame keeps this document's policy, so the page's styles, pictures and fonts draw as they do
+    // with scripts.
+    const page = document.createElement("iframe");
+    page.setAttribute("sandbox", "");
+    page.srcdoc = event.data.html;
+    page.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0";
+    document.body.replaceChildren(page);
+    return;
+  }
   document.open();
   document.write(event.data.html);
   document.close();

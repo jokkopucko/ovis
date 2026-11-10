@@ -6,7 +6,9 @@ import { DirectoryBrowser } from "./DirectoryBrowser.tsx";
 import { FileGlyph } from "./FileGlyph.tsx";
 import { useHighlightedLines } from "./HighlightedCode.tsx";
 import { RenderBoundary } from "./RenderBoundary.tsx";
+import { flushSync } from "react-dom";
 import { RelayRenderedPage } from "./RelayRenderedPage.tsx";
+import { usePageFocusGuard } from "../lib/usePageFocusGuard.ts";
 import { hasDraft, TextFileEditor } from "./TextFileEditor.tsx";
 import { TextFileView } from "./TextFileView.tsx";
 import { MarkdownImageContext } from "./Markdown.tsx";
@@ -179,6 +181,12 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const [candidates, setCandidates] = useState<string[] | null>(null);
   // an HTML page shows as the page, or as its source when asked
   const [source, setSource] = useState(false);
+  // A page is drawn without its scripts until the person asks for them: for the file named here, and for as long
+  // as this viewer stays open (another file, a close or a reload starts without them again). `stopped`: the file
+  // whose scripts were taken away again because its frame took the keyboard (lib/usePageFocusGuard.ts).
+  const [scriptsFor, setScriptsFor] = useState<string | null>(null);
+  const [stopped, setStopped] = useState<string | null>(null);
+  const pageFrame = useRef<HTMLIFrameElement | null>(null);
   // a phone's one-row header keeps new tab, raw and download in a "More" menu of its own
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
@@ -353,6 +361,12 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   // whose bridge predates `render` answers with the source, which the frame shows as text
   const htmlPage = info !== null && info.kind === "text" && info.mime === "text/html";
   const pageUrl = `${url}&render=1`;
+  const pageScripts = htmlPage && !source && scriptsFor === info.path;
+  // beside the pane the app stays in reach, so a page with scripts must not take its keys; the popup holds the focus itself
+  const guard = usePageFocusGuard(pageFrame, docked && pageScripts, () => {
+    // at once, not at the next render: only taking the frame away gives the keys back
+    flushSync(() => { setScriptsFor(null); setStopped(info?.path ?? null); });
+  });
   const relay = getTransport().kind === "relay";
   const resource = useResourceUrlState(info !== null && info.kind !== "text" && info.kind !== "image" ? url : null);
   const urlSrc = relay ? resource.url : url;
@@ -499,8 +513,22 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
           onDone={(saved) => { setEditing(false); setEditChanged(false); if (saved) setSaves((count) => count + 1); }} />;
         if (htmlPage && !source) return <>
           {!docked && modes}
-          {relay ? <RelayRenderedPage path={pageUrl} title={info.name} />
-            : <iframe className="file-viewer-page" src={pageSrc ?? undefined} sandbox="allow-scripts" title={info.name} />}
+          {/* The line stays in the document while the scripts run, clipped and without words: a status line that
+              appears together with its words is not announced, and "took the keyboard" has to be. */}
+          <div className={pageScripts ? "visually-hidden" : "file-viewer-scripts"}>
+            <span role="status">{pageScripts ? null : stopped === info.path ? t("This page took the keyboard, so its scripts are off again.") : t("Scripts in this page are off.")}</span>
+            {!pageScripts && <button type="button" className="btn btn-ghost" onClick={() => { setStopped(null); setScriptsFor(info.path); }}>{t("Run scripts")}</button>}
+          </div>
+          {/* The frame is a new one when the scripts come or go: a frame's sandbox is read as it loads. Without
+              `allow-scripts` the page's HTML and CSS still draw, and nothing in it runs. */}
+          {/* A press inside a frame is not seen from here. While the page with scripts does not have the focus by the
+              person's doing, its frame takes no pointer (`data-page-shield`), so the press comes to this box instead and
+              puts the focus in the page (usePageFocusGuard); the next press is the page's. */}
+          <div className="file-viewer-page-frame" data-page-shield={guard.shield ? "" : undefined} onClick={guard.shield ? guard.enter : undefined}>
+            {relay ? <RelayRenderedPage key={pageScripts ? "scripts" : "static"} path={pageUrl} title={info.name} scripts={pageScripts} frame={pageFrame} />
+              : <iframe key={pageScripts ? "scripts" : "static"} ref={pageFrame} className="file-viewer-page" src={pageSrc ?? undefined} sandbox={pageScripts ? "allow-scripts" : ""}
+                data-page-scripts={pageScripts ? "on" : "off"} title={info.name} />}
+          </div>
         </>;
         return <>
           {htmlPage && !docked && modes}

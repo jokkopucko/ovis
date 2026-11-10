@@ -502,6 +502,44 @@ blocks of `src/styles.css`.
   size as a dim mono `--fs-xs` line; "Opening…" is a `role="status"` note that is in the document from
   the viewer's first render, clipped and empty (`.visually-hidden`, never `display: none`), and gets its
   words a frame later: a live region that appears together with its content is not announced.
+- A page's scripts wait for the person. The Page view draws an HTML file in a frame that allows no
+  script (`sandbox=""`): its HTML and CSS show, with the files the renderer put into it, and nothing
+  in it runs. One line above the frame says **Scripts in this page are off.** beside **Run scripts**
+  (`.file-viewer-scripts`, `--text-dim`, `--fs-sm`); the press loads the page again in a frame with
+  `allow-scripts`, and the line goes. The choice is that file's for as long as the viewer stays open,
+  also through Source and back. Another file, a viewer opened again and a reload start without
+  scripts: nothing is remembered. Over a relay the render host draws the script-less page in a frame
+  of its own inside it, under the same page policy, and writes the page into its own document only
+  once the scripts were asked for. **Open in a new tab** is a press of the same kind: on a direct
+  connection it opens the rendered page in a tab of its own, where its scripts run and no part of
+  the app is; over a relay it opens the reader, which is this viewer and starts without scripts.
+  The reason is what the page's sandbox was measured to hold, by probes that frame a page as the
+  viewer does (Chrome 156 and WebKit 26.6; the scripts are kept outside the tree, in
+  `~/.local/state/ovis-probes/page-sandbox/` on the maintainer's PC). A page's script reaches no
+  other host by a fetch, an image, a form, a popup or a navigation. It does reach one by WebRTC (a
+  STUN or TURN server of its choosing carries its data), in WebKit by a `preconnect` too; it can
+  move its frame to another port of the host name the browser used for the app; and it takes the
+  keyboard focus with `window.focus()`. The press closes none of that: a page whose scripts the
+  person runs can still do all of it, so the press is the person's decision about that file. A page
+  without scripts sent no request to any host in the same probes (a `preconnect` hint, a meta
+  refresh, an image, a stylesheet, a CSS background). One thing is left to it in WebKit: for a
+  `preconnect` hint WebKit opens a connection to the host the page names, with no request on it;
+  Chrome opens none, and a name lookup could not be watched in WebKit. Such a page reads nothing
+  and takes no key, so that connection tells the host that the file was opened and whatever its
+  author wrote into the host's name, nothing the person did.
+  Beside the pane (**Show beside the pane**) the app stays in reach while a page's scripts run, so
+  the page must not take its keys. Nothing on the frame stops a script from taking the focus
+  (`inert`, `tabindex` and a permissions policy were tried), the app sees neither a hover nor a
+  press inside a frame of another origin, and it cannot take the focus back while that frame is
+  there. So the focus is the page's only by the person's doing: the press on **Run scripts**, until
+  the app has the focus again; a press on the page; or Tab into it. While the app has the focus the
+  frame takes no pointer, so a press on the page comes to the viewer, which puts the focus in the
+  page: that press is not the page's, the next one is, and the wheel scrolls the page only once it
+  has the focus. A frame that has the focus otherwise took it. Its scripts are turned off again at
+  once, which is the one thing that gives the keys back, the focus returns to where it was, and the
+  line reads **This page took the keyboard, so its scripts are off again.** It is a `role="status"`
+  line that stays in the document, clipped and without words, while the scripts run, so those
+  words are announced. The popup needs none of this: it holds the focus itself while it is open.
 - A rendered page (Page) looks as before; what changed is where its files come from. The pictures,
   scripts and stylesheets it takes from its folder, and the videos it plays from this server, are
   read only from a descriptor whose opened file was shown to lie in the page's folder (or a folder
@@ -2638,7 +2676,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the middle so the file's type stays. The press opens the file in the file viewer, where an HTML
   file is its Page view, as the person has the viewer set: its dialog, which holds the focus
   while it is open, or with **Show beside the pane** its panel beside the pane, where the rest of
-  the app stays in reach. Either way the page runs only until that viewer is closed. The card
+  the app stays in reach. Either way the page is drawn without its scripts until the person
+  presses **Run scripts** there, and nothing of it stays once that viewer is closed. The card
   itself looks nothing up and draws no frame. Each card's button names its file to a screen reader
   (`aria-describedby`), since several cards carry the same words. A copied selection of a card is
   the name and the title on two lines, as plain and as rich text, without the button's words.
