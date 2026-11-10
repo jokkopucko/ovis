@@ -55,6 +55,30 @@ afterEach(() => {
 });
 
 /**
+ * A port for the managed bridge that nothing listens on, held for a moment to make sure, then given
+ * back. The bridge binds it three process starts later (launcher, supervisor, bridge), and again
+ * each time an update or a restart replaces the bridge.
+ *
+ * Below 32768, under the ports a system hands out on its own by default: Linux gives a listener on
+ * port 0 or an outgoing connection one from 32768 up (ip_local_port_range), macOS and Windows from
+ * 49152 up. A port asked of the system with port 0 and given back is one of those: the next
+ * `port: 0` server of a test file running beside this one can be handed it before the bridge binds
+ * it, and the bridge then fails to start (EADDRINUSE) while the test waits for its answer. Below
+ * 20000 too, where scripts/check.test.ts takes the ports of its runs: the unit tests run beside
+ * this file in `bun run check concurrent`.
+ */
+function bridgePort(): number {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const port = 10_000 + Math.floor(Math.random() * 10_000);
+    try {
+      Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }).stop(true);
+      return port;
+    } catch { /* taken: another port */ }
+  }
+  throw new Error("no free port for the managed bridge");
+}
+
+/**
  * A real launcher + supervisor + bridge on a free port, serving the fixture checkout. Given `home`,
  * they run with it as $HOME and keep their state in the default dir under it, as an install not
  * told OVIS_STATE_DIR does.
@@ -82,8 +106,7 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
   if (supervisor !== undefined) writeFileSync(join(upstream, "server/supervisor.ts"), supervisor);
   await commit("managed initial");
   await git(root, "pull", "--ff-only", "--quiet");
-  const reservation = Bun.serve({ port: 0, fetch: () => new Response() });
-  const port = reservation.port!; reservation.stop(true);
+  const port = bridgePort();
   const origin = `http://127.0.0.1:${port}`;
   const headers = { authorization: "Bearer test-managed-token", "x-herdr-update": "1" };
   // what the launcher, the supervisor and the bridge print: a failed test prints it
