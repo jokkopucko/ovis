@@ -6,7 +6,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { AccountPcList, AccountSignIn, CheckPcsButton } from "./AccountPcs.tsx";
+import { AccountPcList, AccountSignIn, CheckPcsButton, accountPcStateText, listedPcStateText } from "./AccountPcs.tsx";
 
 const render = (node: ReturnType<typeof createElement>): string => {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
@@ -217,5 +217,22 @@ describe("AccountPcList", () => {
     expect(html).toContain('class="status-dot" data-state="ready" data-size="inline"');
     expect(html).toContain('class="status-dot" data-state="needs-you" data-size="inline"');
     expect(html).toContain('class="status-dot" data-state="offline" data-size="inline"');
+  });
+});
+
+describe("listedPcStateText", () => {
+  const t = (key: string) => key;
+  const pc = (state: MyPc["state"], paired: boolean): MyPc => ({ server_id: "a".repeat(32), name: "Desk", state, last_seen_at: null, added_at: null, listed: true, paired, linked: paired });
+
+  it("says a listed PC is in the account where no pairing can tell whether it waits for an approval", () => {
+    // a PC's own Settings reads the directory with no pairings, so every listed PC came out as needs-approval
+    expect(listedPcStateText(pc("needs-approval", false), t as never)).toBe("In your account");
+    expect(accountPcStateText(pc("needs-approval", false), t as never)).toBe("Needs approval");
+  });
+
+  it("keeps what the directory itself knows", () => {
+    expect(listedPcStateText(pc("needs-update", false), t as never)).toBe("Update Ovis on it");
+    expect(listedPcStateText(pc("offline", false), t as never)).toBe(accountPcStateText(pc("offline", false), t as never));
+    expect(listedPcStateText(pc("paired", true), t as never)).toBe("Ready");
   });
 });

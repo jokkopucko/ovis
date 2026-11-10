@@ -53,7 +53,7 @@ import { RuntimeMove } from "./RuntimeMove.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
 import { failureText, openOwnOffer, RelayDirectRow, statusText } from "./RelayPanel.tsx";
 import { AccountSection, accountServiceHere, type AccountState } from "./AccountSection.tsx";
-import { accountPcStateText } from "./AccountPcs.tsx";
+import { listedPcStateText } from "./AccountPcs.tsx";
 import { STATE_WORD } from "./MachineSidebar.tsx";
 import { pcAccountStatus } from "../lib/account/join.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
@@ -1542,10 +1542,10 @@ function MyPcRows({ machines, accountPcs, relayKey, watching, selfAction, childr
         </li>
       ))}
       {fromAccount.map((pc) => (
-        <li key={pc.server_id} className={pc.state === "paired" ? "devices-row" : "devices-row is-away"} data-pc-state={pc.state}>
+        <li key={pc.server_id} className={pc.state === "paired" || pc.state === "needs-approval" ? "devices-row" : "devices-row is-away"} data-pc-state={pc.state}>
           <div className="devices-name">
             <span className="settings-label">{pc.name}<span className="devices-kind">PC</span></span>
-            <span className="settings-description">{accountPcStateText(pc, t)}</span>
+            <span className="settings-description">{listedPcStateText(pc, t)}</span>
           </div>
         </li>
       ))}

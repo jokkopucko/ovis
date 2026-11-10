@@ -148,6 +148,15 @@ export function accountPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string
   }
 }
 
+/**
+ * A PC of the account in a PC's own Settings list. That page holds no relay pairing, so it cannot
+ * tell whether a listed PC still waits for an approval: it says the PC is in the account, and keeps
+ * only what the directory itself knows (offline, an update needed).
+ */
+export function listedPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string {
+  return pc.state === "needs-approval" && !pc.paired ? t("In your account") : accountPcStateText(pc, t);
+}
+
 function statusDotOf(state: MyPcState): StatusDotState {
   switch (state) {
     case "paired": return "ready";
