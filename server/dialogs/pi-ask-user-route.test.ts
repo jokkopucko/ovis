@@ -10,7 +10,13 @@ import { socketAddress } from "../herdr/client.ts";
 import { handlePromptRequest, promptWaitEnded } from "../prompt.ts";
 import fixture from "../fixtures/pi-ask-user-1.2.0-bridge.json";
 
-const PID = 4242;
+/**
+ * The pid the fake herdr reports for the pane's pi. Above any pid_max (Linux allows none over
+ * 2 ** 22), so no process or thread of this host is at it, or at the pids counted up from it: the
+ * server reads /proc/<pid>/environ for a pi's agent directory, and a live one there would answer
+ * with its own instead of leaving the test's.
+ */
+const PID = 2 ** 22 + 4242;
 const posix = process.platform !== "win32";
 
 interface Bridge {
