@@ -9,6 +9,7 @@ import { loadSeen, receiveSeen, saveSeen, seenKey, SEEN_LIMIT } from "./seenFini
 import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
 import { conversationFinishEvidence } from "./panePresentation.ts";
 import { shareSeen } from "./api.ts";
+import { agentRoster } from "./agentRoster.ts";
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 function roster(finishes: Record<string, number>, statuses: Record<string, AgentStatus> = {}, epoch: string | undefined = "server-a"): Machine[] {
@@ -92,6 +93,10 @@ describe("sidebar finish acknowledgement through React effects", () => {
     if (!renderer) throw new Error("probe did not mount");
     const mounted = renderer; renderers.push(mounted);
     return {
+      agentOrder(): string[] {
+        if (!activity) throw new Error("probe has no activity");
+        return agentRoster(current, { byActivity: true, seqs: activity.seqs, recent: activity.recent, pinned: [] }).rest.map(({ machine, entry }) => `${machine.id}/${entry.pane.pane_id}`);
+      },
       status(id: string, override?: Partial<HerdrPane>): AgentStatus | undefined {
         const pane = current[0]?.snapshot?.panes.find((pane) => pane.pane_id === id);
         if (!activity || !pane) throw new Error("probe has no pane");
@@ -118,6 +123,22 @@ describe("sidebar finish acknowledgement through React effects", () => {
   // stable identities, as App's memoized callback; content still loading: in view, not yet drawn
   const frontView = (): PanePresence => "front", coveredView = (): PanePresence => "covered", loadingView = (): PanePresence => "loading";
   const loading = { current: false };
+
+  it("moves native status changes above agents on other PCs through the shared activity tracker", async () => {
+    const local = roster({ a: 1 })[0]!;
+    const remote: Machine = { ...structuredClone(local), id: "remote" };
+    const client = await open([local, remote]);
+    expect(client.agentOrder()).toEqual(["local/a", "remote/a"]);
+    const working = { ...remote, snapshot: { ...remote.snapshot!, panes: remote.snapshot!.panes.map((pane) => ({ ...pane, agent_status: "working" as const })) } };
+    // Native status overrides arrive before herdr increments its counter.
+    await client.update([local, working]);
+    expect(client.agentOrder()).toEqual(["remote/a", "local/a"]);
+    await client.update([local, working], "a");
+    expect(client.agentOrder()).toEqual(["remote/a", "local/a"]);
+    const localWorking = roster({ a: 1 }, { a: "working" })[0]!;
+    await client.update([localWorking, working]);
+    expect(client.agentOrder()).toEqual(["local/a", "remote/a"]);
+  });
 
   for (const state of ["connecting", "reconnecting", "disconnected"] as const) {
     it(`keeps cached read finishes ready while ${state}, without marking an unseen selected pane`, async () => {

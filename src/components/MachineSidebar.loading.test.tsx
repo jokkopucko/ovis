@@ -8,7 +8,7 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { MachineSidebar } from "./MachineSidebar.tsx";
 
 const actions = new Proxy({}, { get: () => () => {} }) as AppActions;
-const activity = { seqs: () => new Map<string, number>(), status: () => undefined };
+const activity = { seqs: () => new Map<string, number>(), recent: new Map<string, number>(), status: () => undefined };
 // the test renderer draws no DOM: a node stands in for every element its refs read
 const node = (): HTMLElement => ({
   isConnected: true, offsetWidth: 200, offsetHeight: 100, dataset: {}, style: {},

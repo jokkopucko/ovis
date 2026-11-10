@@ -1,7 +1,7 @@
 /**
  * The Agents list's rows in the order it draws them: the pinned card first, in pin order, then
- * every PC's agents in the roster's order, or in that PC's own Activity order when Settings asks
- * for it (lib/sidebarOrder.ts). A row is its PC and its pane: two PCs may reuse a pane id.
+ * every PC's agents in the roster's order, or in Activity order across PCs when Settings asks
+ * for it. A row is its PC and its pane: two PCs may reuse a pane id.
  */
 import type { Machine } from "../../shared/machines.ts";
 import { isBackgroundRole, ROLE_TOKEN } from "../../shared/pane-tokens.ts";
@@ -15,10 +15,12 @@ import { sidebarPinKey, splitPinnedRows } from "./sidebarPins.ts";
 export interface AgentRow { machine: Machine; entry: SidebarAgent }
 
 export interface AgentRosterOptions {
-  /** Settings → Agents order: Activity sorts each PC's rows by that PC's own counters */
+  /** Settings → Agents order: Activity sorts all PCs' rows together. */
   byActivity: boolean;
   /** a PC's state-change counters, as lib/sidebarActivity.tsx keeps them */
   seqs(machineId: string): ReadonlyMap<string, number>;
+  /** Observed cross-PC recency, keyed by sidebarPinKey; native counters are PC-local. */
+  recent: ReadonlyMap<string, number>;
   /** the pinned rows' keys (lib/sidebarPins.ts), in pin order */
   pinned: readonly string[];
 }
@@ -70,13 +72,20 @@ function nestRows<T>(entries: readonly T[], idOf: (entry: T) => string, parentId
   return ordered;
 }
 
-/** Every PC's agent rows as the list draws them: the pinned ones first, then the rest in source order. */
+/**
+ * Agent rows as the list draws them: pinned first, then workspace or cross-PC Activity order. The
+ * cross-PC sort is nested again, so an agent's helpers stay right under it.
+ */
 export function agentRoster(machines: readonly Machine[], options: AgentRosterOptions): { pinned: AgentRow[]; rest: AgentRow[] } {
   const rows = machines.flatMap((machine) => {
     const agents = sidebarAgents(machine.snapshot);
     return nestHelpers(options.byActivity ? activityOrder(agents, (entry) => entry.pane, options.seqs(machine.id)) : agents).map((entry): AgentRow => ({ machine, entry }));
   });
-  return splitPinnedRows(rows, options.pinned, ({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id));
+  const keyOf = ({ machine, entry }: AgentRow): string => sidebarPinKey(machine.id, entry.pane.pane_id);
+  const ordered = options.byActivity ? nestRows(activityOrder(rows, (row) => ({
+    pane_id: keyOf(row), agent_status: row.entry.pane.agent_status,
+  }), options.recent), keyOf, ({ machine, entry }) => entry.pane.parent_pane_id === undefined ? undefined : sidebarPinKey(machine.id, entry.pane.parent_pane_id)) : rows;
+  return splitPinnedRows(ordered, options.pinned, ({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id));
 }
 
 /**

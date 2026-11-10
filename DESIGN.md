@@ -1601,7 +1601,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Appearance's **Agents order** is **Workspaces** by default: the Agents list in herdr's
   workspace, tab and pane order. **Activity** pins a blocked agent on top and orders the rest by
   their most recent state change (herdr's `state_change_seq`, read from the snapshot's `agents`),
-  within each PC, so the agent just worked in stays on top while it runs and after it finishes.
+  across PCs, so the agent just worked in stays on top while it runs and after it finishes.
+  Each PC has its own counter origin. The browser records observed counter changes in one sequence; it never compares raw counters from different PCs. On first load, the browser preserves each PC's native activity order until new changes arrive. Pinned agents keep their explicit pin order. The combined list follows [Warp's Agent Management Panel](https://docs.warp.dev/platform/managing-cloud-agents/), which shows interactive and cloud agents together. Ovis keeps its existing blocked-first rule and derives cross-PC recency from observed changes because herdr supplies independent counters.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.
