@@ -27,6 +27,8 @@ import * as devinSession from "./devin-session.ts";
 import * as omo from "./omo.ts";
 import * as gjcRuntime from "./gjc-runtime.ts";
 import * as runtime from "./herdr-core/runtime.ts";
+import * as served from "./runtime/capabilities.ts";
+import { HERDR_CORE } from "./runtime/capabilities.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
@@ -4538,7 +4540,7 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
     const job = await claudeStandIns(1);
     const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get" ? { agent: {} } : launcher(job.leader)) as unknown as typeof herdr.herdrRpc);
-    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
     try {
       const found = await claudePaneSession({ pane_id: "t1", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane);
       expect([found?.path, found?.pid]).toEqual([store.transcript, job.pids[0]]);
@@ -4549,7 +4551,7 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
     const job = await claudeStandIns(2);
     const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get" ? { agent: {} } : launcher(job.leader)) as unknown as typeof herdr.herdrRpc);
-    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
     try {
       expect(await claudePaneSession({ pane_id: "t1", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane)).toBeNull();
     } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
@@ -4581,7 +4583,7 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
     const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
     const tab = await viewer(word, resolved, job.pids[0]!, clientEnv).catch((error: unknown) => { job.stop(); store.restore(); throw error; });
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(tab.rpc);
-    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
     const core = spyOn(runtime, "coreSocketPath").mockReturnValue("/run/user/1000/herdr-core/default.sock");
     try {
       const found = await claudePaneSession({ pane_id: "t3", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane);

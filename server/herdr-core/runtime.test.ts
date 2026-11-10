@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findHc } from "./discovery.ts";
 import { coreConnection, HC_MOVED, hcBin, hcRecovery, startRuntime } from "./runtime.ts";
+import { capabilities, HERDR, HERDR_CORE } from "../runtime/capabilities.ts";
 import { socketAddress } from "../herdr/client.ts";
 
 /** an hc stand-in found, so no test looks at the developer's own PATH, shell or hc */
@@ -191,6 +192,24 @@ it("rejects herdr-core on an OS it is not served on before creating state", asyn
   Object.defineProperty(process, "platform", { value: "freebsd" });
   await expect(startRuntime(state, standIn)).rejects.toThrow(/not freebsd/);
   expect(existsSync(state)).toBe(false);
+  // a start that failed serves nothing: the gates still read herdr
+  expect(capabilities()).toBe(HERDR);
+});
+
+it("names herdr-core as the runtime served while it runs, and herdr again once it stops", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-hc-served-"));
+  cleanup = () => rmSync(dir, { recursive: true, force: true });
+  process.env["OVIS_RUNTIME"] = "herdr-core";
+  // choosing the runtime serves nothing yet: a bridge that inherits OVIS_RUNTIME and starts none stays on herdr
+  expect(capabilities()).toBe(HERDR);
+  const adapter = await startRuntime(join(dir, "state"), standIn);
+  if (!adapter) throw new Error("runtime did not start");
+  try {
+    expect(capabilities()).toBe(HERDR_CORE);
+  } finally {
+    adapter.stop();
+  }
+  expect(capabilities()).toBe(HERDR);
 });
 
 it.skipIf(platform !== "win32")("serves herdr-core on Windows through a named pipe the herdr client reaches", async () => {
@@ -227,5 +246,6 @@ it("leaves the default runtime's state and socket unchanged even on Windows", as
   Object.defineProperty(process, "platform", { value: "win32" });
   expect(await startRuntime(state, standIn)).toBeNull();
   expect(existsSync(state)).toBe(false);
+  expect(capabilities()).toBe(HERDR);
   expect(process.env["HERDR_SOCKET"]).toBe("default-socket");
 });

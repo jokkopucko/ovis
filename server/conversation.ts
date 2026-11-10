@@ -52,7 +52,8 @@ import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, cod
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, darwinProcess, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
 import { coreSocket } from "./herdr-core/discovery.ts";
-import { coreSocketPath, servingCore } from "./herdr-core/runtime.ts";
+import { coreSocketPath } from "./herdr-core/runtime.ts";
+import { capabilities } from "./runtime/capabilities.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptFileForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
 import { processAlive, processStartedAtAsync } from "./process-start.ts";
@@ -1818,7 +1819,7 @@ async function claudeProcesses(paneId: string, known?: KnownProcesses, viewed = 
   const shell = info?.shell_pid;
   if (process.platform === "win32") return typeof shell === "number" ? (await windowsShellClaude(shell).catch(() => null)) ?? [] : [];
   const leader = info?.foreground_processes?.[0];
-  if (!servingCore() || leader === undefined || typeof leader.pid !== "number") return [];
+  if (capabilities().foreground !== "leader" || leader === undefined || typeof leader.pid !== "number") return [];
   const word = viewed ? null : hcAttachWord(leader.argv);
   if (word !== null) return reachesOwnCore(leader.pid) ? claudeProcesses(word, undefined, true) : [];
   return (await jobClaude(leader.pid)) ?? [];
@@ -1981,7 +1982,7 @@ export async function ompTranscriptPath(paneId: string, cwd: string, known?: Kno
     if (route === null) throw new ConversationUnavailable("no_session_path");
   }
   // herdr names no session of this store (or another agent's): the pane's omp process does
-  const held = route === null ? null : ompRouteTranscript(await ompHeldOpen(route, servingCore()), cwd);
+  const held = route === null ? null : ompRouteTranscript(await ompHeldOpen(route, capabilities().agents === "reported"), cwd);
   if (held === null) throw new ConversationUnavailable("no_session_path");
   // the held transcript is the pane's own, in the store its process keeps: authorized there, and read so
   const authorized = authorizedTranscript(held, route!.layout.sessions);

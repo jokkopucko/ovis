@@ -5,7 +5,8 @@
  */
 import type { AgentKind } from "../shared/agents.ts";
 import { agentManifests } from "./herdr/client.ts";
-import { hcMachine, servingCore } from "./herdr-core/runtime.ts";
+import { hcMachine } from "./herdr-core/runtime.ts";
+import { capabilities } from "./runtime/capabilities.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { SHELL_AGENTS, type ShellAgentLocator } from "./shell-agent.ts";
 
@@ -53,7 +54,7 @@ export async function handleAgentsRequest(request: Request, pathname: string, sh
       }
       // herdr starts these two without a manifest; herdr-core's manifests already name every kind its
       // panes can start (adapter.ts)
-      if (!servingCore()) {
+      if (capabilities().runtime === "herdr") {
         kinds.add("omp");
         kinds.add("claude");
       }

@@ -229,6 +229,28 @@ describe("herdr socket", () => {
   });
 });
 
+describe("runtime gates", () => {
+  // which runtime is served or named, not what it can do
+  const RUNTIME_NAMED: Record<string, string> = {
+    "server/runtime-move.ts": "the move goes from herdr to herdr-core",
+    "server/runtime-move-run.ts": "the move goes from herdr to herdr-core",
+    "server/runtime-move-service.ts": "the move goes from herdr to herdr-core",
+    "server/index.ts": "a saved choice of herdr-core falls back to herdr when no hc is found",
+    "server/supervisor.ts": "the launcher reads which runtime the server it started says it serves",
+    "server/machines.ts": "a remote PC's own Ovis is taken by the runtime its identity names",
+    "server/conversation.ts": "the name of hc's program in an attach client's argv",
+  };
+
+  it("asks the runtime for an ability, never for its name", () => {
+    const named = matches([...serverCode(), ...files("shared/**/*.ts")].filter((file) => !file.startsWith("server/herdr-core/") && file !== "server/runtime/capabilities.ts"), /[!=]== ?"herdr-core"/);
+    fail(named.filter((use) => !(use.file in RUNTIME_NAMED)).map((use) => use.at),
+      "Do not branch on the runtime's name: read the ability the code needs from capabilities() (server/runtime/capabilities.ts), adding a field to RuntimeCapabilities and to each runtime's record when none fits.");
+    const users = new Set(named.map((use) => use.file));
+    fail(Object.keys(RUNTIME_NAMED).filter((file) => !users.has(file)),
+      "These files no longer compare the runtime's name: remove them from RUNTIME_NAMED in server/conventions.test.ts.");
+  });
+});
+
 describe("remote PC bundle boundary", () => {
   // scripts/build-remote-bundle.ts ships server/, shared/ and integrations/ but not src/ or relay/: code
   // there that imports either loads from a checkout, where every check runs, and not on a remote PC (#2220)

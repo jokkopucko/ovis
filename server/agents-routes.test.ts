@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 import * as herdr from "./herdr/client.ts";
 import * as runtime from "./herdr-core/runtime.ts";
+import * as served from "./runtime/capabilities.ts";
+import { HERDR_CORE } from "./runtime/capabilities.ts";
 import { HerdrError } from "./herdr/client.ts";
 import { AgentDetector } from "./agent-catalog-detect.ts";
 import { createServer } from "./index.ts";
@@ -68,7 +70,7 @@ describe("GET /api/agents", () => {
 
   it("offers on herdr-core only the kinds its manifests name: none of herdr's own beside them", async () => {
     process.env["PATH"] = bin;
-    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
     manifests.mockImplementationOnce(async () => ({ manifests: [] }) as unknown as Awaited<ReturnType<typeof herdr.agentManifests>>);
     try {
       const { agents } = await (await fetch(url("/api/agents"))).json() as { agents: { kind: string }[] };
@@ -81,7 +83,7 @@ describe("GET /api/agents", () => {
 
   it("offers on another machine of the core only its manifests' kinds, whether installed unknown: this PC's PATH is not that machine's", async () => {
     process.env["PATH"] = bin;
-    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
     const machine = spyOn(runtime, "hcMachine").mockReturnValue({ name: "lab", id: "lab-id" });
     manifests.mockImplementationOnce(async () => ({ manifests: [{ agent: "codex" }] }) as unknown as Awaited<ReturnType<typeof herdr.agentManifests>>);
     try {

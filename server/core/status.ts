@@ -18,7 +18,8 @@ import { codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
 import { listHcMachines, startMachineBridge } from "../herdr-core/machine-bridge.ts";
-import { coreConnection, servingCore } from "../herdr-core/runtime.ts";
+import { coreConnection } from "../herdr-core/runtime.ts";
+import { capabilities } from "../runtime/capabilities.ts";
 import { Finishes, herdrLifetime } from "../finishes.ts";
 import { claudePanePid, claudePaneSession, forgetPaneTranscriptState } from "../conversation.ts";
 import { openCodeNativeState, openCodeVerificationCheckpoint, releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
@@ -133,7 +134,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   /** `done` for agents herdr loses track of (server/completion.ts), kept across restarts */
   // on herdr-core every status is the program's own report (completion.ts reportedOnly)
-  const completions = new CompletionTracker(join(options.stateDir ?? defaultStateDir(), "completions.json"), undefined, servingCore);
+  const completions = new CompletionTracker(join(options.stateDir ?? defaultStateDir(), "completions.json"), undefined, () => capabilities().agents === "reported");
   const finishes = new Finishes(options.herdrIdentity);
   /** the herdr identity that answered the lifecycle subscription, bound to that connection; null while it is closed (currentHerdrLifetime) */
   let liveHerdr: string | null = null;
@@ -163,8 +164,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   let titleApplied = 0;
   /** Letta panes no report gives a status get it from Letta's own local messages (server/letta-status.ts) */
   const letta = createLettaStatus({
-    // on herdr's TUI herdr gives Letta panes their status itself: only herdr-core's are Ovis's to tell
-    discover: (panes) => servingCore() ? lettaPanes(panes) : Promise.resolve(new Map()),
+    // a runtime that works out a pane's status gives Letta panes theirs: only where it passes on reports alone are they Ovis's to tell
+    discover: (panes) => capabilities().agents === "reported" ? lettaPanes(panes) : Promise.resolve(new Map()),
     snapshot: omoSnapshot,
     // Letta's title says it waits for the user's approval: an answer the file reads after that was written before it
     // (an aborted or errored answer written meanwhile is kept, so that the wait's end is told as the failed rest it is)
@@ -335,7 +336,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // reads overlap (the collector's, each client's): only one newer than every read applied before tells title turns
     const newest = titleRead > titleApplied;
     if (newest) titleApplied = titleRead;
-    if (servingCore()) for (const { paneId, status } of lettaTitleStatus(named, (paneId) => letta.tracks(paneId), lettaTitled, newest)) {
+    if (capabilities().agents === "reported") for (const { paneId, status } of lettaTitleStatus(named, (paneId) => letta.tracks(paneId), lettaTitled, newest)) {
       const rest = status === "idle" ? lettaRests.get(paneId) : undefined;
       if (status !== "blocked") lettaRests.delete(paneId);
       gjcChanged(paneId, status, true, rest, "letta");
@@ -423,7 +424,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { restoreReplaced: () => preferences.get().settings.restoreReplacedServer === true, bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket, relayDirectSocket: options.relayPcDirectSocket, serverId: options.serverId, tailnet: options.tailnetPcs, sshCandidates: options.sshCandidates, ...(options.pcUpdateTimings ? { ownUpdate: options.pcUpdateTimings } : {}) });
   if (machines && options.herdrProfiles) machines.watchHerdrProfiles(options.herdrProfiles);
   // on herdr-core, the core's other machines are PCs too, each reached through this PC's core
-  if (machines && servingCore()) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine) => startMachineBridge(machine, options.stateDir ?? defaultStateDir()));
+  if (machines && capabilities().machines) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine) => startMachineBridge(machine, options.stateDir ?? defaultStateDir()));
 
   const desktopActivity = options.desktopActivity === true ? trackDesktopActivity({
     path: join(options.stateDir ?? defaultStateDir(), DESKTOP_ACTIVITY_FILE),
@@ -541,8 +542,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     } finally { settling = was; }
     // a live report makes what the title said before it stale
     if (agent === "letta" && read !== "unknown" && replay === undefined) lettaTitled.delete(paneId);
-    // an unreported Letta pane on herdr-core has no word of herdr's: what its own title last said stands for it
-    const titled = agent === "letta" && read === "unknown" && servingCore() && !letta.tracks(paneId) ? lettaTitled.get(paneId) : undefined;
+    // an unreported Letta pane has no word of the runtime's where it passes on reports alone: what its own title last said stands for it
+    const titled = agent === "letta" && read === "unknown" && capabilities().agents === "reported" && !letta.tracks(paneId) ? lettaTitled.get(paneId) : undefined;
     const raw = restingClaude(paneId, agent, launchedAgents.settle(paneId, titled ?? read));
     gjc.poll();
     // a report or another agent takes the pane back from Letta's own files

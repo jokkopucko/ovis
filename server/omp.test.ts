@@ -9,7 +9,8 @@ import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import * as herdr from "./herdr/client.ts";
 import { darwinProcess } from "./claude-store.ts";
 import * as darwinKernel from "./darwin-process.ts";
-import * as runtime from "./herdr-core/runtime.ts";
+import * as served from "./runtime/capabilities.ts";
+import { HERDR, HERDR_CORE } from "./runtime/capabilities.ts";
 import { terminalBreadcrumb } from "./gjc-runtime.ts";
 import { isOmpHelper, isOmpProcess, ompAgentDir, ompHeldOpen, ompHeldTranscript, ompLaunch, ompLaunchDir, ompLoadsIntegration, ompPaneRoute, ompRouteTranscript, ompStoreLayout, readOmpHeldFilesSetting } from "./omp.ts";
 import layouts from "./fixtures/omp-18.8.7-store-layouts.json";
@@ -620,7 +621,7 @@ describe("an omp pane's chat", () => {
         return startOf(asked, reads.get(asked)!);
       });
       const environment = spyOn(darwinProcess, "environment").mockImplementation(() => { onEnviron(); return `HOME=${ompHome}\0`; });
-      const serving = spyOn(runtime, "servingCore").mockImplementation(() => core);
+      const serving = spyOn(served, "capabilities").mockImplementation(() => core ? HERDR_CORE : HERDR);
       const spawned = spyOn(Bun, "spawn").mockImplementation(((argv: string[]) => { lsofCalls.push(argv); return lsof(); }) as unknown as typeof Bun.spawn);
       processes = [{ pid, name: "omp", argv: ["omp", "-c"] }];
       // Settings -> Experimental -> OMP on macOS herdr-core: on for these tests unless one turns it off

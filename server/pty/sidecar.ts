@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { HerdrIdentity } from "../../shared/machines.ts";
-import { servingCore } from "../herdr-core/runtime.ts";
+import { capabilities } from "../runtime/capabilities.ts";
 import { rustSidecar } from "./host.ts";
 
 /**
@@ -125,10 +125,10 @@ export function sidecarAvailable(runtime?: SidecarRuntime): boolean {
 
 /**
  * herdr's identity as this bridge can serve it: without the sidecar, told the way a herdr that cannot
- * attach tells it. Where this process serves herdr-core, the live terminal is a stream on the server's own hc connection
- * (server/herdr-core/attach-session.ts), so no PTY host is needed.
+ * attach tells it. Where the runtime's live terminal is a stream (`streamed`: on herdr-core, one on the server's own hc
+ * connection, server/herdr-core/attach-session.ts), no PTY host is needed.
  */
-export function attachableIdentity(identity: HerdrIdentity, sidecar: boolean, onCore = servingCore()): HerdrIdentity {
-  if (sidecar || onCore || identity.terminal_attach === false) return identity;
+export function attachableIdentity(identity: HerdrIdentity, sidecar: boolean, streamed = capabilities().attach !== "pty-cli"): HerdrIdentity {
+  if (sidecar || streamed || identity.terminal_attach === false) return identity;
   return { ...identity, terminal_attach: false, terminal_mirror: true };
 }

@@ -16,7 +16,8 @@
  */
 import type { SessionHistoryResponse, SessionResumeResponse, SessionSnapshot } from "../shared/protocol.ts";
 import { claudeRecordOnlyIn, claudeStoreOf, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processLaunchSource, windowsShellClaude, type ClaudeSource, type PaneProcess } from "./claude-store.ts";
-import { coreConnection, servingCore } from "./herdr-core/runtime.ts";
+import { coreConnection } from "./herdr-core/runtime.ts";
+import { capabilities } from "./runtime/capabilities.ts";
 import { agentLaunch } from "./agent-launch.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
 import { herdrSocketPath, paneProcessInfo, sessionSnapshot, tabClose, tabCreate } from "./herdr/client.ts";
@@ -62,7 +63,7 @@ const launchKeepsAbsence = async (options: StoreOptions): Promise<boolean> =>
 
 /** herdr's server hands a new tab its environment; on herdr-core the core process does, not this server. */
 async function defaultLaunchSource(): Promise<ClaudeSource> {
-  if (!servingCore()) return herdrLaunchSource(herdrSocketPath());
+  if (capabilities().spawner === "server") return herdrLaunchSource(herdrSocketPath());
   // hc not answering: no proof of what a new terminal gets, so no resume offered from it
   const status = await coreConnection().call("server.status", {}).catch(() => null);
   return typeof status?.pid === "number" ? processLaunchSource(status.pid) : { state: "unreadable" };

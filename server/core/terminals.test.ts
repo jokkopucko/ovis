@@ -7,6 +7,7 @@ import * as pty from "../pty/session.ts";
 import * as coreAttach from "../herdr-core/attach-session.ts";
 import type { CoreAttachOptions } from "../herdr-core/attach-session.ts";
 import * as herdr from "../herdr/client.ts";
+import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 
 let attachment: PaneAttachment;
@@ -414,9 +415,8 @@ it("passes on a pane's own takeover words when no exit follows them", async () =
 
 for (const onCore of [true, false]) {
   it(`isolates ${onCore ? "a core stream from herdr probes, with no PTY" : "herdr attach startup probes and socket env"}`, async () => {
-    const previous = process.env["OVIS_RUNTIME"];
     const previousSocketPath = process.env["HERDR_SOCKET_PATH"];
-    process.env["OVIS_RUNTIME"] = onCore ? "herdr-core" : "herdr";
+    serveRuntime(onCore ? HERDR_CORE : null);
     process.env["HERDR_SOCKET_PATH"] = "/fixture/inherited-herdr.sock";
     try {
       using pane = await resizableAttach();
@@ -440,8 +440,7 @@ for (const onCore of [true, false]) {
         expect(pane.painted()).toBe(setup + "screen");
       }
     } finally {
-      if (previous === undefined) delete process.env["OVIS_RUNTIME"];
-      else process.env["OVIS_RUNTIME"] = previous;
+      serveRuntime(null);
       if (previousSocketPath === undefined) delete process.env["HERDR_SOCKET_PATH"];
       else process.env["HERDR_SOCKET_PATH"] = previousSocketPath;
     }

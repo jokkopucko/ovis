@@ -7,7 +7,8 @@ import type { HerdrPane, ServerMessage, SessionSnapshot } from "../../shared/pro
 import { AttachOutputTail, AttachStartupProbes, isTakeoverExit } from "../attach-output.ts";
 import { HerdrError, herdrSocketPath, paneRead, paneSendText, sessionSnapshot } from "../herdr/client.ts";
 import { CoreAttachSession } from "../herdr-core/attach-session.ts";
-import { coreConnection, HC_MOVED, hcBin, runtime } from "../herdr-core/runtime.ts";
+import { coreConnection, HC_MOVED, hcBin } from "../herdr-core/runtime.ts";
+import { capabilities } from "../runtime/capabilities.ts";
 import { MirrorSession } from "../mirror.ts";
 import { ReplayBuffer } from "../output-window.ts";
 import { PtySession, type PtySessionOptions } from "../pty/session.ts";
@@ -374,7 +375,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
     let recoveryDeadline: number | null = null;
     let recoveryRetries = 0;
     const start = (): PtySession | CoreAttachSession => {
-      const onCore = runtime() === "herdr-core";
+      const onCore = capabilities().attach === "hc";
       let takingOver = mayTakeOver(takeover) ? takeover : null;
       takeover = null;
       trying = true;

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as lettaStore from "../letta-store.ts";
-import * as runtime from "../herdr-core/runtime.ts";
+import * as served from "../runtime/capabilities.ts";
+import { HERDR, HERDR_CORE } from "../runtime/capabilities.ts";
 import { lettaMessagesPath } from "../letta-store.ts";
 import { handlers, hub, root } from "./status.fake.ts";
 
@@ -14,7 +15,7 @@ const turn = readFileSync(join(import.meta.dir, "..", "fixtures", "letta", "mess
 const resolved: { mockRestore(): void }[] = [];
 const resolving = () => { const spy = spyOn(lettaStore, "resolveLettaTranscript"); resolved.push(spy); return spy; };
 /** the server serves herdr-core, where Letta panes report nothing; on herdr's TUI the tracker stays out */
-const core = (serving = true) => { const spy = spyOn(runtime, "servingCore").mockReturnValue(serving); resolved.push(spy); };
+const core = (serving = true) => { const spy = spyOn(served, "capabilities").mockReturnValue(serving ? HERDR_CORE : HERDR); resolved.push(spy); };
 afterEach(() => { for (const spy of resolved.splice(0)) spy.mockRestore(); });
 
 describe("a Letta pane's status in the hub, where no report gives one", () => {

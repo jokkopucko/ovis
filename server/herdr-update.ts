@@ -22,7 +22,7 @@
  */
 import type { HerdrUpdateStatus } from "../shared/update.ts";
 import { herdrSocketPath } from "./herdr/client.ts";
-import { servingCore } from "./herdr-core/runtime.ts";
+import { capabilities } from "./runtime/capabilities.ts";
 import { jsonResponse } from "./http.ts";
 import { updateRequestAllowed } from "./update-api.ts";
 
@@ -52,7 +52,7 @@ export interface HerdrUpdaterOptions {
   killGraceMs?: number;
   /** STATUS_RETRY_MS; tests shorten it */
   statusRetryMs?: number;
-  /** whether this server serves herdr-core instead of herdr's TUI (server/herdr-core/runtime.ts): then there is no herdr of its own to update */
+  /** whether this server serves another runtime than herdr's TUI (server/runtime/capabilities.ts): then there is no herdr of its own to update */
   coreServed?: () => boolean;
 }
 
@@ -104,7 +104,7 @@ export class HerdrUpdater {
 
   private get supported(): boolean {
     // on herdr-core, HERDR_SOCKET names this server's own adapter, and the Herdr app's core updates on its own
-    return (this.options.platform ?? process.platform) !== "win32" && !(this.options.coreServed ?? servingCore)();
+    return (this.options.platform ?? process.platform) !== "win32" && !(this.options.coreServed ?? (() => capabilities().runtime !== "herdr"))();
   }
 
   /** The update's own environment: nothing of the pane that started this server, and this server's herdr. */
