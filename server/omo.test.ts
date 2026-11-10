@@ -521,7 +521,9 @@ it("names the OmO process holding a session, not the bundled SDK child beside it
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-held-pid-")));
   const cwd = join(root, "project");
   const agentDir = join(root, "agent");
-  const pid = 41001;
+  // above any pid_max (Linux allows none over 2 ** 22): the pane's directory places these two only while
+  // /proc/<pid>/cwd answers for neither, and a live process of this host at a small pid would answer
+  const pid = 2 ** 22 + 41001;
   const start = spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1_792_000_000_000);
   const environ = spyOn(omoModule, "processEnviron").mockReturnValue([`OMO_CODING_AGENT_DIR=${agentDir}`]);
   try {

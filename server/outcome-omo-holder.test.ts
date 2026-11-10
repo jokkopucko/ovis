@@ -14,6 +14,13 @@ const roots: string[] = [];
 afterEach(() => { mock.restore(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 type Foreground = { pid: number; name: string; argv: string[] };
+/**
+ * The pids the fake herdr reports are above any pid_max (Linux allows none over 2 ** 22), so no
+ * process or thread of this host is at one. herdr gives these processes no cwd of their own, and
+ * the server then reads /proc/<pid>/cwd: a live one there would place the OmO in its own folder,
+ * not in the pane's, and its holder would not be its.
+ */
+const PID = 2 ** 22 + 41000;
 
 /**
  * An OmO pane whose session holders are `holderPids`, with herdr giving no per-process cwd (macOS), so the pane's
@@ -37,7 +44,7 @@ function omoPane(holderPids: number[]) {
 
   const pane = { pane_id: "outcome-omo-holder", terminal_id: "term", workspace_id: "w", tab_id: "t", focused: false, revision: 0,
     agent: "omo", agent_status: "idle", cwd, agent_session: null } as HerdrPane;
-  const info = () => ({ pane_id: pane.pane_id, shell_pid: 41000, foreground_processes: state.foreground });
+  const info = () => ({ pane_id: pane.pane_id, shell_pid: PID, foreground_processes: state.foreground });
   spyOn(client, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], layouts: [], agents: [], workspaces: [], tabs: [], protocol: 22, version: "fixture" }));
   spyOn(client, "paneRead").mockResolvedValue({ ...pane, text: "", source: "detection", format: "text", truncated: false } as Awaited<ReturnType<typeof client.paneRead>>);
   spyOn(client, "paneProcessInfo").mockImplementation(async () => info());
@@ -67,8 +74,8 @@ function omoPane(holderPids: number[]) {
 
 // an argv-silent custom OmO, known by its session holder alone, and the bundled Claude SDK child it runs a turn in,
 // which looks like omo by its path and exits when the turn ends while the OmO and its session stay (#1985)
-const parent: Foreground = { pid: 41001, name: "run", argv: ["/opt/team-ai/bin/run"] };
-const sdk: Foreground = { pid: 41002, name: "claude", argv: ["/opt/node_modules/omo-ai/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"] };
+const parent: Foreground = { pid: PID + 1, name: "run", argv: ["/opt/team-ai/bin/run"] };
+const sdk: Foreground = { pid: PID + 2, name: "claude", argv: ["/opt/node_modules/omo-ai/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"] };
 
 it("keeps a command's outcome on a custom OmO whose SDK child exits at the end of the turn", async () => {
   const fixture = omoPane([parent.pid]);
@@ -90,7 +97,7 @@ it("keeps a command's outcome on a custom OmO whose SDK child exits at the end o
 });
 
 it("keeps the OmO a command was bound to when another holder of the session comes before it, without reading holders on each poll", async () => {
-  const peer: Foreground = { pid: 41003, name: "run", argv: ["/opt/team-ai/bin/run-peer"] };
+  const peer: Foreground = { pid: PID + 3, name: "run", argv: ["/opt/team-ai/bin/run-peer"] };
   const fixture = omoPane([parent.pid, peer.pid]);
   fixture.state.foreground = [parent, peer, sdk];
   const command = await fixture.send();
