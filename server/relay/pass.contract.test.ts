@@ -45,7 +45,8 @@ async function fixture(mode: "off" | "grace" | "enforce" = "enforce", extra: Par
   const asked: string[] = [];
   /** the accounts that list this PC */
   const listed = new Set(["acct_1"]);
-  const hooks: { refused?: () => void; limited?: () => void } = {};
+  /** `signing` holds a pass's answer back until what it returns settles, so a test decides what the pass comes after */
+  const hooks: { refused?: () => void; limited?: () => void; signing?: () => Promise<unknown> } = {};
   /** the accounts that have as many PCs on the relay as they may */
   const limited = new Set<string>();
   /** what the passes the service signs say of new client sessions (unset: a v1 pass) */
@@ -74,6 +75,7 @@ async function fixture(mode: "off" | "grace" | "enforce" = "enforce", extra: Par
     if (!expected || !verifyServerProof(body["proof"], expected)) return Response.json({ error: { code: "proof_invalid" } }, { status: 401 });
     if (!listed.has(body["account"] ?? "")) { hooks.refused?.(); return Response.json({ error: { code: "not_listed" } }, { status: 403 }); }
     if (limited.has(body["account"] ?? "")) { hooks.limited?.(); return Response.json({ error: { code: "relay_limit" } }, { status: 409 }); }
+    await hooks.signing?.();
     return Response.json({ pass: await signRelayPass(pair.privateKey, KID, body["server_id"]!, issuedAt, undefined, signing), expires_in: 172_800, refresh_in: 43_200 });
   };
   /** what each control socket heard first after its proof, and how it closed */
@@ -134,6 +136,17 @@ async function fixture(mode: "off" | "grace" | "enforce" = "enforce", extra: Par
     async start() {
       const response = await fetch(`${base()}/api/relay/start`, { method: "POST", headers: { origin: base(), "x-herdr-update": "1" } });
       expect(response.status).toBe(200);
+    },
+    /**
+     * Saves the pass the service signs now as one this PC kept from an earlier run. Started on it, the PC asks for
+     * none: its control socket carries the pass from the start, so the first pass it asks for later is the first
+     * renewal on that socket.
+     */
+    async savePass() {
+      const identity = loadRelayIdentity(stateDir);
+      mkdirSync(join(stateDir, "relay"), { recursive: true });
+      writeFileSync(join(stateDir, "relay", "pass.json"), JSON.stringify({ pass: await signRelayPass(pair.privateKey, KID, identity.server_id, issuedAt, undefined, signing),
+        server_id: identity.server_id, service: "https://account.test", expires_at: Date.now() + 3_600_000, refresh_at: Date.now() + 3_600_000 }));
     },
     nameAccount: (account: string) => fetch(`${base()}/api/account/relay-account`, {
       method: "POST", headers: { origin: base(), "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ account }),
@@ -368,26 +381,34 @@ test("a pass that allows no new client sessions is told in the status; one that 
   const f = await fixture();
   f.signing.newSessions = false;
   expect((await f.nameAccount("acct_1")).status).toBe(204);
+  // The PC starts on a pass it kept. With none, the relay may refuse its first control socket before the pass comes;
+  // the PC then asks twice, and the second pass going out as a renewal ended the wait below before the pass it is for
+  await f.savePass();
   await f.start();
   await bounded(f.synced);
-  // the PC says it reads both pass forms, so the service may sign it a v2 pass
-  expect(f.passVersions.length).toBeGreaterThan(0);
-  expect(f.passVersions.every((versions) => JSON.stringify(versions) === "[1,2]")).toBe(true);
   expect(f.service.status().pass).toEqual({ state: "ok", relay: "ok", enforce_at: "2099-01-01T00:00:00.000Z", refused: false, enforced: true, new_sessions: false });
   // another account (which does not list this PC), then back: the PC renews with the pass the service signs now
   f.signing.newSessions = true;
   expect((await f.nameAccount("acct_2")).status).toBe(204);
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   await bounded(f.renewal);
+  // the PC says it reads both pass forms, so the service may sign it a v2 pass
+  expect(f.passVersions.length).toBeGreaterThan(0);
+  expect(f.passVersions.every((versions) => JSON.stringify(versions) === "[1,2]")).toBe(true);
   expect(f.service.status().pass).toEqual({ state: "ok", relay: "ok", enforce_at: "2099-01-01T00:00:00.000Z", refused: false, enforced: true });
 });
 
 test("with passes off on the relay, a pass that allows no new client sessions is not told in the status", async () => {
   const f = await fixture("off");
   f.signing.newSessions = false;
+  // this relay lets the PC in without its pass, so whether its sync or the pass came first was a matter of timing, and
+  // the status read after the sync said no pass was held yet. Held back until the sync, the pass always comes second
+  // and goes out on the open control socket: that frame says the PC holds it
+  f.hooks.signing = () => f.synced;
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   await f.start();
   await bounded(f.synced);
+  await bounded(f.renewal);
   expect(f.service.status().pass).toEqual({ state: "ok", relay: null, enforce_at: null, refused: false, enforced: false });
 });
 
