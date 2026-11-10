@@ -296,13 +296,22 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-foreground-api" });
   const current = created.root_pane.pane_id;
   const commands = new Map<number, number>();
+  // The stand-in's main thread asleep in its event loop: state S, the field after the name in /proc/<pid>/stat.
+  const atRest = (pid: number) => {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.charAt(stat.lastIndexOf(") ") + 2) === "S";
+  };
   const command = async (target: string, pid: number, text: string) => {
     const expected = (commands.get(pid) ?? 0) + 1;
     await herdrRpc("pane.send_text", { pane_id: target, text: text + "\n" });
+    // The acknowledgement shows before the rename that publishes it has returned, and the end of that rename
+    // can wait on the disk (state D) for some milliseconds. herdr reads no argv from a process in that state,
+    // and to the server two such answers in a row are no Copilot in front (the unread answers below), and one
+    // from a peer is no claim: a command is done once the stand-in is also at rest again.
     for (const deadline = Date.now() + 4000;;) {
-      try { if (JSON.parse(fs.readFileSync(join(home, `api-ack-${pid}.json`), "utf8")) === expected) break; }
+      try { if (JSON.parse(fs.readFileSync(join(home, `api-ack-${pid}.json`), "utf8")) === expected && atRest(pid)) break; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      if (Date.now() > deadline) throw new Error("isolated API fixture did not acknowledge command");
+      if (Date.now() > deadline) throw new Error("isolated API fixture did not acknowledge command and come to rest");
       await Bun.sleep(20);
     }
     commands.set(pid, expected);
