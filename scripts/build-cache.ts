@@ -35,7 +35,8 @@ const git = (root: string, args: string[]): string | null => {
 const buildVariable = (name: string): boolean => name.startsWith("VITE_") || name === "NODE_ENV" || name === "HERDR_TEST_HOOKS";
 
 export function cacheKey(root: string, env: Record<string, string | undefined>, args: readonly string[]): Key {
-  // pull requests and main's pushes; a tag's release validation and manual runs always build
+  // pull requests and main's pushes; the CI a Release run runs itself and manual runs always build
+  // (a release validated by main's push run took that run's jobs, restored builds included)
   if (env["GITHUB_ACTIONS"] === "true" && env["GITHUB_EVENT_NAME"] !== "pull_request" && !(env["GITHUB_EVENT_NAME"] === "push" && env["GITHUB_REF"] === "refs/heads/main")) {
     return { bypass: "only pull request runs and pushes to main use it" };
   }

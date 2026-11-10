@@ -7,6 +7,11 @@ on:
         description: 'Version already merged into main (X.Y.Z, without v)'
         required: true
         type: string
+      revalidate:
+        description: "Run the whole CI in this run even when main's own CI run already passed this commit"
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
 concurrency:
@@ -37,9 +42,14 @@ jobs:
             echo 'This version already has a tag; choose a new version.' >&2
             exit 1
           fi
+  # The push to main already ran ci.yml on this commit: release-validate.yml takes that run when
+  # scripts/release-ci-reuse.ts verifies it green, running only Fast checks again on GitHub's runner,
+  # and otherwise (always with `revalidate`) runs ci.yml here.
   validate:
     needs: preflight
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/release-validate.yml
+    with:
+      revalidate: ${{ inputs.revalidate }}
     permissions:
       contents: read
       actions: read
@@ -61,6 +71,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      # validate reports success with jobs of its own skipped, so its result alone proves nothing:
+      # only its verdict job names what validated the commit, and without that name nothing is tagged
+      - name: Require a validated commit
+        env:
+          VALIDATED_BY: ${{ needs.validate.outputs.validated_by }}
+        run: |
+          [[ "$VALIDATED_BY" =~ ^(ci|main-run-[0-9]+)$ ]] || { echo "::error::validate ended without naming what validated this commit; refusing to publish it." >&2; exit 1; }
+          echo "Validated by $VALIDATED_BY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

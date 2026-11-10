@@ -795,11 +795,69 @@ after changing the staged session. Files, images, push and remote PCs are not pa
    Release run would then ask for a follow-up PR that raises the number again and a new tag.
 4. Run **Actions → Release → Run workflow**, select `main`, and enter `X.Y.Z` without `v`.
    The CLI equivalent is `gh workflow run release.yml --ref main -f version=X.Y.Z`.
+   Tick **revalidate** (`-f revalidate=true`) to run the whole CI in the Release run even when
+   main's own CI run already passed the commit.
 
-The workflow validates metadata, then runs the same unit, integration and browser checks
-as PRs against the exact `main` commit selected when the run starts. Only after all checks
-pass does it create the tag and GitHub release. A failed validation creates neither. Beside the
-checks it builds the Rust PTY host (**Rust PTY host binaries**, `.github/workflows/pty-sidecar.yml`):
+The workflow validates metadata, then requires the same unit, integration and browser checks
+as PRs to have passed on the exact `main` commit selected when the run starts. Only after that
+does it create the tag and GitHub release. A failed validation creates neither.
+
+The push to `main` already ran those checks on that commit, so the Release run does not run all of
+them a second time when main's run is green (`.github/workflows/release-validate.yml`). Its first
+job asks `scripts/release-ci-reuse.ts`, which says yes only when all of this holds:
+
+- there is exactly one push run of `ci.yml` on `main` for that commit, in this repository (a pull
+  request's run, a manual run and a fork's run never count);
+- it completed with success, on its first attempt or after one rerun;
+- every job of `ci.yml` is in it and passed: a failed, cancelled, skipped or missing job is a no,
+  whatever the three required checks say.
+
+A run still going is waited for, at most 40 minutes (main's run takes 15 to 30) and only while
+none of its jobs has ended without passing. Anything else is a no at once: no run for the commit,
+a run that waits behind another run of `main`, a third attempt, an answer from GitHub that cannot
+be read. On a no the Release run runs the whole CI itself, as it did before, and with
+**revalidate** it always does.
+
+On a yes the Release run still runs Fast checks itself, always on GitHub's runner (**Fast checks
+(GitHub-hosted)**, the steps of `ci.yml`'s Fast checks). Main's run ran them on the self-hosted PC,
+where some unit tests skip themselves: the runner's container has no `pwsh`, no `setfacl` and no
+process of another user. Run again on GitHub's runner, those tests gate every release, and so
+does any other test that container comes to skip.
+
+The **Verdict** job then names what validated the commit: `ci` when the whole CI passed in the
+Release run, or `main-run-<id>` when main's run was verified and Fast checks passed in the Release
+run. The publish job refuses to tag without that name: a job that was skipped, failed or cancelled
+can stop a release but never pass one. The run's summary says which it was and why.
+
+A release validated by main's run (`main-run-<id>`) is made of these checks of its commit:
+
+| Check | Ran in | On |
+| --- | --- | --- |
+| Version, notes, unused tag, release guards for the whole tree (preflight) | the Release run | GitHub's runner, or the self-hosted PC when `CI_SELF_HOSTED_LABELS` holds labels |
+| Fast checks | the Release run, and main's run | GitHub's runner, and the self-hosted PC |
+| Rust PTY host build, with the crate's tests and the PtySession checks on the built Linux binaries | the Release run | GitHub's runners |
+| Integration tests, both Browser regression jobs | main's run | the self-hosted PC, unless the runner variables keep `main` on GitHub's ([Self-hosted runner](#self-hosted-runner)) |
+| herdr-core live contract | main's run | the self-hosted PC, unless the runner variables keep the light jobs on GitHub's |
+| Native Windows install, Native macOS session identity, Rust PTY host | main's run | GitHub's runners |
+
+Main's Integration tests and Browser regression jobs did not each build the client they tested:
+on the self-hosted PC they restore `dist/` from the runners' build cache, from the entry of that
+commit, which the first job of the run to build it wrote (Fast checks, as a rule). An entry is named
+after the commit and everything else the build reads, and a restore checks every file's SHA-256
+(`scripts/build-cache.ts`, [the runner's README](../scripts/self-hosted-runner/README.md#build-cache)).
+A release validated in its own run (`ci`) never reads that cache: every job of it builds.
+
+Nothing is tagged unless the Verdict job passed. When a Release run stops there, or ends without
+having created the tag for any other reason, run Release again with **revalidate**: that run
+validates the commit by itself and takes nothing from main's run.
+
+**Actions → Release validation → Run workflow** from `main` (`gh workflow run
+release-validate.yml --ref main`) is a dry run of that decision for main's newest commit. It
+tags and publishes nothing. Run it once main's CI run of that commit is green to see a release
+take it and run Fast checks on GitHub's runner; when the answer is no, or with
+`-f revalidate=true`, it runs the whole CI as a release would.
+
+Beside the checks it builds the Rust PTY host (**Rust PTY host binaries**, `.github/workflows/pty-sidecar.yml`):
 static Linux x64 and arm64 binaries, a universal macOS one, `ovis-pty-sidecar.json` (the version,
 the `crates/pty-sidecar` git tree they were built from, and each file's SHA-256) and `SHA256SUMS`,
 all attached when the release is created, so no tag is seen without them. `bun
@@ -1164,6 +1222,11 @@ stays on `ubuntu-24.04` unless the variable holds labels. The variable routes:
 - in `ci.yml`: Fast checks, Integration tests and both Browser regression jobs;
 - in `release.yml`: the preflight and publish jobs.
 
+`release-validate.yml`'s own three jobs are always GitHub-hosted. The one that asks about main's
+CI run may wait up to 40 minutes for that run, which needs the self-hosted runners itself. Its Fast
+checks is there to run the tests the self-hosted runner skips ([Releasing](#releasing)). The
+verdict runs for seconds.
+
 Light jobs, which wait longest in GitHub's hosted queue for the few seconds they run, take the
 self-hosted runners for every same-repository run: Detect changes, the herdr-core live contract and
 the Integration and browser summary in `ci.yml`, `pr-title.yml`, `remote-bundles.yml`'s Windows
@@ -1198,9 +1261,11 @@ falling back. `pages.yml` and `release.yml` read the variable directly.
 
 Only a `pull_request` may skip the heavy jobs as docs-only, and only when every changed file is
 under `docs/`, ends in `.md` or `.txt`, is the root `LICENSE` or sits under
-`.github/ISSUE_TEMPLATE/`. Pushes, dispatches and runs called from `release.yml` or manual
-`pages.yml` dispatches always validate in full. Automatic Website runs reuse CI's successful
-main push validation instead of calling CI again.
+`.github/ISSUE_TEMPLATE/`. Pushes, dispatches and runs called for a release
+(`release-validate.yml`) or from manual `pages.yml` dispatches always validate in full. Automatic
+Website runs reuse CI's successful main push validation instead of calling CI again, and a Release
+run calls CI only when main's push run did not pass its commit; when it did, it runs Fast checks
+alone ([Releasing](#releasing)).
 
 The runner is an ephemeral Docker container that runs one job and exits. Containers have no CPU
 quota or total-memory limit; concurrent slots share the host's available resources. The
