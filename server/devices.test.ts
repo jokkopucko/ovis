@@ -280,6 +280,34 @@ describe("relay device", () => {
     const code = store.startPairing(601001).code;
     expect(store.pairRelay(code, "Phone", keys.publicKeySpki, 601001)).not.toBeNull();
   });
+
+  it("asks admit only for a key this PC does not hold: a paired phone that pairs again is never refused", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "relay-admit-")));
+    const known = await relayKeys();
+    const stranger = await relayKeys();
+    let asked = 0;
+    const refuse = () => { asked++; return false; };
+    expect(store.pairRelay(store.startPairing().code, "Phone", known.publicKeySpki)).not.toBeNull();
+    // a key new to this PC is asked about, and a refusal makes no device and spends no code
+    const code = store.startPairing().code;
+    expect(store.pairRelay(code, "Stranger", stranger.publicKeySpki, undefined, refuse)).toBeNull();
+    expect(asked).toBe(1);
+    expect(store.list(null)).toHaveLength(1);
+    // the phone this PC knows pairs again with the same code and its saved key: nobody is asked
+    expect(store.pairRelay(code, "Phone again", known.publicKeySpki, undefined, refuse)).not.toBeNull();
+    expect(asked).toBe(1);
+    expect(store.list(null)).toHaveLength(2);
+    // by comparing digits too
+    expect(store.pairRelayApproved("Phone compared", known.publicKeySpki, { path: "code" }, undefined, refuse)).not.toBeNull();
+    expect(asked).toBe(1);
+    expect(store.pairRelayApproved("Stranger compared", stranger.publicKeySpki, { path: "code" }, undefined, refuse)).toBeNull();
+    expect(asked).toBe(2);
+    expect(store.list(null)).toHaveLength(3);
+    // once every device of that key is revoked here, the key is new to this PC again
+    for (const device of store.list(null)) store.revoke(device.id);
+    expect(store.pairRelay(store.startPairing().code, "Phone", known.publicKeySpki, undefined, refuse)).toBeNull();
+    expect(asked).toBe(3);
+  });
 });
 
 describe("DeviceStore", () => {

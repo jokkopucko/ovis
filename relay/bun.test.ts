@@ -320,7 +320,7 @@ describe("relay pass on the Bun relay", () => {
       await control.ready;
       const answer = answerChallenge(await control.next("server_challenge"), server, null);
       control.socket.send(answer!);
-      expect((await control.json("sync"))["relay_pass"]).toEqual({ state: "ok", enforce_at: null });
+      expect((await control.json("sync"))["relay_pass"]).toEqual({ state: "ok", enforce_at: null, mode: "enforce" });
       control.socket.close();
     } finally { await enforced.stop(); }
   });
@@ -345,7 +345,7 @@ describe("relay pass on the Bun relay", () => {
         opened.push(control);
         await control.ready;
         control.socket.send(answerChallenge(await control.next("server_challenge"), server, null)!);
-        expect((await control.json("sync"))["relay_pass"]).toEqual({ state: "ok", enforce_at: null });
+        expect((await control.json("sync"))["relay_pass"]).toEqual({ state: "ok", enforce_at: null, mode: "enforce" });
       }
     } finally {
       for (const peer of opened) peer.socket.close();

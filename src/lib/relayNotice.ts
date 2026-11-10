@@ -42,12 +42,19 @@ function writeDismissed(dismissed: readonly string[]): void {
  * (`enforce_at`, grace) or a refusal. A relay that says neither changes nothing on screen.
  * Before a date still to come nothing is refused yet, a refusal included: only the sign-in reminder that
  * names the date shows.
+ *
+ * The limit on new devices is the exception: the PC says itself whether the relay enforces passes now
+ * (`enforced`), which a relay in `enforce` does with no date or with one far ahead. While it does and the
+ * pass says `new_sessions: false`, the PC refuses every new device, so the notice shows whatever the date;
+ * while it says it does not, nothing is refused and no such notice shows.
  */
 export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, signedIn = false, now = Date.now()): RelayNoticeInfo | null | undefined {
   if (relay === undefined) return undefined;
   if (relay === null || relay.phase === "off" || relay.blocked !== null) return null;
   const pass = relay.pass;
   if (pass === undefined) return null;
+  // a PC the relay refuses is not on it: what to say then is why, below
+  if (pass.new_sessions === false && pass.enforced === true && !pass.refused) return { kind: "data-limit", enforceAt: null };
   if (pass.enforce_at === null && !pass.refused) return null;
   const remind = pass.state === "no_account" && ((pass.relay !== null && pass.relay !== "ok") || !signedIn);
   const at = pass.enforce_at === null ? null : Date.parse(pass.enforce_at);
@@ -55,7 +62,8 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
   if (at !== null && (Number.isNaN(at) || now < at)) {
     return remind ? { kind: "sign-in-grace", enforceAt: Number.isNaN(at) ? null : pass.enforce_at } : null;
   }
-  if (pass.new_sessions === false) {
+  // a server that does not say whether passes are enforced: past the date they are
+  if (pass.new_sessions === false && pass.enforced === undefined) {
     return { kind: "data-limit", enforceAt: null };
   }
   // past the date by this browser's clock, which may be off: a PC limit shows only once the relay refused this PC

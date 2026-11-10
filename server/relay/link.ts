@@ -9,7 +9,7 @@ import type { RelaySocketHandlers } from "./virtual-socket.ts";
 import { version } from "../../package.json";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { answerServerChallenge, PERMANENT_SERVER_PROOF_REFUSALS, SERVER_PROOF_CLOSE } from "../../shared/relay-server-proof.ts";
-import { RELAY_PASS_CLOSE, RELAY_PASS_HEADER } from "../../shared/relay-pass.ts";
+import { RELAY_PASS_CLOSE, RELAY_PASS_HEADER, parseRelayPass, relayPassAdmitsNewSessions } from "../../shared/relay-pass.ts";
 import { SignedInSessions } from "./admissions.ts";
 import type { RelayErrorCode } from "../../shared/protocol.ts";
 
@@ -26,6 +26,14 @@ const CONTROL_MESSAGE_BYTES = 4096;
 const SIGN_IN_GRACE_MS = 5_000;
 /** How long a PC the relay refused for its pass waits before trying again with no new pass. */
 const PASS_REFUSED_RETRY_MS = 30 * 60_000;
+/** How long the relay gets to close a client this PC named as a new device before the PC closes its data socket itself. */
+const NEW_SESSION_CLOSE_MS = 2_000;
+/**
+ * The least time between two pass renewals on one control socket. The relay checks one a minute per socket and drops
+ * any sooner without a word (relay/core.ts RENEWAL_GAP_MS), counted from when each reached it: 5 s more covers a first
+ * one that travelled longer than the second.
+ */
+const RENEWAL_GAP_MS = 65_000;
 
 export interface RelayLinkOptions {
   readonly relay: string;
@@ -37,12 +45,20 @@ export interface RelayLinkOptions {
   readonly connect?: (url: string, headers?: Record<string, string>) => WebSocket;
   /** This PC's relay pass for this relay, or null: sent with every PC socket (shared/relay-pass.ts). */
   readonly pass?: () => string | null;
+  /**
+   * The pass this relay may still hold the PC to, read only for what it says of new client sessions: `pass`, and once
+   * the PC stopped sending that (shortly before it runs out) the same one until the relay stops honoring it
+   * (server/relay/pass.ts honored). Whoever gives it times it; `pass` when not given.
+   */
+  readonly honoredPass?: () => string | null;
   /** What the relay said of the pass in `sync` (relay/README.md, "Relay pass"). */
   /** Every `sync`: what the relay said of the pass, or null when it said nothing (it asks for none). */
   readonly onPassNotice?: (notice: RelayPassNotice | null) => void;
   /** The relay refused this PC's pass (4402): a new one is asked for. */
   readonly onPassRefused?: () => void;
   readonly clock?: MuxClock;
+  /** The wall clock (ms) the relay's `enforce_at` is read against; Date.now by default. */
+  readonly now?: () => number;
   readonly random?: () => number;
   /** The version WELCOME tells the shell (src/lib/relay/skew.ts); package.json's by default. */
   readonly serverVersion?: string;
@@ -56,13 +72,23 @@ export interface RelayLinkOptions {
   readonly sessions?: SignedInSessions;
 }
 
-export interface RelayPassNotice { readonly state: "ok" | "missing" | "invalid" | "expired"; readonly enforce_at: string | null }
+/** `mode` is the relay's configured pass mode; a relay from before it said so names none. */
+export interface RelayPassNotice { readonly state: "ok" | "missing" | "invalid" | "expired"; readonly enforce_at: string | null; readonly mode?: "grace" | "enforce" }
+
+/**
+ * Whether a relay that said `notice` of passes in `sync` enforces them at `now` (ms): in `enforce`, or in `grace` past
+ * its `enforce_at`. One that names no mode (a relay from before it did) counts as enforcing only past `enforce_at`,
+ * and one that said nothing of passes asks for none.
+ */
+export function relayEnforcesPasses(notice: RelayPassNotice | null, now: number): boolean {
+  return notice !== null && (notice.mode === "enforce" || (notice.enforce_at !== null && now >= Date.parse(notice.enforce_at)));
+}
 
 function passNotice(value: unknown): RelayPassNotice | null {
   if (typeof value !== "object" || value === null) return null;
-  const { state, enforce_at: at } = value as { state?: unknown; enforce_at?: unknown };
+  const { state, enforce_at: at, mode } = value as { state?: unknown; enforce_at?: unknown; mode?: unknown };
   if (state !== "ok" && state !== "missing" && state !== "invalid" && state !== "expired") return null;
-  return { state, enforce_at: typeof at === "string" && Number.isFinite(Date.parse(at)) ? at : null };
+  return { state, enforce_at: typeof at === "string" && Number.isFinite(Date.parse(at)) ? at : null, ...(mode === "grace" || mode === "enforce" ? { mode } : {}) };
 }
 
 interface DataConnection {
@@ -115,6 +141,12 @@ export class RelayLink {
   private passRefused = false;
   /** The pass the current control socket was opened with. */
   private controlPass: string | null = null;
+  /** What this relay last said of passes in `sync`; kept while the control socket reconnects, so a limit holds meanwhile. */
+  private notice: RelayPassNotice | null = null;
+  /** The control socket the last renewal went out on, and when (the link's clock). */
+  private renewed: { socket: WebSocket; at: number } | undefined;
+  /** A renewal waiting for the relay's minute since the one before it to pass. */
+  private cancelRenewal: (() => void) | undefined;
 
   constructor(private readonly options: RelayLinkOptions) {
     this.clock = options.clock ?? relayClock;
@@ -141,7 +173,12 @@ export class RelayLink {
     return (this.options.connect ?? ((address, extra) => new WebSocket(address, (extra ? { headers: extra } : undefined) as unknown as string[])))(url.href, headers);
   }
 
-  /** A new pass: sent on the proven control socket, or, after a refusal for the pass, a new control socket opens with it. */
+  /**
+   * A new pass: sent on the proven control socket, or, after a refusal for the pass, a new control socket opens with it.
+   * One that follows another within the relay's minute waits for it to pass and then goes out as the pass held by
+   * then: the relay would drop it unanswered, and go on holding this PC to the older pass (whether new client
+   * sessions are allowed included) until the next renewal, half a day later.
+   */
   renewPass(pass: string): void {
     if (this.stopped) return;
     if (this.passRefused) {
@@ -149,7 +186,22 @@ export class RelayLink {
       if (!this.control) this.openControl();
       return;
     }
-    if (this.proven && this.proven === this.control) this.proven.send(JSON.stringify({ type: "relay_pass", pass }));
+    // without one, the next control socket opens with the pass held then
+    const control = this.proven;
+    if (!control || control !== this.control) return;
+    this.cancelRenewal?.();
+    this.cancelRenewal = undefined;
+    const wait = this.renewed?.socket === control ? this.renewed.at + RENEWAL_GAP_MS - this.clock.now() : 0;
+    if (wait > 0) {
+      this.cancelRenewal = this.clock.setTimeout(() => {
+        this.cancelRenewal = undefined;
+        const latest = this.options.pass ? this.options.pass() : pass;
+        if (latest !== null) this.renewPass(latest);
+      }, wait);
+      return;
+    }
+    this.renewed = { socket: control, at: this.clock.now() };
+    control.send(JSON.stringify({ type: "relay_pass", pass }));
   }
 
   private openControl(): void {
@@ -192,7 +244,12 @@ export class RelayLink {
         && value.connection_ids.length <= 8 && value.connection_ids.every((id) => typeof id === "string" && /^[0-9a-f]{32}$/.test(id))) {
         this.attempts = 0;
         this.options.onState("online", null);
-        this.options.onPassNotice?.("relay_pass" in value ? passNotice(value.relay_pass) : null);
+        this.notice = "relay_pass" in value ? passNotice(value.relay_pass) : null;
+        this.options.onPassNotice?.(this.notice);
+        // a pass that came while this socket was being let in found none to go out on: the socket opened with the one
+        // before. One that came once the proof was answered went out as a renewal already
+        const held = this.options.pass?.() ?? null;
+        if (held !== null && held !== this.controlPass && this.renewed?.socket !== socket) this.renewPass(held);
         for (const id of value.connection_ids) this.openData(id);
         if ("warm" in value && typeof value.warm === "string" && /^[0-9a-f]{32}$/.test(value.warm)) {
           this.warmControl = { socket, generation: value.warm };
@@ -209,6 +266,9 @@ export class RelayLink {
       if (this.control !== socket) return;
       this.control = undefined;
       if (this.proven === socket) this.proven = undefined;
+      // a renewal that waited goes with the next control socket, which opens with the pass held then
+      this.cancelRenewal?.();
+      this.cancelRenewal = undefined;
       this.cancelKeepalive?.();
       this.endWarm();
       // The relay also uses 4401 for late answers. Only an explicit key mismatch is permanent.
@@ -402,6 +462,7 @@ export class RelayLink {
         routingOverhead: 0, maxWireMessageBytes: 64 * 1024,
         onAuthenticated: (deviceId) => this.authenticated(id, entry, deviceId),
         onChosen: () => entry.chosen?.(),
+        refuseNewDevice: () => this.refuseNewDevice(id, entry),
         ...(this.options.relayHints ? { relayHints: this.options.relayHints } : {}),
         ...(this.options.directCarriers ? { directCarriers: this.options.directCarriers } : {}),
         websocket: {
@@ -411,6 +472,34 @@ export class RelayLink {
         },
       });
     }).catch(() => socket.close());
+  }
+
+  /**
+   * Whether this relay refuses new client sessions to this PC now: it enforces passes (relayEnforcesPasses), and the
+   * pass it may hold this PC to is a v2 pass that says `new` 0 (shared/relay-pass.ts). That pass is the latest this PC
+   * was given, whether or not it reached the relay yet (a renewal waits its turn, a control socket reconnects): the
+   * relay refuses only whom this PC names, so what the PC holds decides, and a relay still holding an older pass
+   * refuses nobody by itself. How long the pass counts is its keeper's to say (`honoredPass`), not read from its `exp`
+   * against this PC's clock.
+   */
+  private refusesNewDevices(): boolean {
+    if (!relayEnforcesPasses(this.notice, (this.options.now ?? Date.now)())) return false;
+    const payload = parseRelayPass((this.options.honoredPass ?? this.options.pass)?.() ?? null)?.payload;
+    return payload !== undefined && !relayPassAdmitsNewSessions(payload);
+  }
+
+  /**
+   * A pairing on this client's session would make a device new to this PC (RelaySession refuseNewDevice). While the
+   * relay refuses new sessions, the PC names the client on its control socket and the relay closes it `4403`
+   * (relay/README.md, "New sessions"); the PC makes no device either way, and closes the data socket itself should
+   * the relay not. Nothing is said before that: a client that only knows the server_id learns nothing of the pass.
+   */
+  private refuseNewDevice(id: string, entry: DataConnection): boolean {
+    if (this.data.get(id) !== entry || !this.refusesNewDevices()) return false;
+    if (this.proven && this.proven === this.control) this.proven.send(JSON.stringify({ type: "new_session", connection_id: id }));
+    entry.cancelTimeout();
+    entry.cancelTimeout = this.clock.setTimeout(() => entry.socket.close(), NEW_SESSION_CLOSE_MS);
+    return true;
   }
 
   private authenticated(id: string, entry: DataConnection, deviceId: string): void {
@@ -430,6 +519,7 @@ export class RelayLink {
     this.stopped = true;
     this.cancelRetry?.();
     this.cancelKeepalive?.();
+    this.cancelRenewal?.();
     this.endWarm();
     const control = this.control;
     this.control = undefined;

@@ -104,18 +104,29 @@ export class RelayPassKeeper {
    * The pass to send: one for this identity that has not expired, from the account service in use, or null. While that
    * service's address cannot be used, the one saved still holds (it then goes to Ovis's relays only: no staging one).
    */
-  current(): string | null {
+  current(): string | null { return this.kept(0); }
+
+  /**
+   * The pass a relay that took it may still hold this PC to: `current`, and after that the same pass until the relay
+   * stops honoring it, RELAY_PASS_SKEW_S past its expiry (`current` stops that long before it, so twice that after).
+   * Never sent: read only for what it says of new client sessions (server/relay/link.ts), so a renewal that fails
+   * leaves no last minutes in which the PC forgets a limit the relay still holds. Timed from receipt, as `current` is.
+   */
+  honored(): string | null { return this.kept(2 * RELAY_PASS_SKEW_S * 1000); }
+
+  /** The saved pass until `past` ms after the time this PC stops sending it. */
+  private kept(past: number): string | null {
     const saved = this.saved;
     const identity = this.options.identity();
     const service = this.options.service;
-    if (!saved || !identity || saved.server_id !== identity.server_id || this.clock.now() >= saved.expires_at) return null;
+    if (!saved || !identity || saved.server_id !== identity.server_id || this.clock.now() >= saved.expires_at + past) return null;
     return typeof service === "string" && saved.service !== service ? null : saved.pass;
   }
 
-  /** The account service that signed the pass `current` gives, which decides the relays it may go to; null with none. */
+  /** The account service that signed the pass `honored` gives (`current`'s too), which decides the relays it may go to; null with none. */
   issuer(): string | null {
     const saved = this.saved;
-    return saved !== null && this.current() !== null ? saved.service : null;
+    return saved !== null && this.honored() !== null ? saved.service : null;
   }
 
   start(): void {

@@ -94,7 +94,11 @@ export async function checkPass(policy: PassPolicy, pass: string | null | undefi
   return { state: check.reason === RELAY_PASS_REQUIRED ? "missing" : check.reason === "relay pass expired" ? "expired" : "invalid", reason: check.reason };
 }
 
-/** The `relay_pass` field the relay adds to a PC's `sync` and a client's `assigned` outside `off`. */
-export function passNotice(policy: PassPolicy, state: PassState): { state: PassState; enforce_at: string | null } {
-  return { state, enforce_at: policy.enforceAt === null ? null : new Date(policy.enforceAt).toISOString() };
+/**
+ * The `relay_pass` field the relay adds to a PC's `sync` and a client's `assigned` outside `off`. `mode` is the one
+ * configured: with `enforce_at` it tells a PC whether passes are enforced now (`enforce`, or `grace` past
+ * `enforce_at`), which decides whether it names a new device (README.md, "New sessions").
+ */
+export function passNotice(policy: PassPolicy, state: PassState): { state: PassState; enforce_at: string | null; mode: "grace" | "enforce" } {
+  return { state, enforce_at: policy.enforceAt === null ? null : new Date(policy.enforceAt).toISOString(), mode: policy.mode === "enforce" ? "enforce" : "grace" };
 }

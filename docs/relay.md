@@ -710,12 +710,35 @@ run yourself need no account and no pass.
   it, and only once every relay runs a version that reads it. An older PC names none and gets v1.
   While passes are enforced and the PC's pass says `new` 0, a relay closes a client the PC has
   identified as a device new to it (named on its control socket with `new_session`) with `4403`
-  (`no new sessions for this server`); its own devices and the clients already connected stay. The
-  PC does not send `new_session` yet.
+  (`no new sessions for this server`); its own devices and the clients already connected stay.
+  The PC names a client only once a pairing on its session would make a device new to it
+  (`server/relay/link.ts` `refuseNewDevice`): a pairing code that holds, or a comparison of digits
+  both people confirmed, with a key none of its devices holds. It then makes no device, spends no
+  code and counts no failed pairing, and closes the client's socket itself after 2 s should the relay
+  not (a relay that does not hold the PC's latest pass yet, or a control socket that is reconnecting).
+  A device it knows signs in as ever, on a new socket too, and a client that has not got that far (a
+  wrong code, a comparison nobody approved) hears nothing of the pass. A device it knows that pairs
+  again with the key it saved (it opens the pairing QR once more, or forgot this PC and pairs again
+  with its account's key) is not new and is never refused. Pairing does not prove that key, so
+  whoever holds a pairing that would succeed and names a paired device's public key gets that
+  pairing's session past the limit. It cannot sign in with the key afterwards, so each further
+  session takes another pairing that succeeds (on a PC in no account, a code that session started
+  itself). The PC refuses only while the relay
+  enforces passes, which `sync` says in `relay_pass.mode` (`enforce`, or `grace` past `enforce_at`;
+  a relay that names no mode counts as enforcing only past its `enforce_at`), and the pass the
+  relay holds it to is a v2 pass with `new` 0. That pass is the PC's latest: the relay refuses only
+  whom the PC names, so the PC's pass decides. The PC stops sending a pass 5 minutes before it runs
+  out and the relay honors it until 5 minutes after: when no renewal came, the PC keeps to what
+  that pass said of new sessions for those last minutes too (timed from when it got the pass, not
+  from its own clock). The refused phone or browser can tell why from the relay's `4403` close; one
+  the PC had to close by itself hears `1012` (`server gone`), a lost connection.
 - **Keeping it.** The pass lasts 48 hours. The PC keeps it in `relay/pass.json` (readable by your user
   only), so a restart or an account service outage costs nothing while it holds, and asks for the
   next one after 12 hours, backing off (and honoring `Retry-After`) when the service does not answer.
-  A new pass goes to the relay on the open control socket; nothing reconnects. The file names the
+  A new pass goes to the relay on the open control socket; nothing reconnects. The relay takes one
+  renewal a minute on a socket and drops any sooner unanswered, so a pass that follows another
+  within that minute goes out once it has passed (65 s after the one before), and one that came
+  while a control socket was still being let in goes out as soon as that socket is. The file names the
   account service the pass came from, and a pass from another one (a staging one) is never sent.
   While `OVIS_ACCOUNT_SERVICE_URL` cannot be used, the saved pass still holds until it runs out.
 - **Sending it.** In the `x-ovis-relay-pass` header of every socket the PC opens to Ovis's relays,
@@ -728,9 +751,15 @@ run yourself need no account and no pass.
   then stops reconnecting until it gets a pass, and reconnects as soon as it does. `GET /api/relay`
   says where it stands in `pass`: `state` (`ok`, `no_account`, `not_listed`, `limit` or
   `unavailable`), what the relay last said of it (`relay`), and from when the relay will need it
-  (`enforce_at`). `new_sessions: false` there means the pass in use says new client sessions to this
-  PC are not allowed for the pass's lifetime (enforced by a later relay change), shown only while
-  the relay says passes are on and this one holds (`relay` `ok`); it is absent otherwise. `pass` is absent on a relay that is not Ovis's, and with
+  (`enforce_at`). `enforced` says whether the relay enforces passes now, as the PC knows it: its
+  last `sync` said `enforce`, or an `enforce_at` that has passed by the PC's clock, or it refused the
+  PC for its pass. `new_sessions: false` there means the pass the relay holds this PC to says new
+  client sessions to it are not allowed for the pass's lifetime, shown only while the relay says
+  passes are on and this one holds (`relay` `ok`); it is absent otherwise. While both hold on a PC
+  the relay lets in (`enforced` true, `new_sessions` false), the PC refuses every device new to it,
+  and the app says so on the PC ("This account has reached its relay data limit for new
+  connections"), whatever `enforce_at` says: a relay in `enforce` names no date, or one far ahead.
+  `pass` is absent on a relay that is not Ovis's, and with
   `OVIS_ACCOUNT_SERVICE_URL=off`. `error_code` says which of the reasons below it is.
 
 ## Why it is not online

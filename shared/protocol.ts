@@ -607,7 +607,14 @@ export interface RelayStatus {
     readonly enforce_at: string | null;
     /** the relay refused this PC for its pass (4402) and it has not been let in since */
     readonly refused: boolean;
-    /** false while the pass in use says new client sessions to this PC are not allowed and the relay says it holds; absent otherwise */
+    /**
+     * Whether the relay enforces passes now, as the PC knows it: its last `sync` said `enforce`, or an `enforce_at`
+     * that has passed by the PC's clock, or it refused this PC for its pass. While it does, and the PC is on the relay
+     * with `new_sessions: false`, the PC refuses a device new to it. Absent from a server that does not say (one that
+     * refuses no device either).
+     */
+    readonly enforced?: boolean;
+    /** false while the pass the relay holds this PC to says new client sessions to it are not allowed and the relay says it holds; absent otherwise */
     readonly new_sessions?: false;
   };
 }

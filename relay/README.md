@@ -147,11 +147,30 @@ pairing hosts, in a release most PCs run.
   `new` 0, the relay then closes that client `4403` (`no new sessions for this server`), whether it
   arrived before or after the PC; otherwise it drops the frame. The PC's own devices, reconnecting
   or not, its other clients and its own sockets stay, and a client the PC has not identified hears
-  nothing of the pass. `off` and `grace` let every client in whatever the pass says. Ovis's PCs do
-  not send `new_session` yet.
+  nothing of the pass. `off` and `grace` let every client in whatever the pass says. An Ovis PC
+  names a client once a pairing on its session would make a device new to it (a code that holds, or
+  a comparison both people confirmed, with a key none of its devices holds), and only while `sync`
+  says passes are enforced ([docs/relay.md](../docs/relay.md#relay-pass)). The relay refuses only
+  whom the PC names, so the pass the PC holds decides: a room still holding an older pass refuses
+  nobody by itself. Where the PC refuses a device on a pass the room does not hold yet (a renewal
+  still on its way, a control socket reconnecting), the relay drops the frame and the PC closes the
+  client's data socket itself 2 s later; the client then hears `1012` (`server gone`), not `4403`.
+  Since a renewal within a minute of the one before on the same socket is dropped unanswered, the
+  PC sends a later one only once that minute has passed, so the room holds the PC's latest pass
+  about a minute after it changed at the latest.
+- **What a PC and a relay of different versions do.** `relay_pass.mode` and `new_session` are both
+  additions an older side ignores, so the relay and the app deploy in either order and nothing
+  breaks. A PC from before it names clients never sends `new_session`: this relay refuses nobody
+  for new sessions on its behalf, whatever its pass says. A PC that names clients on a relay from
+  before `mode` reads the relay as enforcing only past its `enforce_at`: in `enforce` with no date
+  or one still ahead it names nobody, and the limit is not applied; on a relay that does not know
+  `new_session` at all the frame is dropped and the PC refuses the device by itself (the 2 s close
+  above). So deploy this relay before passes are switched to `enforce`, and before the release
+  whose PCs name clients.
 - **Modes**, from `RELAY_PASS_MODE` (`--pass-mode`): `off` (the default) lets every PC in as
-  before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at"}` to the control
-  socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`) and, while the room has no pass
+  before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at","mode"}` to the control
+  socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`; `mode` the configured one, `grace` or
+  `enforce`, from which with `enforce_at` a PC knows whether passes are enforced now) and, while the room has no pass
   that holds, to a client's `assigned` (`missing`), so the app can say so; older PCs read neither.
   `enforce` closes a PC socket without a pass that holds `4402` (on Cloudflare in the Worker, before
   any Durable Object), and a room whose pass ran out closes its PC sockets `4402` (its clients with

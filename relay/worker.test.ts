@@ -1250,9 +1250,9 @@ describe("relay pass", () => {
     const w = await world("grace", "2027-01-01T00:00:00.000Z");
     const control = await w.control();
     expect(control.closedWith).toBeNull();
-    expect(control.json(0)).toEqual({ type: "sync", connection_ids: [], warm: expect.any(String), relay_pass: { state: "missing", enforce_at: "2027-01-01T00:00:00.000Z" } });
+    expect(control.json(0)).toEqual({ type: "sync", connection_ids: [], warm: expect.any(String), relay_pass: { state: "missing", enforce_at: "2027-01-01T00:00:00.000Z", mode: "grace" } });
     const client = await w.open("role=client");
-    expect(client.json(0)).toEqual({ type: "assigned", connection_id: expect.any(String), relay_pass: { state: "missing", enforce_at: "2027-01-01T00:00:00.000Z" } });
+    expect(client.json(0)).toEqual({ type: "assigned", connection_id: expect.any(String), relay_pass: { state: "missing", enforce_at: "2027-01-01T00:00:00.000Z", mode: "grace" } });
     // the alarm comes at the date, and from then the sockets let in without a pass go, the client with its PC
     expect(w.fake.state.alarm).not.toBeNull();
     const { connection_id } = client.json(0) as { connection_id: string };
