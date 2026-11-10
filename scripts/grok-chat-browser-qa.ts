@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
+import { SLEEP } from "./fixtures/sleep.ts";
 
 if (process.platform !== "linux") { console.log("SKIP Grok browser QA stand-in uses Linux /proc"); process.exit(0); }
 const root = mkdtempSync(join(tmpdir(), "herdr-grok-browser-"));
@@ -21,7 +22,7 @@ const user = (text: string) => event({ sessionUpdate: "user_message_chunk", cont
 const output = (text: string) => event({ sessionUpdate: "tool_call_update", toolCallId: "fictional-call", content: [{ type: "content", content: { type: "text", text } }], status: "completed" });
 writeFileSync(path, user("Show a fictional Grok conversation.") + event({ sessionUpdate: "tool_call", toolCallId: "fictional-call", _meta: { "x.ai/tool": { name: "read_file" } }, title: "Read fictional file", rawInput: { path: "fiction.txt" } }) + output("FIRST ".repeat(900) + "FIRST_END") + event({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Fictional Grok answer." } }));
 const executable = join(root, "grok");
-copyFileSync("/bin/sleep", join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
+copyFileSync(SLEEP, join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
 let workspace: string | undefined;
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;

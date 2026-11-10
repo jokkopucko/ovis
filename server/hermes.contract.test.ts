@@ -10,6 +10,7 @@ import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./he
 import type { ConversationPart, ConversationResponse } from "../shared/protocol.ts";
 import { forgetTranscriptState } from "./conversation.ts";
 import { hermesTerminalId, isHermesProcess, processHermesHome } from "./hermes.ts";
+import { SLEEP } from "../scripts/fixtures/sleep.ts";
 
 interface RunningServer {
   port: number;
@@ -358,7 +359,7 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("select
   ]);
   hermesStore(fallback, [{ id: fallbackSession, answer: "Answer from the bridge default" }]);
   const executable = join(root, "hermes");
-  copyFileSync("/bin/sleep", executable);
+  copyFileSync(SLEEP, executable);
   chmodSync(executable, 0o755);
   const workspaces: string[] = [];
   const servers: RunningServer[] = [];

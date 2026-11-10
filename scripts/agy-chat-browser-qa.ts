@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
+import { SLEEP } from "./fixtures/sleep.ts";
 
 if (process.platform !== "linux") { console.log("SKIP Agy process fixture requires Linux"); process.exit(0); }
 const root = mkdtempSync(join(tmpdir(), "herdr-agy-activity-"));
@@ -27,7 +28,7 @@ const add = (type: string, content = "", extra = {}) => {
   appendFileSync(path, JSON.stringify({ step_index, type, content, status: "DONE", ...extra }) + "\n");
 };
 const executable = join(root, "agy");
-copyFileSync("/bin/sleep", executable); chmodSync(executable, 0o755);
+copyFileSync(SLEEP, executable); chmodSync(executable, 0o755);
 let workspace: string | undefined;
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
