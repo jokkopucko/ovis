@@ -19,6 +19,9 @@ export interface SocketData {
   machineEvents?: MachineEventDocument;
   deviceId?: string;
   readOnly?: boolean;
+  /** let in by the open LAN alone, while nothing was paired (access.ts `via: "open"`): no device, token, sign-in or
+   * bridge token stands behind it, so it ends when the pairing gate closes (admit) */
+  open?: boolean;
   relay?: MachineRelay;
   /** another Ovis server reading this PC with its bridge token: it gets snapshots whole and applies its own sidebar rows (#2160) */
   bridge?: boolean;
@@ -46,12 +49,15 @@ interface ConnectionState {
   closing: boolean;
   stopMachineEvents?: () => void;
   revoked: boolean;
+  /** revoked because the pairing gate closed on a connection the open LAN had let in */
+  gated?: boolean;
   /** the connection's authority: observe connections cannot type or resize */
   mode: ClientRole;
   /** how often `mode` changed: a switch away and back during an await is still a change */
   roles: number;
   watches: Map<string, PaneWatch>;
   unwatchDevice?: () => void;
+  unwatchGate?: () => void;
   recheck?: ReturnType<typeof setTimeout>;
   /**
    * Frames larger than the whole budget, not counted as a backlog while they drain (#2566, #2573), oldest
@@ -75,7 +81,7 @@ function stateOf(client: Client): ConnectionState {
 }
 
 /** The data for a connection's upgrade: it starts to interact unless its access is read-only. */
-export function connectionData(fields: { machineEvents?: MachineEventDocument; relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number }): SocketData {
+export function connectionData(fields: { machineEvents?: MachineEventDocument; relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; open?: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number }): SocketData {
   const data: SocketData = { connectionId: crypto.randomUUID(), attached: new Map<string, { keepSize: boolean }>(), conversationInterests: new Set<string>(), conversationWatches: new Set<string>(), promptWatches: new Set<string>(), output: new Map(), ...fields };
   states.set(data, { closing: false, revoked: false, mode: fields.readOnly ? "observe" : "interact", roles: 0, watches: new Map<string, PaneWatch>() });
   return data;
@@ -258,13 +264,22 @@ export function createConnections({ clients, present, pending, devices, detachCl
 
   function authorizeSocket(client: Client): void {
     const state = stateOf(client);
+    if (state.gated) throw new HerdrError("pairing_required", "this PC now takes paired devices only: pair this device to go on");
     if (state.revoked) throw new HerdrError("device_revoked", "this device's access was revoked");
     if (client.data.readOnly || state.mode === "observe") throw new HerdrError("read_only", "this connection can only watch");
   }
 
-  /** Ends the connection when its device is revoked, at once for one revoked already: then it is not admitted. */
+  /**
+   * Ends the connection when its device is revoked, at once for one revoked already: then it is not admitted. One
+   * the open LAN let in ends when the pairing gate closes (the first device paired, the relay turned on), as its
+   * requests are refused from then on; it is not admitted either when the gate closed while its upgrade was pending.
+   */
   function admit(client: Client): boolean {
     const state = stateOf(client);
+    if (client.data.open) {
+      state.unwatchGate = devices.endWithGate(() => end(client, "gated"));
+      if (state.revoked) return false;
+    }
     if (client.data.deviceId) {
       state.unwatchDevice = devices.onRevoke(client.data.deviceId, () => end(client, "revoked"));
       // a role change while the upgrade was pending (a remote PC's relay dials first) told its listeners before this one
@@ -319,9 +334,10 @@ export function createConnections({ clients, present, pending, devices, detachCl
 
   /**
    * Ends the connection, each way as it always did: its output consumer stalled, its device was
-   * revoked, or its socket closed. A close follows the other two and runs as well.
+   * revoked (`gated`: the pairing gate closed on one the open LAN let in, which ends the same way under its
+   * own words), or its socket closed. A close follows the others and runs as well.
    */
-  function end(client: Client, reason: "stalled" | "revoked" | "closed"): void {
+  function end(client: Client, reason: "stalled" | "revoked" | "gated" | "closed"): void {
     const state = stateOf(client);
     state.stopMachineEvents?.(); state.stopMachineEvents = undefined;
     switch (reason) {
@@ -336,7 +352,10 @@ export function createConnections({ clients, present, pending, devices, detachCl
         client.close(OUTPUT_STALLED_CLOSE_CODE, "terminal output consumer stalled");
         return;
       }
-      case "revoked": {
+      case "revoked":
+      case "gated": {
+        const why = reason === "gated" ? "Pairing required" : "Device access revoked";
+        if (reason === "gated") state.gated = true;
         state.revoked = true;
         state.closing = true;
         killWatches(client);
@@ -344,14 +363,15 @@ export function createConnections({ clients, present, pending, devices, detachCl
         present.delete(client);
         detachClaimed(client);
         dropClaims(client);
-        client.data.relay?.close(1008, "Device access revoked");
-        client.close(1008, "Device access revoked");
+        client.data.relay?.close(1008, why);
+        client.close(1008, why);
         return;
       }
       case "closed": {
         for (const frame of state.excused?.frames ?? []) clearTimeout(frame.timer);
         state.excused = undefined;
         state.unwatchDevice?.();
+        state.unwatchGate?.();
         clearTimeout(state.recheck);
         state.closing = true;
         present.delete(client);

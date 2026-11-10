@@ -251,3 +251,41 @@ it("refuses pairing without a code to an open LAN window, which never hears of a
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+it("marks a socket that only the open LAN let in, one relayed to another PC too, and never one that holds the bridge token", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-open-mark-"));
+  const upstream = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch(request, instance) { return instance.upgrade(request) ? undefined : new Response(null, { status: 426 }); },
+    websocket: { message() {} },
+  });
+  const endpoint = spyOn(MachineManager.prototype, "endpoint").mockImplementation((id) =>
+    id === "remote" ? { url: `http://127.0.0.1:${upstream.port}`, token: "remote" } : undefined);
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", bridgeToken: "bridge-token", tailscaleOwner: null, sidecar: false });
+  const taken: { open?: boolean; bridge?: boolean; relay?: MachineRelay }[] = [];
+  const from = (address: string): ServerContext => ({
+    ...app.context, requestIP: () => ({ address }), timeout: () => {},
+    upgrade: (_request, options) => { taken.push(options.data); return true; },
+  });
+  const upgrade = async (ctx: ServerContext, path: string, headers: Record<string, string> = {}) => {
+    const response = await handleRequest(new Request(`http://127.0.0.1:${app.port}${path}`, { headers: { host: `127.0.0.1:${app.port}`, origin: `http://127.0.0.1:${app.port}`, ...headers } }), ctx);
+    expect(response).toBeUndefined();
+    return taken.at(-1)!;
+  };
+  try {
+    // another machine on the LAN while nothing is paired: the gate closing ends what it holds
+    const lan = from("192.168.0.20");
+    expect((await upgrade(lan, "/ws")).open).toBe(true);
+    const relayed = await upgrade(lan, "/ws?machine_id=remote");
+    expect([relayed.open, relayed.relay !== undefined]).toEqual([true, true]);
+    relayed.relay!.close();
+    // another Ovis server reading this PC over the address it is bound to: its bridge token let it in, whatever the gate
+    const bridged = await upgrade(lan, "/ws", { authorization: "Bearer bridge-token" });
+    expect([bridged.open, bridged.bridge]).toEqual([undefined, true]);
+    // this PC itself
+    expect((await upgrade(from("127.0.0.1"), "/ws")).open).toBeUndefined();
+  } finally {
+    app.stop(); endpoint.mockRestore(); upstream.stop(true);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

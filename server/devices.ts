@@ -285,6 +285,7 @@ export class DeviceStore {
   /** Sessions of a row, told when a `link` moves it to another key (onLinked). */
   private readonly relinks = new Map<string, Set<(sessionId: string) => void>>();
   private readonly revokeAllListeners = new Set<() => void>();
+  private readonly gateListeners = new Set<() => void>();
   private readonly pairings = new Set<(event: DevicePairedEvent, origin: readonly string[]) => void>();
   private readonly codeStarts = new Set<() => void>();
   private readonly removals = new Set<(event: DeviceRemovedEvent) => void>();
@@ -371,6 +372,23 @@ export class DeviceStore {
    */
   get gated(): boolean {
     return this.error !== null || this.gateClosedAt !== null || this.devices.length > 0;
+  }
+
+  /**
+   * Hears of the gate closing to strangers (`gated` turning true): the first device's cookie came back, or the
+   * relay was turned on. Told once, right after the call that closed it (save). Whoever the open LAN let in has
+   * no access from then on, and neither a later device nor a revoke opens the gate again. Never told of a gate
+   * that is closed already: endWithGate.
+   */
+  onGateClosed(listener: () => void): () => void {
+    this.gateListeners.add(listener);
+    return () => { this.gateListeners.delete(listener); };
+  }
+
+  /** The end of what the open LAN alone let in: `close` when the gate closes, at once when it is closed already. */
+  endWithGate(close: () => void): () => void {
+    if (this.gated) { close(); return () => {}; }
+    return this.onGateClosed(close);
   }
 
   /** Relay opt-in closes open LAN access before any outbound connection is made. */
@@ -818,7 +836,16 @@ export class DeviceStore {
   }
 
   private save(devices = this.devices, gateClosedAt = this.gateClosedAt): void {
+    const closes = !this.gated && (gateClosedAt !== null || devices.length > 0);
     writePrivateState(this.path, { gate_closed_at: gateClosedAt, devices });
+    // The write that closes the gate: onGateClosed. Told once the caller has set the store's own fields, which each
+    // does right after this returns, and before anything else of this process runs (no frame of a connection is
+    // read in between). Each on its own: one that throws ends neither the others nor the pairing that closed the gate.
+    if (closes) queueMicrotask(() => {
+      for (const listener of [...this.gateListeners]) {
+        try { listener(); } catch (error) { console.warn(`[devices] ending what the open LAN let in failed: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+    });
   }
 
   /** The drive member of `account` whose key is `key`, the only signer whose `add` or `remove` applies. */

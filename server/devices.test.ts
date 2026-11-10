@@ -20,6 +20,50 @@ async function relaySignature(key: CryptoKey, nonce: Uint8Array, serverId = "ser
     Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from(serverId)]))).toString("base64url");
 }
 
+describe("the gate closing", () => {
+  it("is told once, when the first device's cookie came back or the relay closed it, never for a later device or a revoke", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "gate-closed-")));
+    let told = 0;
+    const stop = store.onGateClosed(() => { told++; });
+    const phone = store.pair(store.startPairing().code, "Phone", "drive")!;
+    // an unconfirmed first pairing closes nothing: a cookie that never came back must not lock the LAN out
+    expect([store.gated, told]).toEqual([false, 0]);
+    // told after the call that closed the gate, when the store says it is closed; one that fails ends nothing else
+    const seen: boolean[] = [];
+    store.onGateClosed(() => { throw new Error("a teardown that failed"); });
+    store.onGateClosed(() => { seen.push(store.gated); });
+    const warned = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(store.match(phone.token)).toMatchObject({ id: phone.device.id });
+      expect([store.gated, told]).toEqual([true, 0]);
+      await Promise.resolve();
+      expect([told, seen, warned.mock.calls.length]).toEqual([1, [true], 1]);
+    } finally { warned.mockRestore(); }
+    const tablet = store.pair(store.startPairing().code, "Tablet", "drive")!;
+    store.match(tablet.token);
+    store.revokeAll();
+    store.closeGate();
+    await Promise.resolve();
+    expect(told).toBe(1);
+    stop();
+    // what the gate ends: at once when it is closed already
+    let ended = 0;
+    store.endWithGate(() => { ended++; })();
+    expect(ended).toBe(1);
+    const relayed = new DeviceStore(mkdtempSync(join(dir, "gate-closed-relay-")));
+    let closed = 0, unheard = 0;
+    relayed.onGateClosed(() => { closed++; });
+    relayed.onGateClosed(() => { unheard++; })();
+    let later = 0;
+    const stopLater = relayed.endWithGate(() => { later++; });
+    expect(later).toBe(0);
+    relayed.closeGate();
+    await Promise.resolve();
+    expect([relayed.gated, closed, unheard, later]).toEqual([true, 1, 0, 1]);
+    stopLater();
+  });
+});
+
 describe("ending a pairing", () => {
   it("leaves no six-digit code to redeem and ends a typed code bound to it", () => {
     const store = new DeviceStore(mkdtempSync(join(dir, "pair-end-")));

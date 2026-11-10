@@ -387,7 +387,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const issuedKey = presentedKeys.length === 0 && pathname === "/api/machines/events" ? newStreamKey() : null;
       const keys = issuedKey === null ? presentedKeys : [issuedKey];
       // a stream that came in through the open LAN is told nothing: every enrollment follows the write
-      // that closed the gate, so whoever holds it has no access left by the time there is news
+      // that closed the gate, which ends the stream (endWithGate below), so whoever held it has no access left
+      // by the time there is news
       const openAccess = access.level === "full" && access.via === "open";
       // a relay pairing waiting for approval reaches only a window that may approve it (server/relay/routes.ts):
       // driving, direct to this PC, and not a Portal visitor
@@ -404,7 +405,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         if (!approver) listener({ type: "relay-pairings", pairings: [] });
         return () => { stopPaired(); stopRemoved?.(); stopRelay?.(); };
       } };
-      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : portalRecheckMs !== undefined ? (close) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget, ownerAccess(access));
+      // a stream ends with what let it in: a device's revoke, the gate closing on one the open LAN let in, Portal's recheck
+      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : openAccess ? (close) => devices.endWithGate(close) : portalRecheckMs !== undefined ? (close) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget, ownerAccess(access));
       response.headers.set("cache-control", "no-store");
       if (issuedKey !== null && response.ok) response.headers.append("set-cookie", streamCookie(issuedKey, isSecureRequest(request)));
       return response;
@@ -428,7 +430,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot,
           (browser) => ctx.services.relayReceiptIds.scope(machineId, principal, browser));
         await relay.ready;
-        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...recheck }) });
+        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...(access.level === "full" && access.via === "open" && !bridgeAuthorized ? { open: true } : {}), ...recheck }) });
         if (upgraded) return undefined;
         relay.close();
       } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
@@ -465,7 +467,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         return () => { stopPaired(); stopRemoved?.(); stopRelay?.(); };
       } },
     } : undefined;
-    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }), ...recheck }) });
+    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, deviceId, readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }), ...recheck }) });
     if (upgraded) return undefined;
     return new Response("websocket upgrade required", { status: 426 });
   }

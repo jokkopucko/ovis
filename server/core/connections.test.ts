@@ -13,7 +13,7 @@ import type { ServerMessage } from "../../shared/protocol.ts";
 import type { SharedPreferences } from "../../shared/preferences.ts";
 import { backlog, type Client, connectionData, connectionOf, createConnections, send, setMachineEvents } from "./connections.ts";
 
-function harness({ deviceId, readOnly = false, relay, revokedAlready = false, store, machineEvents }: { deviceId?: string; readOnly?: boolean; relay?: MachineRelay; revokedAlready?: boolean; store?: DeviceStore; machineEvents?: MachineEventDocument } = {}) {
+function harness({ deviceId, readOnly = false, relay, revokedAlready = false, store, machineEvents, open = false }: { deviceId?: string; readOnly?: boolean; relay?: MachineRelay; revokedAlready?: boolean; store?: DeviceStore; open?: boolean; machineEvents?: MachineEventDocument } = {}) {
   const log: string[] = [];
   const revocations: (() => void)[] = [];
   const devices = store ?? {
@@ -25,7 +25,7 @@ function harness({ deviceId, readOnly = false, relay, revokedAlready = false, st
   } as unknown as DeviceStore;
   const pending = { close: () => log.push("pending closed") } as unknown as PendingInputs<Client, never>;
   const client = {
-    data: connectionData({ deviceId, readOnly, ...(relay ? { relay } : {}), ...(machineEvents ? { machineEvents } : {}) }),
+    data: connectionData({ deviceId, readOnly, ...(relay ? { relay } : {}), ...(machineEvents ? { machineEvents } : {}), ...(open ? { open: true } : {}) }),
     readyState: WebSocket.OPEN,
     close: (code?: number, reason?: string) => log.push(`closed ${code} ${reason}`),
     getBufferedAmount: () => 0,
@@ -240,6 +240,64 @@ it("revoking every device ends local and relayed device connections alike, and a
     const late = harness({ deviceId: phone.device.id, store });
     expect(late.admit(late.client)).toBe(false);
     expect(late.log.at(-1)).toBe("closed 1008 Device access revoked");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("ends a connection the open LAN let in once the gate closes, and admits none after", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-connections-gate-"));
+  try {
+    const store = new DeviceStore(root);
+    const relayed: string[] = [];
+    const relay = { close: () => relayed.push("relay closed") } as unknown as MachineRelay;
+    // another machine on the LAN while nothing is paired, and its connection to a remote PC through this one
+    const stranger = harness({ open: true, store });
+    const proxied = harness({ open: true, relay, store });
+    // let in another way (this PC itself, a token, a Tailscale login): not the gate's to end
+    const local = harness({ store });
+    // one that closed by itself before the gate did
+    const gone = harness({ open: true, store });
+    for (const each of [stranger, proxied, local, gone]) expect(each.admit(each.client)).toBe(true);
+    gone.end(gone.client, "closed");
+    gone.log.length = 0;
+    expect(stranger.mayType(stranger.client)).toBe(true);
+    // the first device: its cookie is taken only once it came back, and that write closes the gate
+    const phone = store.pair(store.startPairing().code, "Phone", "drive")!;
+    expect([store.gated, stranger.log]).toEqual([false, []]);
+    store.match(phone.token);
+    // told right after the call that closed the gate, with the store saying so
+    expect([store.gated, stranger.log]).toEqual([true, []]);
+    await Promise.resolve();
+    expect(stranger.log).toEqual(["detach claimed", "drop claims", "closed 1008 Pairing required"]);
+    expect(proxied.log).toEqual(["detach claimed", "drop claims", "closed 1008 Pairing required"]);
+    expect(relayed).toEqual(["relay closed"]);
+    expect([stranger.clients.has(stranger.client), stranger.present.has(stranger.client), stranger.mayType(stranger.client)]).toEqual([false, false, false]);
+    expect(() => stranger.authorizeSocket(stranger.client)).toThrow("pair this device");
+    expect([local.log, local.mayType(local.client), gone.log]).toEqual([[], true, []]);
+    // told once: a second device, and revoking them all, find no open connection left to end
+    const tablet = store.pair(store.startPairing().code, "Tablet", "drive")!;
+    store.match(tablet.token);
+    store.revokeAll();
+    await Promise.resolve();
+    expect(stranger.log).toHaveLength(3);
+    // an upgrade the open LAN passed just before the gate closed is not admitted
+    const late = harness({ open: true, store });
+    expect(late.admit(late.client)).toBe(false);
+    expect(late.log.at(-1)).toBe("closed 1008 Pairing required");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("ends an open connection when the relay is turned on, which closes the gate with no device paired", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-connections-gate-relay-"));
+  try {
+    const store = new DeviceStore(root);
+    const stranger = harness({ open: true, store });
+    expect(stranger.admit(stranger.client)).toBe(true);
+    store.closeGate();
+    await Promise.resolve();
+    expect(stranger.log).toEqual(["detach claimed", "drop claims", "closed 1008 Pairing required"]);
+    store.closeGate();
+    await Promise.resolve();
+    expect(stranger.log).toHaveLength(3);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
