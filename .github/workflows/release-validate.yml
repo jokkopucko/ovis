@@ -1,8 +1,8 @@
 name: Release validation
 # What a Release run takes as proof that its commit passed CI. A push to main already ran ci.yml on
 # that commit, so the reuse job asks scripts/release-ci-reuse.ts whether that run is green. On a
-# verified yes only Fast checks runs here, on GitHub's runner; ci.yml runs here whole when the answer
-# is anything else, and always with `revalidate`.
+# verified yes only Fast checks counts here, run on GitHub's runner beside the question; ci.yml runs
+# here whole when the answer is anything else, and always with `revalidate`.
 # The verdict job names which of the two validated the commit, and release.yml's publish job refuses
 # to tag without that name: a skipped, failed or cancelled job here can stop a release, never pass one.
 # Run by hand from main it is a dry run of the same decision, and publishes nothing.
@@ -70,16 +70,22 @@ jobs:
           else
             printf 'green=false\nrun=\n' >> "$GITHUB_OUTPUT"
           fi
-  # ci.yml's Fast checks once more, when main's run stands in for the rest. That run's own Fast checks
-  # ran where a push to main runs it, the self-hosted PC, whose container has no pwsh, no setfacl and
-  # no process of another user: the unit tests that need one skip themselves there. Here they run on
-  # GitHub's image whatever the runner variables say. The steps are ci.yml's `fast` job, the
-  # artifact's name aside: scripts/release-validate-workflow.test.ts fails when the two differ.
+  # ci.yml's Fast checks once more, for a release that main's run stands in for. That run's own Fast
+  # checks ran where a push to main runs it, the self-hosted PC, whose container has no pwsh, no
+  # setfacl and no process of another user: the unit tests that need one skip themselves there. Here
+  # they run on GitHub's image whatever the runner variables say. The steps are ci.yml's `fast` job,
+  # the artifact's name and the last step's answer aside: scripts/release-validate-workflow.test.ts
+  # fails when the two differ.
+  # It starts with the question, not after it: main's run may still be going, and these minutes
+  # would come on top of that wait. When the answer is no, ci.yml runs Fast checks of its own and
+  # this job's is not read, so it may fail without failing the run; the verdict then reads the
+  # answer its `passed` step writes, since a job that may fail reports success either way.
   fast:
     name: Fast checks (GitHub-hosted)
-    needs: reuse
-    # the other half of ci's condition below: a run that is not cancelled runs exactly one of the two
-    if: ${{ !cancelled() && !inputs.revalidate && needs.reuse.result == 'success' && needs.reuse.outputs.green == 'true' }}
+    if: ${{ !inputs.revalidate }}
+    continue-on-error: true
+    outputs:
+      passed: ${{ steps.passed.outputs.passed }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -104,6 +110,10 @@ jobs:
           git fetch --no-tags --depth=1 origin '+refs/tags/v*:refs/tags/v*' '+refs/tags/remote-v*:refs/tags/remote-v*'
           if [ -n "$BASE_SHA" ]; then git fetch --no-tags --depth=1 origin "$BASE_SHA" || true; fi
           bun scripts/release-guards.ts --base "$BASE_SHA"
+      # reached only when every step above passed
+      - id: passed
+        name: Say that Fast checks passed
+        run: echo "passed=true" >> "$GITHUB_OUTPUT"
       - name: Preserve check report and verification logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -140,7 +150,7 @@ jobs:
         name: Name what validated the commit
         env:
           CI_RESULT: ${{ needs.ci.result }}
-          FAST_RESULT: ${{ needs.fast.result }}
+          FAST_PASSED: ${{ needs.fast.outputs.passed }}
           REUSE_RESULT: ${{ needs.reuse.result }}
           REUSE_GREEN: ${{ needs.reuse.outputs.green }}
           REUSE_RUN: ${{ needs.reuse.outputs.run }}
@@ -148,10 +158,10 @@ jobs:
         run: |
           if [ "$CI_RESULT" = success ]; then
             validated_by=ci
-          elif [ "$CI_RESULT" = skipped ] && [ "$REVALIDATE" = false ] && [ "$REUSE_RESULT" = success ] && [ "$REUSE_GREEN" = true ] && [[ "$REUSE_RUN" =~ ^[1-9][0-9]*$ ]] && [ "$FAST_RESULT" = success ]; then
+          elif [ "$CI_RESULT" = skipped ] && [ "$REVALIDATE" = false ] && [ "$REUSE_RESULT" = success ] && [ "$REUSE_GREEN" = true ] && [[ "$REUSE_RUN" =~ ^[1-9][0-9]*$ ]] && [ "$FAST_PASSED" = true ]; then
             validated_by="main-run-$REUSE_RUN"
           else
-            echo "::error::Not validated: ci.yml ended '$CI_RESULT' in this run, and main's own run was not verified with Fast checks passed here (revalidate '$REVALIDATE', its job '$REUSE_RESULT', green '$REUSE_GREEN', run '$REUSE_RUN', Fast checks '$FAST_RESULT')." >&2
+            echo "::error::Not validated: ci.yml ended '$CI_RESULT' in this run, and main's own run was not verified with Fast checks passed here (revalidate '$REVALIDATE', its job '$REUSE_RESULT', green '$REUSE_GREEN', run '$REUSE_RUN', Fast checks passed '$FAST_PASSED')." >&2
             exit 1
           fi
           echo "Validated by $validated_by"

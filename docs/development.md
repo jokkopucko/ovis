@@ -803,7 +803,9 @@ after changing the staged session. Files, images, push and remote PCs are not pa
 4. Run **Actions → Release → Run workflow**, select `main`, and enter `X.Y.Z` without `v`.
    The CLI equivalent is `gh workflow run release.yml --ref main -f version=X.Y.Z`.
    Tick **revalidate** (`-f revalidate=true`) to run the whole CI in the Release run even when
-   main's own CI run already passed the commit.
+   main's own CI run already passed the commit. Run it once main's CI run of the release commit is
+   green and validation takes about four minutes (Fast checks alone); run earlier, it waits for that
+   run first.
 
 The workflow validates metadata, then requires the same unit, integration and browser checks
 as PRs to have passed on the exact `main` commit selected when the run starts. Only after that
@@ -821,15 +823,18 @@ job asks `scripts/release-ci-reuse.ts`, which says yes only when all of this hol
 
 A run still going is waited for, at most 40 minutes (main's run takes 15 to 30) and only while
 none of its jobs has ended without passing. Anything else is a no at once: no run for the commit,
-a run that waits behind another run of `main`, a third attempt, an answer from GitHub that cannot
-be read. On a no the Release run runs the whole CI itself, as it did before, and with
-**revalidate** it always does.
+a run that waits behind another run of `main`, a third attempt. An answer from GitHub that cannot
+be read is asked for twice more, five seconds apart, and is a no after the third. On a no the
+Release run runs the whole CI itself, as it did before, and with **revalidate** it always does.
 
-On a yes the Release run still runs Fast checks itself, always on GitHub's runner (**Fast checks
-(GitHub-hosted)**, the steps of `ci.yml`'s Fast checks). Main's run ran them on the self-hosted PC,
-where some unit tests skip themselves: the runner's container has no `pwsh`, no `setfacl` and no
-process of another user. Run again on GitHub's runner, those tests gate every release, and so
-does any other test that container comes to skip.
+A release that takes main's run still runs Fast checks itself, always on GitHub's runner (**Fast
+checks (GitHub-hosted)**, the steps of `ci.yml`'s Fast checks). Main's run ran them on the
+self-hosted PC, where some unit tests skip themselves: the runner's container has no `pwsh`, no
+`setfacl` and no process of another user. Run again on GitHub's runner, those tests gate every
+release, and so does any other test that container comes to skip. The job starts with the question
+about main's run, not after its answer, so its minutes do not come on top of a wait. When the
+answer is no, `ci.yml` runs Fast checks of its own and this job's outcome is not read: it may fail
+without failing the run.
 
 The **Verdict** job then names what validated the commit: `ci` when the whole CI passed in the
 Release run, or `main-run-<id>` when main's run was verified and Fast checks passed in the Release

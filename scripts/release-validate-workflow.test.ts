@@ -64,10 +64,13 @@ describe("release-validate.yml", () => {
     expect(JSON.stringify(wrapper)).not.toContain("secrets.");
   });
 
-  test("lets only the reuse job fail without failing the run", () => {
-    // on any other job or step, a failure there would no longer fail validate or publish
-    expect(carrying(wrapper)).toEqual(["reuse"]);
+  test("lets only the two jobs whose answer the verdict reads as an output fail without failing the run", () => {
+    // on any other job or step, a failure there would no longer fail validate or publish; these two
+    // report success when they fail, so the verdict reads what their last step wrote, never their result
+    expect(carrying(wrapper)).toEqual(["reuse", "fast"]);
     expect(reuse["continue-on-error"]).toBe(true);
+    expect(fast["continue-on-error"]).toBe(true);
+    expect(JSON.stringify(verdict)).not.toContain("needs.fast.result");
     expect(carrying(release)).toEqual([]);
   });
 
@@ -98,27 +101,37 @@ describe("release-validate.yml", () => {
     expect(reuse["timeout-minutes"]! * 60).toBeGreaterThanOrEqual(wait + 240);
   });
 
-  test("runs Fast checks itself, on GitHub's runner, exactly when ci.yml is skipped for main's run", () => {
+  test("runs Fast checks itself, on GitHub's runner, beside the question about main's run", () => {
     expect(fast.name).toBe("Fast checks (GitHub-hosted)");
-    expect(fast.needs).toBe("reuse");
-    // ci's condition below, turned around: neither runs in a cancelled run, one of the two in any other
-    expect(fast.if).toBe("${{ !cancelled() && !inputs.revalidate && needs.reuse.result == 'success' && needs.reuse.outputs.green == 'true' }}");
+    // not after the reuse job: main's run may still be going, and Fast checks would come on top of that wait
+    expect(fast.needs).toBeUndefined();
+    // with revalidate ci.yml runs its own, and nothing reads this one
+    expect(fast.if).toBe("${{ !inputs.revalidate }}");
     // never a runner variable: the self-hosted runner skips the tests this job is here for
     expect(fast["runs-on"]).toBe("ubuntu-24.04");
-    expect(fast.outputs).toBeUndefined();
+    // its answer: written by a step no failed step lets run
+    expect(fast.outputs).toEqual({ passed: "${{ steps.passed.outputs.passed }}" });
+    const passed = step(fast, (candidate) => candidate.id === "passed");
+    expect(passed.if).toBeUndefined();
+    expect(passed.run).toBe('echo "passed=true" >> "$GITHUB_OUTPUT"');
+    // after every check, and before the one step that runs whatever happened
+    const ids = fast.steps!.map((candidate) => candidate.id ?? candidate.name ?? candidate.run ?? candidate.uses);
+    expect(ids.indexOf("passed")).toBe(ids.indexOf("Release guards") + 1);
+    expect(fast.steps!.slice(0, ids.indexOf("passed")).every((candidate) => candidate.if === undefined)).toBe(true);
+    expect(fast.steps!.slice(ids.indexOf("passed") + 1).map((candidate) => candidate.if)).toEqual(["always()"]);
   });
 
   test("its Fast checks is ci.yml's, step for step", () => {
     const theirs = job(ciYml, "fast");
     const UPDATE = "release-validate.yml's `fast` job is ci.yml's Fast checks, which a release that takes main's run runs again on GitHub's runner: make the same change to both, so such a release still checks what every other does";
     const uploads = (candidate: Step): boolean => candidate.uses?.startsWith("actions/upload-artifact@") === true;
-    /** All of a job but where it runs and when, its artifact's name left out. */
-    const checks = ({ name: _name, needs: _needs, if: _if, "runs-on": _runner, ...rest }: CallJob): object =>
-      ({ ...rest, steps: rest.steps!.map((candidate) => (uploads(candidate) ? { ...candidate, with: { ...candidate.with, name: "" } } : candidate)) });
+    /** All of a job but where it runs and when, its artifact's name and this workflow's own answer left out. */
+    const checks = ({ name: _name, needs: _needs, if: _if, "runs-on": _runner, "continue-on-error": _may, outputs: _outputs, ...rest }: CallJob): object =>
+      ({ ...rest, steps: rest.steps!.filter((candidate) => candidate.id !== "passed").map((candidate) => (uploads(candidate) ? { ...candidate, with: { ...candidate.with, name: "" } } : candidate)) });
     expect(checks(fast), UPDATE).toEqual(checks(theirs));
     expect(fast["timeout-minutes"], UPDATE).toBe(theirs["timeout-minutes"]!);
     expect(fast.env, UPDATE).toEqual(theirs.env!);
-    expect(stepList(fast)).toEqual(["actions/checkout", "./.github/actions/setup-ci", "bun install --frozen-lockfile", "bun run check fast", "Release guards", "Preserve check report and verification logs"]);
+    expect(stepList(fast)).toEqual(["actions/checkout", "./.github/actions/setup-ci", "bun install --frozen-lockfile", "bun run check fast", "Release guards", "Say that Fast checks passed", "Preserve check report and verification logs"]);
     // what a copy cannot follow: a step that reads the jobs ci.yml's own needs, or an environment set for all of ci.yml
     expect(JSON.stringify(checks(theirs)), UPDATE).not.toMatch(/\b(?:needs|matrix|strategy)\./);
     expect([ciYml.env, (ciYml as { defaults?: unknown }).defaults], UPDATE).toEqual([wrapper.env, (wrapper as { defaults?: unknown }).defaults]);
@@ -146,7 +159,7 @@ describe("release-validate.yml", () => {
     expect(verdict.steps![0]!.id).toBe("verdict");
     expect(verdict.steps![0]!.if).toBeUndefined();
     expect(verdict.steps![0]!.env).toEqual({
-      CI_RESULT: "${{ needs.ci.result }}", FAST_RESULT: "${{ needs.fast.result }}", REUSE_RESULT: "${{ needs.reuse.result }}",
+      CI_RESULT: "${{ needs.ci.result }}", FAST_PASSED: "${{ needs.fast.outputs.passed }}", REUSE_RESULT: "${{ needs.reuse.result }}",
       REUSE_GREEN: "${{ needs.reuse.outputs.green }}", REUSE_RUN: "${{ needs.reuse.outputs.run }}", REVALIDATE: "${{ inputs.revalidate }}",
     });
   });
@@ -323,19 +336,21 @@ describe.skipIf(process.platform === "win32")("the verdict", () => {
   const guard = publish.steps![0]!.run!;
   const RESULTS = ["success", "failure", "cancelled", "skipped", ""];
   interface Case { ci: string; fast: string; reuse: string; green: string; run: string; revalidate: string }
-  const decide = (c: Case) => runStep(script, { CI_RESULT: c.ci, FAST_RESULT: c.fast, REUSE_RESULT: c.reuse, REUSE_GREEN: c.green, REUSE_RUN: c.run, REVALIDATE: c.revalidate });
+  /** `fast`: what Fast checks' `passed` step wrote, "true" or nothing (it failed, was cancelled or did not run). */
+  const decide = (c: Case) => runStep(script, { CI_RESULT: c.ci, FAST_PASSED: c.fast, REUSE_RESULT: c.reuse, REUSE_GREEN: c.green, REUSE_RUN: c.run, REVALIDATE: c.revalidate });
+  const PASSED = ["true", "", "false", "TRUE", "success"];
   const publishes = async (validatedBy: string): Promise<boolean> => (await runStep(guard, { VALIDATED_BY: validatedBy })).code === 0;
   /** What the verdict job hands release.yml: the output of a step that passed, nothing from one that failed. */
   const handed = (result: { code: number; output: string }): string => (result.code === 0 ? /^validated_by=(.*)\n$/.exec(result.output)?.[1] ?? "" : "");
   /** Main's run verified: ci.yml skipped for it, and Fast checks passed in this run. */
-  const yes: Case = { ci: "skipped", fast: "success", reuse: "success", green: "true", run: "42426987381", revalidate: "false" };
-  /** No verified run: ci.yml runs in this run, and Fast checks of its own is skipped. */
-  const no: Case = { ...yes, fast: "skipped", green: "false", run: "" };
+  const yes: Case = { ci: "skipped", fast: "true", reuse: "success", green: "true", run: "42426987381", revalidate: "false" };
+  /** No verified run: ci.yml runs in this run; Fast checks ran beside the question and passed too. */
+  const no: Case = { ...yes, green: "false", run: "" };
 
   test("names ci.yml when it passed in this run, whatever the reuse job and Fast checks said", async () => {
     const cases: Case[] = [];
     for (const reuseResult of RESULTS) {
-      for (const fastResult of RESULTS) {
+      for (const fastResult of PASSED) {
         for (const [green, run] of [["true", "42426987381"], ["false", ""], ["", ""]] as const) {
           for (const revalidate of ["false", "true"]) cases.push({ ci: "success", fast: fastResult, reuse: reuseResult, green, run, revalidate });
         }
@@ -351,18 +366,17 @@ describe.skipIf(process.platform === "win32")("the verdict", () => {
   });
 
   test("says what was missing when it refuses", async () => {
-    const result = await decide({ ...yes, fast: "failure" });
+    const result = await decide({ ...yes, fast: "" });
     expect([result.code, result.output]).toEqual([1, ""]);
-    expect(result.log).toBe("::error::Not validated: ci.yml ended 'skipped' in this run, and main's own run was not verified with Fast checks passed here (revalidate 'false', its job 'success', green 'true', run '42426987381', Fast checks 'failure').\n");
+    expect(result.log).toBe("::error::Not validated: ci.yml ended 'skipped' in this run, and main's own run was not verified with Fast checks passed here (revalidate 'false', its job 'success', green 'true', run '42426987381', Fast checks passed '').\n");
   });
 
   // release.yml's table of what can happen, each row with what publish may do
   for (const [name, c, validatedBy] of [
     ["main's run verified, Fast checks passed here, ci.yml skipped", yes, "main-run-42426987381"],
-    ["main's run verified, Fast checks failed here", { ...yes, fast: "failure" }, ""],
-    ["main's run verified, the run cancelled while Fast checks ran", { ...yes, fast: "cancelled" }, ""],
-    ["main's run verified, the run cancelled before Fast checks started", { ...yes, fast: "skipped" }, ""],
-    ["main's run verified, Fast checks with no result", { ...yes, fast: "" }, ""],
+    ["main's run verified, Fast checks failed, was cancelled or never ran here (it wrote no answer)", { ...yes, fast: "" }, ""],
+    ["main's run verified, Fast checks' result where its answer should be", { ...yes, fast: "success" }, ""],
+    ["main's run verified, Fast checks' answer in another spelling", { ...yes, fast: "TRUE" }, ""],
     ["no verified run, ci.yml passed", { ...no, ci: "success" }, "ci"],
     ["no verified run, ci.yml failed", { ...no, ci: "failure" }, ""],
     ["no verified run, the run cancelled while ci.yml ran", { ...no, ci: "cancelled" }, ""],
@@ -370,17 +384,18 @@ describe.skipIf(process.platform === "win32")("the verdict", () => {
     ["the reuse job failed, ci.yml passed", { ...no, ci: "success", reuse: "failure", green: "" }, "ci"],
     ["the reuse job failed, ci.yml failed", { ...no, ci: "failure", reuse: "failure", green: "" }, ""],
     ["the reuse job timed out with no answer, and the run was cancelled before ci.yml started", { ...no, reuse: "cancelled", green: "" }, ""],
-    ["Fast checks passed here, without a verified run", { ...no, fast: "success" }, ""],
+    ["Fast checks passed here, without a verified run", no, ""],
+    ["no verified run, Fast checks failed here, ci.yml passed with Fast checks of its own", { ...no, ci: "success", fast: "" }, "ci"],
     ["ci.yml failed although main's run was verified and Fast checks passed", { ...yes, ci: "failure" }, ""],
     ["ci.yml cancelled although main's run was verified and Fast checks passed", { ...yes, ci: "cancelled" }, ""],
-    ["ci.yml passed although Fast checks failed here", { ...yes, ci: "success", fast: "failure" }, "ci"],
+    ["ci.yml passed although Fast checks failed here", { ...yes, ci: "success", fast: "" }, "ci"],
     ["a yes from a reuse job that did not succeed", { ...yes, reuse: "failure" }, ""],
     ["a yes without a run id", { ...yes, run: "" }, ""],
     ["a run id without a yes", { ...yes, green: "" }, ""],
     ["revalidate, and ci.yml passed", { ...no, ci: "success", revalidate: "true" }, "ci"],
     ["revalidate, and ci.yml failed", { ...no, ci: "failure", revalidate: "true" }, ""],
     ["revalidate, and ci.yml skipped although a run is named and Fast checks passed", { ...yes, revalidate: "true" }, ""],
-    ["everything skipped", { ci: "skipped", fast: "skipped", reuse: "skipped", green: "", run: "", revalidate: "false" }, ""],
+    ["everything skipped", { ci: "skipped", fast: "", reuse: "skipped", green: "", run: "", revalidate: "false" }, ""],
     ["nothing known", { ci: "", fast: "", reuse: "", green: "", run: "", revalidate: "" }, ""],
   ] as const) {
     test(`${name}: ${validatedBy ? `validated by ${validatedBy}` : "not validated, nothing is published"}`, async () => {
@@ -398,7 +413,7 @@ describe.skipIf(process.platform === "win32")("the verdict", () => {
   test("writes validated_by in those two cases only, for every combination of results", async () => {
     const cases: Case[] = [];
     for (const ciResult of RESULTS) {
-      for (const fastResult of RESULTS) {
+      for (const fastResult of PASSED) {
         for (const reuseResult of RESULTS) {
           for (const green of ["true", "false", "", "TRUE"]) {
             for (const run of ["42426987381", "", "0", "42a", "4 2", "-1"]) {
@@ -414,7 +429,7 @@ describe.skipIf(process.platform === "win32")("the verdict", () => {
     const named = { ci: 0, main: 0 };
     for (const [index, c] of cases.entries()) {
       const { code, output } = results[index]!;
-      const verified = c.ci === "skipped" && c.fast === "success" && c.reuse === "success" && c.green === "true" && c.run === "42426987381" && c.revalidate === "false";
+      const verified = c.ci === "skipped" && c.fast === "true" && c.reuse === "success" && c.green === "true" && c.run === "42426987381" && c.revalidate === "false";
       const expected = c.ci === "success" ? "validated_by=ci\n" : verified ? "validated_by=main-run-42426987381\n" : "";
       if (output !== expected || (code === 0) !== (expected !== "")) wrong.push(`${JSON.stringify(c)}: exit ${code}, wrote ${JSON.stringify(output)}`);
       if (output === "validated_by=ci\n") named.ci += 1;
