@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Locator, type Page } from "playwright-core";
 import { DEMO_PUSH } from "../site/demo/fixtures.ts";
+import { JA } from "../src/lib/i18n.ja.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
@@ -419,6 +420,53 @@ async function checkFailedRepairAtLargeText(browser: Browser, origin: string, wi
   } finally { await context.close(); }
 }
 
+/**
+ * The fault's line at the largest interface text in Japanese, whose repair label is the longest (#3498): on a 320px
+ * phone the label has no room beside Close even with the sentence cut to nothing, so it wraps inside its button and
+ * Close stays on the screen at the line's right end, a finger's size, and closes the line. At 390 the label fits: the
+ * button keeps its one line and its height.
+ */
+async function checkLineAtLargeText(browser: Browser, origin: string, width: number): Promise<void> {
+  const viewport = { width, height: width === 320 ? 568 : 844 };
+  const tag = `${width} ja line at 20px`;
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "ja-JP", permissions: ["notifications"] });
+  await context.addInitScript(([settings, key]) => { localStorage.setItem("ovis:settings", settings); localStorage.setItem(key, "fresh"); }, [JSON.stringify({ language: "ja", theme: "light", alertsOn: true, uiFontSize: 20 }), QA_KEY] as const);
+  try {
+    const page = await context.newPage();
+    await page.goto(origin);
+    await page.locator(".conn-live").waitFor();
+    await waitForCount(page, "POST /api/push/status", 1);
+    await page.evaluate(() => window.__push.holdSubscription("retired"));
+    await cameToFront(page);
+    const notice = page.locator(NOTICE);
+    await notice.waitFor();
+    const close = notice.getByRole("button", { name: JA["Dismiss"]!, exact: true });
+    const fits = async (state: string, name: string): Promise<void> => {
+      const action = notice.getByRole("button", { name, exact: true });
+      const line = (await notice.boundingBox())!;
+      const actionBox = (await action.boundingBox())!;
+      const closeBox = (await close.boundingBox())!;
+      assert.ok(closeBox.x >= actionBox.x + actionBox.width && closeBox.x + closeBox.width <= viewport.width, `${tag}, ${state}: Close is whole on the screen after the button (${Math.round(closeBox.x)} to ${Math.round(closeBox.x + closeBox.width)} of ${viewport.width}px)`);
+      assert.ok(line.x + line.width - (closeBox.x + closeBox.width) < 24, `${tag}, ${state}: Close keeps to the line's right end`);
+      assert.ok(await touchSized(close) && await touchSized(action), `${tag}, ${state}: the button and Close are finger-sized targets`);
+      assert.ok(await action.evaluate((el) => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight), `${tag}, ${state}: the label stays inside its button`);
+      assert.ok(await noSidewaysScroll(page) && await notice.evaluate((el) => el.scrollWidth <= el.clientWidth), `${tag}, ${state}: nothing reaches past the screen`);
+      if (width > 320) assert.ok(actionBox.height < 45, `${tag}, ${state}: a label that fits keeps its one line (${Math.round(actionBox.height)}px tall)`);
+    };
+    await fits("rest", JA["Turn alerts on again"]!);
+    if (EVIDENCE) await page.screenshot({ path: join(EVIDENCE, `push-health-${width}-light-ja-20px.png`) });
+    // while the repair runs the button says so, and still leaves Close its place
+    await page.evaluate(() => window.__push.hold("POST /api/push/subscribe"));
+    await notice.getByRole("button", { name: JA["Turn alerts on again"]!, exact: true }).tap();
+    await notice.getByRole("button", { name: JA["Turning alerts on…"]!, exact: true }).waitFor();
+    await fits("repairing", JA["Turning alerts on…"]!);
+    await close.tap();
+    await notice.waitFor({ state: "detached" });
+    await page.evaluate(() => window.__push.release("POST /api/push/subscribe"));
+    console.log(`PASS ${tag}: Close on the screen at the line's right end beside the repair button, and it closes the line`);
+  } finally { await context.close(); }
+}
+
 const app = mkdtempSync(join(tmpdir(), "herdr-push-health-demo-"));
 try {
   await buildDemoApp(app);
@@ -447,6 +495,7 @@ try {
         await run(browser, origin, width, theme, language);
       }
       for (const width of [320, PHONE.width, DESKTOP.width]) await checkFailedRepairAtLargeText(browser, origin, width);
+      for (const width of [320, PHONE.width]) await checkLineAtLargeText(browser, origin, width);
     } finally { await browser.close(); }
   } finally { server.stop(true); }
   if (EVIDENCE) {

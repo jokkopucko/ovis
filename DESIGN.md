@@ -4409,6 +4409,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   a look where the server answers for a held subscription with no fault, alerts turned off or
   the device locking ends the dismissal; a look that proves nothing keeps it. Settings keeps
   showing the fault even while the line is dismissed.
+- Where the button's label has no room beside the dismiss button even with the sentence cut to
+  nothing (a 320 px phone in Japanese at the 20 px interface text), the label wraps inside its
+  button, which grows in height; the dismiss button keeps its size and its place at the line's
+  right end. Wherever the label fits, the line is unchanged.
 - A failed **Turn alerts on again** replaces the fault sentence with its reason: the browser
   would not make a push subscription (in Brave, turn on **Use Google services for push
   messaging** in its privacy settings), the page's service worker is not running (reload, then
