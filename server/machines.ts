@@ -131,7 +131,7 @@ interface JobState {
   auto: boolean;
   /** the connect an install ends with: it has no dialog to show a choice in */
   fromInstall?: boolean;
-  /** the socket chosen in this setup is the default session's own (prepare): the PC is saved with none chosen */
+  /** the socket chosen in this setup is the default session's own (prepare): the PC is saved without it (setup) */
   defaultSocket?: boolean;
   public: SetupJob;
   abort: AbortController;
@@ -1307,10 +1307,11 @@ export class MachineManager {
         runtime.move = undefined;
         const left = { target: runtime.machine.target, error: runtime.machine.error, herdr: runtime.machine.herdr, snapshot: runtime.machine.snapshot, ownOvisAt: runtime.ownOvisAt, finishes: runtime.finishes.copy() };
         try {
-          // The default session chosen by its socket is saved as no choice: a PC pinned to that socket would stop at
-          // "no longer running" after its reboot, where one saved without it starts herdr by itself
+          // The default session chosen by its socket is saved as herdr to start there when absent, never as that socket:
+          // a PC pinned to the socket would stop at "no longer running" after its reboot, and one saved with no choice
+          // at all would be asked again whenever another session started there before the default one
           let saved = target;
-          if (job.defaultSocket) { saved = { ...target }; delete saved.herdr_socket; }
+          if (job.defaultSocket) { saved = { ...target, start_new_herdr: true }; delete saved.herdr_socket; }
           runtime.machine.target = saved;
           if (move) {
             // what went wrong at the address it left is not this one's: a read there clears it as any read does
@@ -1322,8 +1323,9 @@ export class MachineManager {
             if (move.snapshot) this.publish(runtime, move.snapshot, false, move.snapshotServer); else runtime.machine.snapshot = null;
           }
           if (runtime.machine.herdr_profile_id) {
-            this.profileState.allowConnection(runtime.machine.herdr_profile_id, target);
-            if (job.installationApproved) this.profileState.approve(runtime.machine.herdr_profile_id, target);
+            // what the PC is saved with, not what this setup asked for: the catalog's next refresh reads the choice back
+            this.profileState.allowConnection(runtime.machine.herdr_profile_id, saved);
+            if (job.installationApproved) this.profileState.approve(runtime.machine.herdr_profile_id, saved);
           }
           if (switchingSession) this.machines.set(machineId, runtime);
           this.persist();
@@ -1503,9 +1505,11 @@ export class MachineManager {
     const { host, inspection } = await detectHost(ssh, session, target.herdr_socket);
     if (job) job.defaultSocket = !session && !!target.herdr_socket && inspection.expectedSocket === inspection.defaultSocket;
     // the account's herdr sessions by the confined rule (server/herdr-discovery.ts), for when no Ovis there lists them
+    // listedHere: that PC could list them: only this app's runtime there applies the rule (without one, none are listed)
+    let listedHere = false;
     const localSessions = async () => {
       let sessions: FoundHerdrSession[] = [];
-      try { sessions = await host.discoverSessions?.(ssh, inspection) ?? []; }
+      try { sessions = await host.discoverSessions?.(ssh, inspection) ?? []; listedHere = !!host.discoverSessions && inspection.bundleReady; }
       catch (error) {
         // the SSH connection itself failed: said as that, never as a PC with no sessions
         if (!(error instanceof Error) || !ssh.connected()) throw error;
@@ -1534,14 +1538,15 @@ export class MachineManager {
     const candidates = inspection.descriptors.filter((d) => d?.managed_remote === false && typeof d.socket_path === "string" && d.socket_path !== expectedSocket);
     // what already serves the expected socket (a live bridge registered for it, or herdr answering there) is connected as
     // before: a saved PC that reconnects to it is never stopped by a choice nobody asked for. Asked only when there is a
-    // choice to offer, the live registration first: the socket's probe (a command on that PC) only when none is live
-    const servedAlready = async () => {
-      for (const d of inspection.descriptors) if (d.socket_path === expectedSocket && Number.isSafeInteger(d.pid) && d.pid > 0 && await host.alive(ssh, d.pid)) return true;
+    // choice to offer, the live registration first: the socket's probe (a command on that PC) only when none is live.
+    // Says what serves it: this app's bridge, herdr answering by the rule, or no more than herdr's own socket being there
+    const servedAlready = async (): Promise<false | "bridge" | "herdr" | "socket"> => {
+      for (const d of inspection.descriptors) if (d.socket_path === expectedSocket && Number.isSafeInteger(d.pid) && d.pid > 0 && await host.alive(ssh, d.pid)) return "bridge";
       const status = await host.chosenSocketStatus?.(ssh, inspection, expectedSocket);
-      if (status !== null && status !== undefined) return status === "usable";
+      if (status !== null && status !== undefined) return status === "usable" && "herdr";
       // the bundle there is too old (or missing) to apply the rule: a socket of this account's at herdr's own path is
       // taken as served, so the PC connects as before this choice existed (its bridge, once started, checks herdr itself)
-      return (await ssh.run(`s=${shellQuote(expectedSocket)}; test ! -L "$s" && test -S "$s" && test "$(stat -c %u "$s" 2>/dev/null || stat -f %u "$s")" = "$(id -u)" && echo served || true`)).trim() === "served";
+      return (await ssh.run(`s=${shellQuote(expectedSocket)}; test ! -L "$s" && test -S "$s" && test "$(stat -c %u "$s" 2>/dev/null || stat -f %u "$s")" = "$(id -u)" && echo served || true`)).trim() === "served" && "socket";
     };
     // The core adapter is not a TUI socket. Discover the account's own registered Ovis and prove
     // its loopback endpoint before offering it; an explicit selection is checked anew on each try.
@@ -1556,8 +1561,9 @@ export class MachineManager {
       const found: FoundOvis[] = [];
       const sessions = new Map<string, FoundHerdrSession>();
       // answered: one of them proved itself through the tunnel; unlisted: one did not list the account's herdr sessions
-      // (an older server, or one not answering), so they are found on the PC itself before the choice is offered
-      let answered = false, unlisted = false;
+      // (an older server, or one not answering), so they are found on the PC itself before the choice is offered;
+      // named: one did list them in its answer (none running is a list too)
+      let answered = false, unlisted = false, named = false;
       if (target.own_ovis) {
         const chosen = inspection.descriptors.find((d) => d?.managed_remote === false && d.socket_path === target.own_ovis);
         if (!chosen || !Number.isSafeInteger(chosen.pid) || chosen.pid <= 0 || !await host.alive(ssh, chosen.pid)) throw await ownOvisGone();
@@ -1577,7 +1583,7 @@ export class MachineManager {
           answered = true;
           const listed = proved.identity.found_herdr_sessions;
           if (listed === undefined) unlisted = true;
-          else if (listed.length) for (const row of parseFoundHerdrSessions(listed)) sessions.set(row.socket_path, row);
+          else { if (listed.length) for (const row of parseFoundHerdrSessions(listed)) sessions.set(row.socket_path, row); named = true; }
         } catch (error) {
           if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw error;
           // A stale or inaccessible registration grants no connection and no permission to start anything. A live one of
@@ -1598,12 +1604,26 @@ export class MachineManager {
         if (!answered) throw !job || job.auto ? new Error(OWN_OVIS_UNANSWERED) : await offer(OWN_OVIS_UNANSWERED);
         expectedSocket = target.own_ovis;
       } else if (found.length) {
+        const choice = answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED;
         // beside a herdr that already runs there, the choice is offered only with that herdr among its sessions: without
         // it the card could not choose what the PC would connect to unasked, so it connects to it as before
-        if (adding && await servedAlready()) {
-          if (unlisted) { for (const row of await localSessions()) sessions.set(row.socket_path, row); unlisted = false; }
-          if (sessions.has(expectedSocket)) throw await offer(answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED);
-        } else throw await offer(answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED);
+        const served = adding && await servedAlready();
+        if (!served) throw await offer(choice);
+        if (unlisted) { for (const row of await localSessions()) sessions.set(row.socket_path, row); unlisted = false; }
+        // Where no runtime of this app is there to check it, herdr's own socket being there is all that says herdr runs.
+        // (Behind a bridge of this app the PC connects as before: chosen where nothing can check it, a socket never
+        // reuses its bridge.)
+        if (served === "socket" && !sessions.has(expectedSocket)) {
+          // an Ovis that names the account's sessions applied the rule itself: the socket, not one of them, is what a
+          // stopped herdr left, and the PC is asked as one where no herdr runs
+          if (named) throw await offer(choice);
+          // Nothing could list them (the Ovis that answered is an older one, which names none): the socket is offered as
+          // the session it is, so that PC's Ovis is not passed over without a word. Chosen, it is a chosen socket like any
+          // other: the bridge started for it checks it and starts no herdr in its place. Not beside an Ovis that does not
+          // answer: that PC connects as before
+          if (answered && !listedHere) sessions.set(expectedSocket, { socket_path: expectedSocket, ...(session ? { session } : {}), label: session ?? "Default session" });
+        }
+        if (sessions.has(expectedSocket)) throw await offer(choice);
       }
     }
     // what the PC's own Ovis said is read anew on every try: it may have been updated or replaced since

@@ -23,7 +23,7 @@ const waits = [...quiet, "server error later"];
 // enter, or another socket than the one the server reports; or in a folder another account could swap: outside the
 // account's own roots, or below a folder others may write or another account owns
 const confinement = ["socket link", "not a socket", "open folder", "other socket id", "outside home", "writable parent", "foreign parent", "foreign root parent", "runtime dir"];
-it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "default herdr installed", "unbridged herdr", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect", "unanswered other name", ...confinement])("chooses the PC's own core server: %s", async (outcome) => {
+it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "default herdr installed", "default herdr older peer", "unbridged herdr", "herdr stopped, no bundle", "older peer, no bundle", "older peer, no bundle, bridged", "unanswered, no bundle", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect", "unanswered other name", ...confinement])("chooses the PC's own core server: %s", async (outcome) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "machine-core-choice-")));
   const id = "12345678-1234-1234-1234-123456789abc";
   // the core adapter's socket in its server's own state folder (server/herdr-core/runtime.ts), as startRuntime leaves it
@@ -62,7 +62,13 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
   // default herdr: that herdr also answers at its socket, so the PC's own Ovis lists it among the account's sessions
   // (chosen: by its socket on the card of a PC being added; installed: met by the connect an install ends with)
   const beside = outcome.startsWith("default herdr");
-  const bridged = outcome === "default bridge" || beside;
+  // no bundle: this app's runtime is not on that PC, so nothing there can list the account's sessions by the rule, and
+  // herdr's own socket is all that says herdr runs there (bridged: this app's bridge of another time still serves it;
+  // herdr stopped: the Ovis there, which names the sessions that run, does not name it)
+  const bare = outcome.includes("no bundle");
+  const bridged = outcome === "default bridge" || beside || outcome.endsWith("bridged");
+  // an older Ovis there, which names no herdr sessions in its answer
+  const older = outcome.startsWith("older peer") || outcome === "default herdr older peer";
   // and this app's bridge serves the account's named session too, for a setup that chooses it
   const workBridge = { ...bridge, socket_path: join(dir, ".config/herdr/sessions/work/herdr.sock"), port: 34567, token: "c".repeat(64) };
   const listedHere = beside ? [bridge, workBridge, descriptor] : bridged ? [bridge, descriptor] : [descriptor];
@@ -77,7 +83,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
   const herdr = quiet.includes(outcome) ? undefined : Bun.listen({ unix: sessions[0]!.socket_path, socket: { data() {} } });
   // unbridged herdr: herdr answers at the PC's own socket with no bridge in front yet (right after an app update, before
   // this app's runtime is there again), beside the core server
-  const tui = outcome === "unbridged herdr" || beside ? Bun.listen({ unix: join(dir, ".config/herdr/herdr.sock"), socket: { data() {} } }) : undefined;
+  const tui = outcome === "unbridged herdr" || beside || bare ? Bun.listen({ unix: join(dir, ".config/herdr/herdr.sock"), socket: { data() {} } }) : undefined;
   if (!herdr) sessions.length = 0;
   if (beside) sessions.push({ socket_path: bridge.socket_path, label: "Default session" } as typeof sessions[number]);
   const runtimeDir = join(dir, "runtime");
@@ -85,7 +91,9 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
   symlinkSync(process.execPath, join(runtimeDir, "bin/bun"));
   symlinkSync(import.meta.dir, join(runtimeDir, "server"));
   const relays: ReturnType<typeof Bun.serve>[] = [];
-  let selected = false, starts = 0, installs = 0, answering = !quiet.includes(outcome);
+  let selected = false, starts = 0, installs = 0, answering = !quiet.includes(outcome) && outcome !== "unanswered, no bundle";
+  // what the last bridge start was asked for
+  let startedWith: Parameters<typeof posixHost.start>[1] | undefined;
   const commands: string[] = [];
   const realFetch = globalThis.fetch;
   const mocks = [
@@ -102,14 +110,18 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
       return out;
     }),
     spyOn(posixHost, "herdrVersion").mockResolvedValue("herdr 0.9.0"),
-    // as the PC answers: a chosen socket is the one its bridge registers, beside the default session's own
-    spyOn(posixHost, "inspect").mockImplementation(async (_ssh, _session, chosen) => ({ platform: "linux-x64", home: dir, herdrPath: "/fixture/herdr", expectedSocket: chosen ?? bridge.socket_path, defaultSocket: bridge.socket_path, bundleReady: outcome !== "unbridged herdr", bundleOlder: false, descriptors: listedHere, runtimeDir, registryDir: registry })),
+    // as the PC answers: a chosen socket is the one its bridge registers, beside the own socket of the session named
+    // (the default session's when none is)
+    spyOn(posixHost, "inspect").mockImplementation(async (_ssh, session, chosen) => {
+      const own = session ? join(dir, ".config/herdr/sessions", session, "herdr.sock") : bridge.socket_path;
+      return { platform: "linux-x64", home: dir, herdrPath: "/fixture/herdr", expectedSocket: chosen ?? own, defaultSocket: own, bundleReady: outcome !== "unbridged herdr" && !bare, bundleOlder: false, descriptors: listedHere, runtimeDir: bare ? join(dir, "no-runtime") : runtimeDir, registryDir: registry };
+    }),
     spyOn(posixHost, "descriptors").mockResolvedValue(listedHere),
     // default herdr: the fixture's sockets answer no herdr request, so a chosen one is said usable as a running herdr's is
     ...(beside ? [spyOn(posixHost, "chosenSocketStatus").mockResolvedValue("usable")] : []),
     spyOn(posixHost, "alive").mockImplementation(async () => !selected || outcome !== "stopped after proof"),
     spyOn(posixHost, "installBundle").mockImplementation(async () => { installs++; }),
-    spyOn(posixHost, "start").mockImplementation(async () => { starts++; throw new Error("must not start herdr"); }),
+    spyOn(posixHost, "start").mockImplementation(async (_ssh, options) => { starts++; startedWith = options; throw new Error("must not start herdr"); }),
     spyOn(SshConnection.prototype, "forward").mockImplementation(async (port, remotePort) => {
       const served = remotePort === bridge.port && bridged ? bridge : remotePort === workBridge.port && beside ? workBridge : descriptor;
       expect(remotePort).toBe(served.port);
@@ -125,7 +137,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
           }
           if (selected && outcome === "wrong token") return new Response(null, { status: 401 });
           if (selected && outcome === "redirect") return Response.redirect("http://127.0.0.1:1/");
-          return Response.json({ ...descriptor, pid: selected && outcome === "wrong pid" ? process.pid + 1 : process.pid, managed_remote: selected && outcome === "managed", socket_id: selected && outcome === "other socket id" ? "1:2" : socketId(), herdr: { protocol: 22, version: "0.1.17", runtime: selected && outcome === "wrong runtime" ? "herdr" : "herdr-core" }, ...(outcome === "older peer" ? {} : { found_herdr_sessions: sessions }),
+          return Response.json({ ...descriptor, pid: selected && outcome === "wrong pid" ? process.pid + 1 : process.pid, managed_remote: selected && outcome === "managed", socket_id: selected && outcome === "other socket id" ? "1:2" : socketId(), herdr: { protocol: 22, version: "0.1.17", runtime: selected && outcome === "wrong runtime" ? "herdr" : "herdr-core" }, ...(older ? {} : { found_herdr_sessions: sessions }),
             // newer bundle: the chosen Ovis was updated past this app since it was proven
             ...(selected && outcome === "newer bundle" && !discovering ? { bundle_version: String(Number(REMOTE_BUNDLE_VERSION) + 1) } : {}) });
         }
@@ -146,8 +158,16 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
   });
   // auto: a reconnect or an update that asks nobody; false, a setup the user started in its dialog
   const run = (request: SetupRequest, auto = true) => settle(() => manager.setup({ ...request, machine_id: id, update_remote: true }, { auto }));
+  // a PC being added tells no subscriber when its setup stops for approval: its phase is read until it settles
+  const reached = async (job: SetupJob, phases = ["failed", "connected", "approval"]) => {
+    for (const deadline = Date.now() + 5000; !phases.includes(job.phase);) {
+      if (Date.now() >= deadline) throw new Error("setup did not settle");
+      await Bun.sleep(5);
+    }
+    return job;
+  };
   // a PC being added in its dialog: no saved PC is named
-  const add = (request: SetupRequest) => settle(() => manager.setup({ ...request, update_remote: true }, { auto: false }));
+  const add = (request: SetupRequest) => reached(manager.setup({ ...request, update_remote: true }, { auto: false }));
   // the saved PC's own reconnect: a retry scheduled, or a decision for the user, whichever comes first
   const reconnect = () => {
     const settled = Promise.withResolvers<"retry" | "decision">();
@@ -190,21 +210,85 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
       expect(starts).toBe(0);
       return;
     }
+    if (outcome === "default herdr older peer") {
+      // an older Ovis names no sessions itself: they are read on that PC, whose runtime of this app can, with the herdr
+      // it would connect to among them, so the PC being added is asked as beside any Ovis (#3518)
+      const added = await add({ destination: "fixture-added" });
+      expect(added).toMatchObject({ phase: "failed", action_required: "choose_herdr", error: "Choose this PC's Ovis server or a running herdr session.", found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
+      expect(added.found_herdr_sessions).toHaveLength(sessions.length);
+      for (const row of sessions) expect(added.found_herdr_sessions).toContainEqual(row);
+      expect(starts).toBe(0);
+      return;
+    }
+    if (bare) {
+      const added = await add({ destination: "fixture-added" });
+      if (outcome === "older peer, no bundle, bridged") {
+        // this app's bridge serves that socket already, and a socket chosen where no runtime can check it never reuses
+        // its bridge: not asked, the PC connects to that bridge as before
+        expect(added).toMatchObject({ phase: "connected", runtime: "herdr" });
+        expect(added.action_required ?? null).toBeNull();
+        expect(starts).toBe(0);
+        return;
+      }
+      if (outcome === "herdr stopped, no bundle") {
+        // the Ovis there names the account's sessions, and herdr's own is not one: its socket is what a stopped herdr
+        // left. The PC being added is asked as one where no herdr runs, instead of going on to start herdr unasked
+        // beside that Ovis (#3518)
+        expect(added).toMatchObject({ phase: "failed", action_required: "choose_herdr", error: "Choose this PC's Ovis server or a running herdr session.", found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
+        expect(added.found_herdr_sessions).toEqual(sessions);
+        expect(starts).toBe(0);
+        return;
+      }
+      if (outcome === "unanswered, no bundle") {
+        // an Ovis that does not answer stops no PC whose herdr could not be listed beside it: as before, its setup goes
+        // on to what it installs there
+        expect(added.phase).toBe("approval");
+        expect(added.action_required ?? null).toBeNull();
+        expect(added.found_ovis).toBeUndefined();
+        expect(starts).toBe(0);
+        return;
+      }
+      // an older Ovis names no sessions and nothing on that PC can list them: the PC being added is asked all the same,
+      // with herdr's own socket there as the session to choose, instead of being taken for a herdr PC unasked (#3518)
+      expect(added).toMatchObject({ phase: "failed", action_required: "choose_herdr", error: "Choose this PC's Ovis server or a running herdr session.", found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
+      expect(added.found_herdr_sessions).toEqual([{ socket_path: bridge.socket_path, label: "Default session" }]);
+      expect(manager.endpoint(added.machine_id!)).toBeUndefined();
+      expect(await add({ destination: "fixture-added", own_ovis: socket })).toMatchObject({ phase: "connected", runtime: "herdr-core" });
+      // herdr chosen there is a chosen socket like any other: once the runtime is approved and installed, the bridge
+      // started for it checks that socket and starts no herdr in its place (server/remote-entry.test.ts), so a socket a
+      // stopped herdr left is told as "no longer running". The fixture's start ends the setup there
+      const chosen = await add({ destination: "fixture-default", herdr_socket: bridge.socket_path });
+      expect(chosen.phase).toBe("approval");
+      expect(starts).toBe(0);
+      manager.action(chosen.id, { action: "approve" });
+      await reached(chosen, ["failed", "connected"]);
+      expect(installs).toBe(1);
+      expect(startedWith).toMatchObject({ herdr_socket: bridge.socket_path });
+      expect(startedWith?.start_new_herdr).toBeUndefined();
+      return;
+    }
     if (outcome === "default herdr chosen") {
-      // "Use Default session" on that card names the default socket: the PC connects to it and is saved with no socket
-      // chosen, so after its reboot it starts herdr by itself instead of stopping at a session that is gone (#3518)
+      // "Use Default session" on that card names the default socket: the PC connects to it and is saved as herdr to start
+      // there when absent, never as that socket. After its reboot it then starts herdr by itself, instead of stopping at
+      // a session that is gone, or at a new choice because another session started first (#3518)
       const byDefault = await add({ destination: "fixture-default", herdr_socket: bridge.socket_path });
       expect(byDefault).toMatchObject({ phase: "connected", runtime: "herdr" });
-      expect(manager.list().find((pc) => pc.id === byDefault.machine_id)?.target).toEqual({ destination: "fixture-default" });
-      expect((JSON.parse(readFileSync(join(dir, "machines.json"), "utf8")) as { id: string; target: unknown }[]).find((pc) => pc.id === byDefault.machine_id)?.target).toEqual({ destination: "fixture-default" });
-      // saved, it is not asked again: its dialog connects to its herdr as any saved PC's does
-      const again = await settle(() => manager.setup({ destination: "fixture-default", machine_id: byDefault.machine_id! }));
+      const saved = { destination: "fixture-default", start_new_herdr: true };
+      expect(manager.list().find((pc) => pc.id === byDefault.machine_id)?.target).toEqual(saved);
+      expect((JSON.parse(readFileSync(join(dir, "machines.json"), "utf8")) as { id: string; target: unknown }[]).find((pc) => pc.id === byDefault.machine_id)?.target).toEqual(saved);
+      // saved, it is not asked again: its dialog, which sends what the PC is saved with, connects to its herdr
+      const again = await settle(() => manager.setup({ ...saved, machine_id: byDefault.machine_id! }));
       expect(again).toMatchObject({ phase: "connected", runtime: "herdr" });
       expect(again.action_required ?? null).toBeNull();
-      // a named session's socket stays the choice it was
+      expect(manager.list().find((pc) => pc.id === byDefault.machine_id)?.target).toEqual(saved);
+      // a named session's own socket stays the choice it was: only its name tells it from the default session's
       const named = await add({ destination: "fixture-named", session: "work", herdr_socket: sessions[0]!.socket_path });
       expect(named).toMatchObject({ phase: "connected", runtime: "herdr" });
       expect(manager.list().find((pc) => pc.id === named.machine_id)?.target).toEqual({ destination: "fixture-named", session: "work", herdr_socket: sessions[0]!.socket_path });
+      // and so does that socket chosen with no session named: it is not the default session's
+      const other = await add({ destination: "fixture-other", herdr_socket: sessions[0]!.socket_path });
+      expect(other).toMatchObject({ phase: "connected", runtime: "herdr" });
+      expect(manager.list().find((pc) => pc.id === other.machine_id)?.target).toEqual({ destination: "fixture-other", herdr_socket: sessions[0]!.socket_path });
       expect(starts).toBe(0);
       return;
     }

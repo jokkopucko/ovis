@@ -76,21 +76,29 @@ it.each(["socket success", "socket failure", "session success", "session failure
   }
 });
 
-it.each(["manual", "catalog socket", "catalog new"])("remembers %s choice through refresh, restart and reconnect", async (kind) => {
+// default: the default session chosen by its socket (on the card of a PC that also runs its own Ovis, or beside a chosen
+// session that stopped). It is remembered as herdr to start there when absent, never as that socket (#3518)
+it.each(["manual", "catalog socket", "catalog new", "manual default", "catalog default"])("remembers %s choice through refresh, restart and reconnect", async (kind) => {
   const dir = mkdtempSync(join(tmpdir(), "machine-herdr-choice-"));
-  const catalog = kind !== "manual";
+  const catalog = kind.startsWith("catalog");
+  const byDefault = kind.endsWith("default");
   const id = catalog ? herdrMachineId("fixture-profile") : "12345678-1234-1234-1234-123456789abc";
-  const profile = { id: "fixture-profile", label: "fixture", enabled: true, target: { destination: "fixture-only", session: "work" } };
-  const socket = kind === "catalog new" ? "/home/fixture/.config/herdr/sessions/work/herdr.sock" : "/home/fixture/desktop/herdr/sessions/work/herdr.sock";
-  const found = [{ socket_path: socket, session: "work", label: "work" }];
+  const profile = { id: "fixture-profile", label: "fixture", enabled: true, target: { destination: "fixture-only", ...(byDefault ? {} : { session: "work" }) } };
+  // the session's own socket, as that PC spells it
+  const own = (session?: string) => session ? `/home/fixture/.config/herdr/sessions/${session}/herdr.sock` : "/home/fixture/.config/herdr/herdr.sock";
+  const socket = byDefault ? own() : kind === "catalog new" ? own("work") : "/home/fixture/desktop/herdr/sessions/work/herdr.sock";
+  // what that PC answers when asked which herdr to use: for default, herdr's own session beside another one
+  const found = [...(byDefault ? [{ socket_path: socket, label: "Default session" }] : []), { socket_path: byDefault ? own("work") : socket, session: "work", label: "work" }];
   const descriptor = { socket_path: socket, pid: 4242, port: 12345, token: "a".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true };
   if (!catalog) writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "fixture", enabled: false, target: { destination: "fixture-only" } }]));
-  let started = false;
+  // bridged: the bridge that serves the default session's socket still runs, so a PC saved without that socket meets it
+  let started = false, bridged = false;
   const relays: ReturnType<typeof Bun.serve>[] = [];
   const mocks = [
     spyOn(SshConnection.prototype, "start").mockResolvedValue(undefined),
     spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
-    spyOn(posixHost, "inspect").mockImplementation(async (_ssh, _session, selected) => ({ platform: "linux-x64", home: "/home/fixture", herdrPath: "", expectedSocket: selected ?? (kind === "catalog new" ? socket : "/home/fixture/.config/herdr/herdr.sock"), bundleReady: true, bundleOlder: false, descriptors: selected || started ? [descriptor] : [], runtimeDir: "/runtime", registryDir: "/registry" })),
+    spyOn(posixHost, "inspect").mockImplementation(async (_ssh, session, selected) => ({ platform: "linux-x64", home: "/home/fixture", herdrPath: "/fixture/herdr", expectedSocket: selected ?? (kind === "catalog new" ? socket : own()), defaultSocket: own(session), bundleReady: true, bundleOlder: false, descriptors: selected || started || bridged ? [descriptor] : [], runtimeDir: "/runtime", registryDir: "/registry" })),
+    spyOn(posixHost, "herdrVersion").mockResolvedValue("herdr 0.9.3"),
     spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
     spyOn(posixHost, "start").mockImplementation(async (_ssh, options) => { started = options.start_new_herdr === true; }),
     spyOn(posixHost, "descriptors").mockImplementation(async () => started ? [descriptor] : []),
@@ -123,11 +131,16 @@ it.each(["manual", "catalog socket", "catalog new"])("remembers %s choice throug
     const failed = await run(catalog ? profile.target : { destination: "fixture-only" });
     expect(failed).toMatchObject({ phase: "failed", action_required: "choose_herdr", found_herdr_sessions: found });
     expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ action_required: "choose_herdr", found_herdr_sessions: found });
-    const target = { destination: "fixture-only", session: "work", ...(kind === "catalog new" ? { start_new_herdr: true } : { herdr_socket: socket }) };
+    const target = byDefault ? { destination: "fixture-only", herdr_socket: socket } : { destination: "fixture-only", session: "work", ...(kind === "catalog new" ? { start_new_herdr: true } : { herdr_socket: socket }) };
+    // what the PC is saved with
+    const saved = byDefault ? { destination: "fixture-only", start_new_herdr: true } : target;
     expect(await run(target)).toMatchObject({ phase: "connected", target });
-    expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ target, action_required: null });
-    if (catalog) { manager.syncHerdrProfiles([profile]); expect(manager.list().find((pc) => pc.id === id)?.target).toEqual(target); }
-    else { expect(JSON.parse(readFileSync(join(dir, "machines.json"), "utf8"))[0].target).toEqual(target); manager.patch(id, { enabled: false }); }
+    expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ action_required: null });
+    expect(manager.list().find((pc) => pc.id === id)?.target).toEqual(saved);
+    bridged = kind === "catalog default";
+    // the catalog's next refresh keeps it too: the socket is not pinned again there
+    if (catalog) { manager.syncHerdrProfiles([profile]); expect(manager.list().find((pc) => pc.id === id)?.target).toEqual(saved); }
+    else { expect(JSON.parse(readFileSync(join(dir, "machines.json"), "utf8"))[0].target).toEqual(saved); manager.patch(id, { enabled: false }); }
     manager.stop();
     const restored = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
     try {
@@ -137,10 +150,22 @@ it.each(["manual", "catalog socket", "catalog new"])("remembers %s choice throug
           const off = restored.subscribe(() => { if (restored.list().find((pc) => pc.id === id)?.state === "connected") { clearTimeout(deadline); off(); resolve(); } });
         });
         restored.syncHerdrProfiles([profile]);
-        expect(restored.list().find((pc) => pc.id === id)?.target).toEqual(target);
+        expect(restored.list().find((pc) => pc.id === id)?.target).toEqual(saved);
         await connected;
       }
-      expect(restored.list().find((pc) => pc.id === id)?.target).toEqual(target);
+      expect(restored.list().find((pc) => pc.id === id)?.target).toEqual(saved);
+      if (kind === "manual default") {
+        // That PC restarted since: no bridge is left there, and another herdr session runs before the default one. The
+        // PC's bridge is started with leave to start herdr when absent (started), as chosen, so it connects by itself
+        // instead of stopping at a new choice
+        await new Promise<void>((resolve, reject) => {
+          const deadline = setTimeout(() => { off(); reject(new Error("the reconnect did not finish")); }, 5000);
+          const off = restored.subscribe(() => { if (["connected", "error"].includes(restored.list().find((pc) => pc.id === id)?.state ?? "")) { clearTimeout(deadline); off(); resolve(); } });
+          restored.patch(id, { enabled: true });
+        });
+        expect(restored.list().find((pc) => pc.id === id)).toMatchObject({ state: "connected", action_required: null });
+        expect(started).toBe(true);
+      }
     }
     finally { restored.stop(); }
   } finally {
