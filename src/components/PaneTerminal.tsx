@@ -448,7 +448,8 @@ export function PaneTerminal({
     return () => { live = false; };
   }, [role]);
   const viewOnly = observing || role === "observe" || authWatching;
-  const [secret, setSecret] = useState<{ pane: string; prompt: string } | null>(null);
+  // `unchecked`: the PC types the answer without reading its screen first (useTerminalMount showSecret)
+  const [secret, setSecret] = useState<{ pane: string; prompt: string; unchecked: boolean } | null>(null);
   const secretRef = useRef<string | null>(null);
   const secretActive = secret !== null && secret.pane === paneId;
   // a touch screen writes in the terminal's input line; typing straight into the grid is chosen
@@ -1105,7 +1106,7 @@ export function PaneTerminal({
   }, [controls, active, paneId]);
 
   const secretInput = presented && paneId !== null && secretActive && !observing && !ended && connected && outputReady ? <SecretInput
-    key={`${paneId}:${secret.prompt}`} prompt={secret.prompt} active={active} unchecked={socketRef.current?.typesSecret(secret.prompt) === true}
+    key={`${paneId}:${secret.prompt}`} prompt={secret.prompt} active={active} unchecked={secret.unchecked}
     onSend={(value) => socketRef.current?.sendSecret(paneId, secret.prompt, value, () => secretRef.current === secret.prompt) ?? null}
     onCancel={() => { if (socketRef.current?.connected) { cancelTouchRef.current(); socketRef.current.sendInput(paneId, "\u0003"); } }}
   /> : null;

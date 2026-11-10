@@ -48,7 +48,7 @@ export interface PaneAttachDeps {
   setOutputError: Dispatch<SetStateAction<string | null>>;
   setOutputReady: Dispatch<SetStateAction<boolean>>;
   setReleased: (next: boolean) => void;
-  setSecret: Dispatch<SetStateAction<{ pane: string; prompt: string } | null>>;
+  setSecret: Dispatch<SetStateAction<{ pane: string; prompt: string; unchecked: boolean } | null>>;
   setUnsupported: Dispatch<SetStateAction<boolean>>;
   setWatching: (next: boolean) => void;
   sharedGridRef: RefObject<{ cols: number; rows: number } | null>;

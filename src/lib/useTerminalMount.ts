@@ -15,7 +15,7 @@ import { reserveOsc52Copy, type Osc52Reservation } from "./osc52Clipboard.ts";
 import { matchHerdrWidths } from "./terminalWidths.ts";
 import { unwrapAgentRows } from "./agentCopy.ts";
 import { paneStorageId } from "../../shared/machines.ts";
-import { promptAsks, promptHasCursor, secretPrompt } from "../../shared/secret-prompt.ts";
+import { createSecretScreen } from "./secretScreen.ts";
 import { TERMINAL_HISTORY_LINES } from "../../shared/terminal-flow.ts";
 import type { ClientRole, ServerMessage } from "../../shared/protocol.ts";
 import type { Settings } from "./settings.ts";
@@ -163,7 +163,7 @@ export interface TerminalMountDeps {
   setOutputReady: Dispatch<SetStateAction<boolean>>;
   setParsedTarget: Dispatch<SetStateAction<string | undefined>>;
   setReleased: (next: boolean) => void;
-  setSecret: Dispatch<SetStateAction<{ pane: string; prompt: string; } | null>>;
+  setSecret: Dispatch<SetStateAction<{ pane: string; prompt: string; unchecked: boolean } | null>>;
   setSelectionQuote: Dispatch<SetStateAction<{ pane: string; text: string; range: { start: number; end: number; } | null; } | null>>;
   setTerminal: Dispatch<SetStateAction<Terminal | null>>;
   setUnsupported: Dispatch<SetStateAction<boolean>>;
@@ -1057,6 +1057,16 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // The frame gate read those dropped frames as they came, so their stream ends there too: a
       // synchronized update one opened would otherwise keep later frames from settling until
       // another synchronized update closed.
+      // the masked prompt the screen shows now, if any (lib/secretScreen.ts). An attached pane's cursor is the
+      // program's; a mirrored pane's repaints carry none, and a pane not known to be attached is read the same way
+      const secretScreen = createSecretScreen(term, () => mirroredRef.current === false);
+      // What the field shows: the prompt, and whether its answer is typed unchecked (HerdrSocket.typesSecret). That
+      // changes when the bridge says what it takes, which can come after the prompt was drawn
+      const showSecret = (pane: string, prompt: string | null): void => {
+        const unchecked = prompt !== null && socket.typesSecret(prompt);
+        setSecret((previous) => prompt === null ? null
+          : previous?.pane === pane && previous.prompt === prompt && previous.unchecked === unchecked ? previous : { pane, prompt, unchecked });
+      };
       const retireOutput = (): void => {
         outputOwner++;
         outputFrames.length = 0;
@@ -1286,30 +1296,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!held && socket.canInput(pane)) flushResume();
       };
       typeAheadRef.current = adoptTypeAhead;
-      // the masked prompt the screen shows now, if any (shared/secret-prompt.ts)
-      // the prompt last seen with the cursor on its line (promptAsks)
-      let promptSeen: string | null = null;
-      const screenSecret = (): string | null => {
-        const lines: string[] = [];
-        // each line's first screen row
-        const starts: number[] = [];
-        const buffer = term.buffer.active;
-        // the screen only: a prompt is on its last lines, and a herdr-core pane's history (syncHistory) would
-        // cost every output frame a pass over its 2,000 lines
-        for (let row = buffer.baseY; row < buffer.length; row++) {
-          const line = buffer.getLine(row);
-          const text = line?.translateToString(!buffer.getLine(row + 1)?.isWrapped) ?? "";
-          if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
-          else { lines.push(text); starts.push(row); }
-        }
-        const prompt = secretPrompt(lines.join("\n"), term.cols);
-        // A prompt whose cursor was on its line and left has been answered (promptAsks). A mirrored pane's repaints
-        // carry no cursor, so its prompt counts while it is the last text, as before; so does one not known to be attached
-        if (mirroredRef.current !== false) return prompt;
-        const read = promptAsks(prompt, prompt !== null && promptHasCursor(lines, starts, buffer.baseY + buffer.cursorY, buffer.cursorX, term.cols), promptSeen);
-        promptSeen = read.seen;
-        return read.asks ? prompt : null;
-      };
       // the idle release's clock: when the terminal was last typed, clicked or pasted in, and the check that follows it
       // (idleCheck, with the release machinery below)
       let lastActivity = performance.now();
@@ -1364,6 +1350,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // the features come ahead of any pane's bytes; a changed scrollback changes the fit's scrollbar column
         // a tab out of use refits when it is back (back())
         if ((message.type === "features" || message.type === "snapshot") && syncHistory() && inUse()) refit();
+        // the bridge said what it takes: a field already up learns whether its answer is typed unchecked
+        if ((message.type === "features" || message.type === "snapshot") && paneRef.current !== null && secretRef.current !== null) showSecret(paneRef.current, secretRef.current);
         // the PC's shared connection came back after an overload close (another pane's mount, or an
         // explicit pick, reconnected it): its replayed attach serves this pane again
         if (message.type === "snapshot" && stalledRef.current) {
@@ -1457,9 +1445,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             // that opened a synchronized update and never closed it (a TUI killed mid-draw, `cat` of a raw log)
             // would leave every later chunk inside one, and a later prompt unread
             if (stamp.boundary || socket.hasTerminalHistory()) {
-              const prompt = screenSecret();
+              const prompt = secretScreen.read(owner);
               secretRef.current = prompt;
-              setSecret((previous) => previous?.pane === owner && previous.prompt === prompt ? previous : prompt ? { pane: owner, prompt } : null);
+              showSecret(owner, prompt);
             }
             term.options.disableStdin = observeRef.current || heldRef.current;
             // a whole frame for this grid: the agent's input row may be read (a watched peek, the still-open guard)
@@ -1484,7 +1472,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           const owner = message.pane_id;
           // a masked prompt drawn while the tab only watches: what is typed to take the pane back is not kept for it
           writeOutput(message.data, false, () => {
-            if (!disposed && paneRef.current === owner && releasedRef.current) secretRef.current = screenSecret();
+            if (!disposed && paneRef.current === owner && releasedRef.current) secretRef.current = secretScreen.read(owner);
           });
         } else if (message.type === "watch-end") {
           // the view ended: the last screen stays, and the banner says the tab is paused
