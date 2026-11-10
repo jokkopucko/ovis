@@ -77,11 +77,37 @@
 
 .row-sheet-item.is-disabled:active { background: transparent; }
 
-/* a picker's item that is what is open now: named in the strong colour, with its mark unfaded */
+/* a picker's item that is what is open now (the open tab, the selected pane): filled as the
+   sidebar fills its selected workspace and agent, and named in the strong colour at the selected
+   weight, which is what still tells it from a hovered row (the same fill) and marks it in a palette
+   whose fill barely shows; an item with a button at its end (a tab list's Close) is filled across the whole line */
 .row-menu .menu-item[aria-current="true"],
 .row-sheet-item[aria-current="true"] {
+  background: var(--bg-hover);
   color: var(--text-strong);
-  font-weight: var(--fw-semibold);
+  font-weight: var(--fw-selected);
+}
+
+.row-sheet-line.is-current {
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+}
+
+/* forced colors repaint the fill as Canvas: a leading Highlight bar instead, as the sidebar's rows */
+@media (forced-colors: active) {
+  .row-menu .menu-item[aria-current="true"],
+  .row-sheet-item[aria-current="true"] {
+    /* drawn in the menu's own padding, so the row's icon and label stay in line with the others */
+    margin-inline-start: calc(-2 * var(--hairline));
+    border-inline-start: calc(2 * var(--hairline)) solid Highlight;
+  }
+
+  /* the sheet's list scrolls, and a scroll box clips what is pulled past its edge: it gets the bar's
+     room from the sheet's own padding, so its rows stay where they are */
+  .row-sheet-items {
+    margin-inline: calc(-2 * var(--hairline));
+    padding-inline: calc(2 * var(--hairline));
+  }
 }
 
 /* what the menu is about, above its items: a line of its own, ruled off from them */

@@ -271,7 +271,7 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, detail
               if (!item.aside) return button;
               const { aside } = item;
               return (
-                <div key={item.id} className={`row-sheet-line${item.divider ? " has-divider" : ""}`}>
+                <div key={item.id} className={`row-sheet-line${item.divider ? " has-divider" : ""}${item.current ? " is-current" : ""}`}>
                   {button}
                   <button type="button" className="row-sheet-aside" aria-label={aside.label} title={aside.label} onMouseDown={keepFocus} onClick={() => runAside(aside)}>
                     <aside.icon aria-hidden="true" />
