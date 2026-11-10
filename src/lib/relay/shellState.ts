@@ -21,7 +21,7 @@ import type { MyPc } from "../account/myPcs.ts";
 import type { AccountProvider } from "../account/store.ts";
 import { inNativeApp } from "../nativeApp.ts";
 import { serverIdOfPath } from "../shellMode.ts";
-import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
+import { RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
 import type { TypedCodeFailure } from "./pairCode.ts";
 import type { RelayDevice } from "./device.ts";
@@ -55,6 +55,8 @@ export function keyMismatch(serverId: string, keys: readonly { key: string; from
 
 /** Why a connection did not come up; each is a screen with its own `data-relay-state`. */
 export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "pair-declined" | "pair-unavailable" | "bad-offer"
+  /** the relay closed a pairing device 4403: the PC's relay pass allows no new device sessions (account limits) */
+  | "new-devices-refused"
   /** a PC an introduction named just now refused this device: its mailbox has not brought the add yet */
   | "not-added-yet";
 
@@ -145,6 +147,8 @@ export function offerOf(device: RelayDevice): RelayOffer {
  */
 export function failureOf(error: unknown, attempt: { code: boolean; paired: boolean; compared?: boolean; codeless?: boolean }): RelayFailure {
   if (error instanceof UnsafeRelayDestinationError) return "bad-offer";
+  // the relay's own word, whatever the attempt was: the code held or the digits were approved, and the PC's account is past its limits
+  if (error instanceof RelayNewSessionsRefusedError) return "new-devices-refused";
   // a link without a code that the PC refused before any digits: no code to blame, and the wire does not say why
   // (pairing paused after failures, three phones already waiting, a serve-only PC)
   if (attempt.codeless && !attempt.code && !attempt.paired && !attempt.compared

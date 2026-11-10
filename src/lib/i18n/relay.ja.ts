@@ -65,6 +65,8 @@ export const RELAY_JA: Record<string, string> = {
   "Does {name}'s screen show this ID?": "{name} の画面にこの ID が表示されていますか？",
   "ID of the PC this code found": "このコードで見つかった PC の ID",
   "{name} did not approve this device": "{name} はこのデバイスを承認しませんでした",
+  "{name} cannot add new devices right now": "{name} には今は新しいデバイスを追加できません",
+  "Its Ovis account is past its relay limit, so the relay lets no new device in. Devices already added still connect. Check the account in Settings on the PC, or try again later.": "この PC の Ovis アカウントがリレーの上限を超えているため、リレーは新しいデバイスを受け付けません。追加済みのデバイスは引き続き接続できます。PC の設定でアカウントを確認するか、後でもう一度お試しください。",
   "{name} is not taking new devices right now": "{name} は今は新しいデバイスを受け付けていません",
   "{name} has not added this device yet": "{name} にはまだこのデバイスが追加されていません",
   "{name} is offline": "{name}はオフラインです",

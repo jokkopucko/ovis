@@ -65,6 +65,8 @@ export const RELAY_KO: Record<string, string> = {
   "Does {name}'s screen show this ID?": "{name} 화면에 이 ID가 보이나요?",
   "ID of the PC this code found": "이 코드로 찾은 PC의 ID",
   "{name} did not approve this device": "{name}에서 이 기기를 승인하지 않았습니다",
+  "{name} cannot add new devices right now": "{name}에 지금은 새 기기를 추가할 수 없습니다",
+  "Its Ovis account is past its relay limit, so the relay lets no new device in. Devices already added still connect. Check the account in Settings on the PC, or try again later.": "이 PC의 Ovis 계정이 릴레이 한도를 넘어서 릴레이가 새 기기를 받지 않습니다. 이미 추가한 기기는 계속 연결됩니다. PC의 설정에서 계정을 확인하거나 나중에 다시 시도하세요.",
   "{name} is not taking new devices right now": "{name}에서 지금은 새 기기를 받지 않습니다",
   "{name} has not added this device yet": "{name}에 아직 이 기기가 추가되지 않았습니다",
   "{name} is offline": "{name}: 오프라인",

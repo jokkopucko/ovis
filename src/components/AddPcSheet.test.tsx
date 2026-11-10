@@ -103,6 +103,9 @@ describe("the Add-a-PC sheet", () => {
     expect(addPcSteps("new", "start", null)).toEqual(["done", "running", "todo", "todo"]);
     expect(addPcSteps("new", "compare", null)).toEqual(["done", "running", "todo", "todo"]);
     expect(addPcSteps("new", "approving", null)).toEqual(["done", "done", "running", "todo"]);
+    // the relay's refusal comes after the digits were confirmed: the typed number was right
+    expect(addPcSteps("new", "failed", "new-devices-refused")).toEqual(addPcSteps("new", "failed", "pair-declined"));
+    expect(addPcSteps("join", "failed", "new-devices-refused")).toEqual(addPcSteps("join", "failed", "pair-declined"));
     expect(addPcSteps("new", "ready", null)).toEqual(["done", "done", "done", "done"]);
     expect(addPcSteps("join", "start", null)).toEqual(["current", "todo", "todo", "todo"]);
     expect(addPcSteps("join", "connecting", null)).toEqual(["running", "todo", "todo", "todo"]);
@@ -221,6 +224,12 @@ describe("the Add-a-PC sheet", () => {
     await update(props("new", expired, { kind: "failed", failure: "relay-unreachable", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(all()).toContain("The relay could not be reached");
     expect(all()).not.toContain("Add window closed");
+    // the relay's refusal of a new device is the account's limit, not the window: it says so, and can be tried again
+    await update(props("new", expired, { kind: "failed", failure: "new-devices-refused", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(all()).toContain("desk2 cannot add new devices right now");
+    expect(all()).toContain("Devices already added still connect.");
+    expect(all()).not.toContain("Add window closed");
+    expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toContain("Try again");
     await update(props("new", expired, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(all()).toContain("Add window closed · an account member must approve");
   });

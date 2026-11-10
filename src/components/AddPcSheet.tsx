@@ -34,7 +34,8 @@ export function addPcPhase(pc: MyPc, state: RelayShellState): AddPcPhase {
 
 function activeStepIndex(mode: "new" | "join", phase: AddPcPhase, failure: RelayFailure | null): number {
   if (phase === "ready") return 3;
-  if (phase === "approving" || (phase === "failed" && failure === "pair-declined")) return 2;
+  // the relay turns a new device away only once both people confirmed the digits: the steps before it went right
+  if (phase === "approving" || (phase === "failed" && (failure === "pair-declined" || failure === "new-devices-refused"))) return 2;
   if (mode === "new" || phase === "compare" || phase === "wrong") return 1;
   return 0;
 }
@@ -180,7 +181,8 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
       case "failed": {
         const failureKind = state.kind === "failed" ? state.failure : null;
         // a connection that failed says why even after the window closed: the window is not what stopped it
-        const connectionFailure = failureKind === "pc-offline" || failureKind === "pc-unresponsive" || failureKind === "relay-unreachable";
+        // (so does the relay's refusal of a new device: the PC's account is past its limits, whatever the window)
+        const connectionFailure = failureKind === "pc-offline" || failureKind === "pc-unresponsive" || failureKind === "relay-unreachable" || failureKind === "new-devices-refused";
         const expiredWindowFailure = mode === "new" && (failureKind === "pair-unavailable" || (windowExpired && !connectionFailure));
         const failure = state.kind === "failed" ? relayFailureText(t, state.failure, name, state.detail) : null;
         body = failure && (

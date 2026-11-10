@@ -4,7 +4,7 @@ import { LIMITS_V1, REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
 import { isTailnetCarrier, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
-import { openRelayChannel, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
+import { openRelayChannel, RelayNewSessionsRefusedError, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
 import { DirectCarrierUnusableError, openRelayChannelWithFallback, probeDirect } from "../../../shared/relay-channel.ts";
 import type { RelayChannel, RelayChannelOptions, RelayServerInfo, RelaySocket } from "./channel.ts";
 import { indexedDeviceStore, ServerIdentityChangedError } from "./device.ts";
@@ -63,6 +63,8 @@ function untilClosed(inner: RelaySocket, closed: () => void): RelaySocket {
 /** Whether another attempt could only fail the same way: the device was revoked or never paired, the PC's identity or protocol changed, or the offer is unsafe. */
 export function isFatalRelayError(error: unknown): error is Error {
   if (error instanceof ServerIdentityChangedError || error instanceof UnsafeRelayDestinationError) return true;
+  // the relay takes no new device for this PC while its account is past its limits: only a later try can differ
+  if (error instanceof RelayNewSessionsRefusedError) return true;
   return error instanceof MuxProtocolError && (error.code === "auth_revoked" || error.code === "auth_failed"
     || error.code === "unsupported_version" || error.code === "unsupported_extension" || error.code === "unsupported_transport");
 }
@@ -395,8 +397,9 @@ export class RelayTransport implements Transport {
             endOthers(direct);
             resolve(channel);
           }, (error: unknown) => {
-            // only a refusal by the PC itself, after Noise proved it is the PC, is final
-            if (!settled && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)))) { settled = true; endOthers(); reject(error); }
+            // only a refusal by the PC itself, after Noise proved it is the PC, is final: the relay's own refusal of a
+            // new device is no word of a direct carrier's
+            if (!settled && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError) && !(error instanceof RelayNewSessionsRefusedError)))) { settled = true; endOthers(); reject(error); }
           }).finally(async () => {
             clearTimeout(timer);
             // a close that never comes holds the place no longer than the budget

@@ -4,7 +4,7 @@ import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { indexedDeviceStore } from "./device.ts";
 import type { RelayDeviceStore } from "./device.ts";
 
-export { ADMISSION_MS, ASSIGNMENT_MS, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayPcOfflineError, RelayUnreachableError, UnsafeRelayDestinationError } from "../../../shared/relay-channel.ts";
+export { ADMISSION_MS, ASSIGNMENT_MS, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayPcOfflineError, RelayUnreachableError, UnsafeRelayDestinationError } from "../../../shared/relay-channel.ts";
 export type { RelayChannel, RelayServerInfo, RelaySocket } from "../../../shared/relay-channel.ts";
 
 /** In the hosted app a PC's key is kept in this browser's IndexedDB unless another store is given. */

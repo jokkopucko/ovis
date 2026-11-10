@@ -12,7 +12,9 @@ import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { MuxFrame } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
-import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
+import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
+import { isFatalRelayError } from "./transport.ts";
+import { RELAY_NEW_SESSIONS_CLOSE, RELAY_NEW_SESSIONS_REFUSED } from "../../../shared/relay-pass.ts";
 import type { RelaySocket } from "./channel.ts";
 import { failureOf, pairsAgainWithoutKey } from "./shellState.ts";
 import { base64url, getDevice } from "./device.ts";
@@ -310,6 +312,50 @@ it("calls the PC offline when the relay assigned the connection but nothing answ
   expect(error).toMatchObject({ code: "timeout" });
   expect(failureOf(error, { code: false, paired: true })).toBe("pc-offline");
   expect(socket.closed).toBe(4000);
+});
+
+it("names the relay's refusal of a new device (4403), on a code and on compared digits alike, and tries no further", async () => {
+  // Given a pairing whose handshake is under way.
+  const run = async (code: number) => {
+    const socket = new SilentSocket();
+    const created = Promise.withResolvers<void>();
+    const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example", code: "ABCD-EFGH" };
+    const outcome = settled(openRelayChannel(offer, { store: new MemoryDeviceStore(), socket: () => { created.resolve(); return socket; } }));
+    await created.promise;
+    socket.deliver(JSON.stringify({ type: "assigned", connection_id: "ef".repeat(16) }));
+    await socket.sent.promise;
+    // When the relay closes the socket.
+    socket.onclose?.(new CloseEvent("close", { code, reason: code === RELAY_NEW_SESSIONS_CLOSE ? RELAY_NEW_SESSIONS_REFUSED : "" }));
+    await flush();
+    return outcome.get()?.error;
+  };
+  // Then 4403 is its own failure and screen, whatever the attempt was, and nothing retries it by itself.
+  const refused = await run(RELAY_NEW_SESSIONS_CLOSE);
+  expect(refused).toBeInstanceOf(RelayNewSessionsRefusedError);
+  expect(failureOf(refused, { code: true, paired: false })).toBe("new-devices-refused");
+  expect(failureOf(refused, { code: false, paired: false, codeless: true, compared: true })).toBe("new-devices-refused");
+  expect(isFatalRelayError(refused)).toBe(true);
+  // A device this PC already knows only signs in, and the relay never refuses that: the same code to it is a lost
+  // socket (another host at a saved address, a relay fault), so it reconnects as it always did.
+  const store = new MemoryDeviceStore();
+  const known = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+  const paired = await getDevice(known, store);
+  await store.update(known.server_id, () => ({ ...paired, device_id: "ab".repeat(8) }));
+  const socket = new SilentSocket();
+  const created = Promise.withResolvers<void>();
+  const signIn = settled(openRelayChannel(known, { store, socket: () => { created.resolve(); return socket; } }));
+  await created.promise;
+  socket.deliver(JSON.stringify({ type: "assigned", connection_id: "ef".repeat(16) }));
+  await socket.sent.promise;
+  socket.onclose?.(new CloseEvent("close", { code: RELAY_NEW_SESSIONS_CLOSE, reason: RELAY_NEW_SESSIONS_REFUSED }));
+  await flush();
+  expect(signIn.get()?.error).not.toBeInstanceOf(RelayNewSessionsRefusedError);
+  expect(isFatalRelayError(signIn.get()?.error)).toBe(false);
+  // Any other close there stays a lost connection.
+  const lost = await run(1001);
+  expect(lost).toBeInstanceOf(MuxProtocolError);
+  expect(failureOf(lost, { code: true, paired: false })).toBe("pc-offline");
+  expect(isFatalRelayError(lost)).toBe(false);
 });
 
 it("waits for the PC as long as pcAnswerMs says, for a reconnect behind the app", async () => {
