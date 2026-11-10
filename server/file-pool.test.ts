@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { closeSync, constants as fsConstants, fstatSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, mkdirSync, mkdtempSync, openSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -213,6 +213,25 @@ describe("file threads", () => {
     expect(filePoolSize()).toEqual({ threads: 4, idle: 1, waiting: 1 });
     hold.release();
     await Promise.all([stuck, second, ...commands]);
+  });
+
+  it("runs one Letta transcript scan at a time with the longer deadline, so a long one holds a single thread (#3326)", async () => {
+    setUp({ workers: 4, waiting: 4, deadlineMs: 150, longDeadlineMs: 30_000, scanDeadlineMs: 30_000 });
+    const transcript = join(root, "transcript.jsonl");
+    writeFileSync(transcript, `${JSON.stringify({ kind: "tool_call", resultText: "the call's output", captured_at: "2026-10-29T01:00:00.000Z", source_line_id: "Bash-1-1" })}\n`);
+    const { dev, ino } = statSync(transcript);
+    const output = (): FileTask => ({ op: "letta-output", path: transcript, ref: "Bash-1-1", file: { dev, ino }, max: 2_000_000 });
+    const hold = gate();
+    const stuck = fileTask<string | null>(held(output(), hold.buffer));
+    const second = fileTask<string | null>(output());
+    // the second waits for the first's thread rather than taking another
+    expect(filePoolSize()).toEqual({ threads: 1, idle: 0, waiting: 1 });
+    // a file task behind them takes a thread of its own at once; held as long, it is refused at the
+    // short deadline, while the scans are still waited for
+    await expect(fileTask(held({ op: "info", path: file }, hold.buffer))).rejects.toBeInstanceOf(FileBusyError);
+    expect(filePoolSize()).toEqual({ threads: 2, idle: 0, waiting: 1 });
+    hold.release();
+    expect(await Promise.all([stuck, second])).toEqual(["the call's output", "the call's output"]);
   });
 
   it("gives a commands scan a deadline of its own, longer than a folder walk's", async () => {

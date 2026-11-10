@@ -5,9 +5,12 @@ import * as fsp from "node:fs/promises";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { forgetTranscriptState, paneConversation, paneTranscript, transcriptPage, transcriptToolOutput } from "./conversation.ts";
+import { forgetTranscriptState, paneConversation, paneTranscript, toolOutput, transcriptPage } from "./conversation.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
+import { FileBusyError, setFilePoolOptions } from "./file-pool.ts";
+import { runFileTask } from "./file-tasks.ts";
 import * as herdr from "./herdr/client.ts";
+import * as letta from "./letta.ts";
 import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
 import * as lettaStore from "./letta-store.ts";
 import { isLettaProcess, type LettaProcess, lettaBinding, paneLettaProcess, lettaInStartFolder, lettaLocalOwner, lettaLocalSettings, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron, resolveLettaTranscript } from "./letta-store.ts";
@@ -28,8 +31,39 @@ const pane = (id: string, value: string | null, cwd: string): HerdrPane => ({
 } as HerdrPane);
 
 let root: string;
+const restores: { mockRestore(): void }[] = [];
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "letta-")); });
-afterEach(() => { rmSync(root, { recursive: true, force: true }); forgetTranscriptState(); });
+afterEach(() => {
+  for (const spy of restores.splice(0)) spy.mockRestore();
+  // the file threads a test started, or the stand-ins it set
+  setFilePoolOptions();
+  rmSync(root, { recursive: true, force: true });
+  forgetTranscriptState();
+});
+
+/** One tool call's line, as Letta 0.34.27 writes it. */
+const call = (id: string, resultText: string): string => `${JSON.stringify({ kind: "tool_call", name: "Bash", argsText: "{}", resultText, resultOk: true, captured_at: "2026-10-29T01:00:00.000Z", source_line_id: id })}\n`;
+
+/**
+ * A pane herdr labels Letta, whose resolver binds it to the transcript at `path` (restored after the test);
+ * `rebind` has it name another transcript, as after a `/new`: from then on, or once it was resolved `after` more times.
+ */
+const lettaPane = (path: string) => {
+  const target = pane("w1:p1", "local-conv-1", root);
+  const found = (at: string) => ({ path: at, session: "local-conv-1", agent: AGENT, conversation: "local-conv-1", store: join(root, "lc-local-backend"), startedAt: Date.now() });
+  const resolution = spyOn(lettaStore, "resolveLettaTranscript").mockResolvedValue(found(path));
+  restores.push(resolution,
+    spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [target], agents: [], workspaces: [], tabs: [], layouts: [], version: "fixture", protocol: 22 } as never),
+    spyOn(herdr, "paneProcessInfo").mockResolvedValue({ pane_id: target.pane_id, foreground_processes: [] } as never),
+    spyOn(herdr, "herdrRpc").mockImplementation(async () => ({}) as never));
+  return {
+    id: target.pane_id, resolution,
+    rebind: (at: string, after = 0) => {
+      for (let kept = 0; kept < after; kept += 1) resolution.mockResolvedValueOnce(found(path));
+      resolution.mockResolvedValue(found(at));
+    },
+  };
+};
 
 describe("Letta transcript", () => {
   test("reads the prompts, tool calls with their results and answers Letta 0.34.27 recorded", () => {
@@ -80,36 +114,102 @@ describe("Letta transcript", () => {
     expect(transcriptPage("letta-transcript", path).turns).toEqual(live.turns);
   });
 
-  test("the whole output of a call is read by the ref its part carries", () => {
+  test("the whole output of a call is read by the ref its part carries", async () => {
     const path = join(root, "transcript.jsonl");
     const long = "y".repeat(200_000);
-    writeFileSync(path, `${JSON.stringify({ kind: "user", text: "go", captured_at: "2026-10-29T01:00:00.000Z", source_line_id: "user-1" })}\n${JSON.stringify({ kind: "tool_call", name: "Bash", argsText: "{}", resultText: long, resultOk: true, captured_at: "2026-10-29T01:00:00.000Z", source_line_id: "Bash-1-1" })}\n`);
+    writeFileSync(path, `${JSON.stringify({ kind: "user", text: "go", captured_at: "2026-10-29T01:00:00.000Z", source_line_id: "user-1" })}\n${call("Bash-1-1", long)}`);
     const tool = transcriptPage("letta-transcript", path).turns[1]!.parts[0]!;
     expect(tool).toMatchObject({ kind: "tool", output_ref: "Bash-1-1", output_size: long.length });
     expect(lettaToolOutput(path, "Bash-1-1")).toBe(long);
-    expect(transcriptToolOutput("letta-transcript", path, "Bash-1-1")?.startsWith("yyy")).toBe(true);
     expect(lettaToolOutput(path, "Bash-9-9")).toBeNull();
+    // past its time limit a scan reads no further and answers as for a call it did not find: its thread is free again
+    expect(lettaToolOutput(path, "Bash-1-1", Date.now() - 1)).toBeNull();
+    expect(lettaToolOutput(path, "Bash-1-1", Date.now() + 60_000)).toBe(long);
     // a link put where the transcript was is not followed
     const link = join(root, "linked.jsonl");
     symlinkSync(path, link);
     expect(lettaToolOutput(link, "Bash-1-1")).toBeNull();
+    // the pane's route answers the same
+    const own = lettaPane(path);
+    expect(await toolOutput(own.id, "Bash-1-1")).toBe(long);
+    expect(await toolOutput(own.id, "Bash-9-9")).toBeNull();
+    // a ref in the shape of another agent's (Copilot's), which the page never offers, names no call of Letta's
+    const foreign = `cp0123456789abcdef.Bash-1-1@1@2@${"0".repeat(32)}`;
+    appendFileSync(path, call(foreign, "never offered"));
+    expect(lettaToolOutput(path, foreign)).toBe("never offered");
+    expect(await toolOutput(own.id, foreign)).toBeNull();
   });
 
-  test("serves no tool output from another transcript that a folder swap puts at the path around the lookup's open", () => {
+  test("scans the transcript on a file thread, never on the server's, however long a line it holds (#3326)", async () => {
+    const path = join(root, "transcript.jsonl");
+    // a line of several reads, which the server's thread took seconds to join and parse, then the call asked for
+    writeFileSync(path, `${call("Bash-0-0", "x".repeat(6 * 1024 * 1024))}${call("Bash-1-1", "the call's output")}`);
+    const own = lettaPane(path);
+    let opened = 0;
+    const { openSync } = fs;
+    restores.push(spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] === path) opened += 1;
+      return openSync(...args);
+    }) as typeof fs.openSync));
+    expect(await toolOutput(own.id, "Bash-1-1")).toBe("the call's output");
+    // the long line's own output crosses to the server's thread cut to a page of output
+    expect(await toolOutput(own.id, "Bash-0-0")).toBe(`${"x".repeat(2_000_000)}\n… trimmed`);
+    // this thread, which answers every other request and terminal, never opened it to read
+    expect(opened).toBe(0);
+  });
+
+  test("a line of many reads is joined once, not copied again at each read (#3326)", () => {
+    const path = join(root, "transcript.jsonl");
+    const big = "x".repeat(8 * 1024 * 1024);
+    writeFileSync(path, `${call("Bash-0-0", big)}${call("Bash-1-1", "after the long line")}`);
+    let joined = 0;
+    const { concat } = Buffer;
+    restores.push(spyOn(Buffer, "concat").mockImplementation(((list: readonly Uint8Array[], length?: number) => {
+      for (const piece of list) joined += piece.length;
+      return concat.call(Buffer, list, length);
+    }) as typeof Buffer.concat));
+    expect(lettaToolOutput(path, "Bash-1-1")).toBe("after the long line");
+    // each byte of the long line once: joining what was read so far again at every read copied 44 MiB here
+    expect(joined).toBeLessThan(2 * fs.statSync(path).size);
+    expect(lettaToolOutput(path, "Bash-0-0")).toBe(big);
+    // a last line Letta is still writing is not a call yet
+    writeFileSync(path, `${call("Bash-0-0", big)}${call("Bash-1-1", "unfinished").trimEnd()}`);
+    expect(lettaToolOutput(path, "Bash-1-1")).toBeNull();
+    expect(lettaToolOutput(path, "Bash-0-0")).toBe(big);
+  });
+
+  test("a file thread reads only the file the lookup authorized, and cuts the output to the cap there", async () => {
+    const path = join(root, "transcript.jsonl");
+    const other = join(root, "other.jsonl");
+    const long = "y".repeat(10_000);
+    writeFileSync(path, call("Bash-1-1", long));
+    writeFileSync(other, call("Bash-1-1", "another conversation's output"));
+    const authorized = fs.statSync(path);
+    expect(await letta.lettaToolOutputOffThread(path, "Bash-1-1", authorized, 20_000)).toBe(long);
+    expect(await letta.lettaToolOutputOffThread(path, "Bash-1-1", authorized, 100)).toBe(`${"y".repeat(100)}\n… trimmed`);
+    expect(await letta.lettaToolOutputOffThread(path, "Bash-9-9", authorized, 100)).toBeNull();
+    // the path names another file than the one authorized: its thread reads none of it
+    expect(await letta.lettaToolOutputOffThread(path, "Bash-1-1", fs.statSync(other), 20_000)).toBeNull();
+    expect(await letta.lettaToolOutputOffThread(other, "Bash-1-1", fs.statSync(other, { bigint: true }), 20_000)).toBe("another conversation's output");
+  });
+
+  test("serves no tool output from another transcript that a folder swap puts at the path around the lookup's open", async () => {
     const folder = join(root, "own");
     const elsewhere = join(root, "elsewhere");
     const away = join(root, "away");
     mkdirSync(folder);
     mkdirSync(elsewhere);
     const path = join(folder, "transcript.jsonl");
-    const call = (resultText: string) => `${JSON.stringify({ kind: "tool_call", name: "Bash", argsText: "{}", resultText, resultOk: true, captured_at: "2026-10-29T01:00:00.000Z", source_line_id: "Bash-1-1" })}\n`;
-    writeFileSync(path, call("the pane's own output"));
-    writeFileSync(join(elsewhere, "transcript.jsonl"), call("FOREIGN SECRET OUTPUT"));
-    expect(transcriptToolOutput("letta-transcript", path, "Bash-1-1")).toBe("the pane's own output");
+    writeFileSync(path, call("Bash-1-1", "the pane's own output"));
+    writeFileSync(join(elsewhere, "transcript.jsonl"), call("Bash-1-1", "FOREIGN SECRET OUTPUT"));
+    const own = lettaPane(path);
+    // the scan runs on this thread, where the open below is seen
+    setFilePoolOptions({ inline: runFileTask });
+    expect(await toolOutput(own.id, "Bash-1-1")).toBe("the pane's own output");
     // the path names the pane's own transcript when the lookup begins; its open meets the other folder
     let swaps = 0;
     const real = fs.openSync;
-    const spy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+    restores.push(spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
       if (args[0] !== path) return real(...args);
       swaps++;
       renameSync(folder, away);
@@ -119,11 +219,60 @@ describe("Letta transcript", () => {
         renameSync(folder, elsewhere);
         renameSync(away, folder);
       }
-    }) as typeof fs.openSync);
-    let answered: string | null;
-    try { answered = transcriptToolOutput("letta-transcript", path, "Bash-1-1"); } finally { spy.mockRestore(); }
+    }) as typeof fs.openSync));
+    expect(await toolOutput(own.id, "Bash-1-1")).toBeNull();
     expect(swaps).toBeGreaterThan(0);
-    expect(answered).toBeNull();
+  });
+
+  test("answers no tool output for a pane bound to another conversation while its transcript was scanned", async () => {
+    const path = join(root, "transcript.jsonl");
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, call("Bash-1-1", "the old conversation"));
+    writeFileSync(other, call("Bash-2-2", "the new conversation"));
+    const own = lettaPane(path);
+    expect(await toolOutput(own.id, "Bash-1-1")).toBe("the old conversation");
+    // `/new` in the pane once this lookup resolved it, which no other read sees before the scan answers
+    own.rebind(other, 1);
+    expect(await toolOutput(own.id, "Bash-1-1")).toBeNull();
+  });
+
+  test("refuses at once a pane another read saw bound to another conversation while its transcript was scanned", async () => {
+    const path = join(root, "transcript.jsonl");
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, call("Bash-1-1", "the old conversation"));
+    writeFileSync(other, call("Bash-2-2", "the new conversation"));
+    const own = lettaPane(path);
+    // the scan is held while the pane's letta moves on
+    const scan = letta.lettaToolOutputOffThread;
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    let scanning!: () => void;
+    const began = new Promise<void>((resolve) => { scanning = resolve; });
+    restores.push(spyOn(letta, "lettaToolOutputOffThread").mockImplementation(async (...args: Parameters<typeof scan>) => {
+      scanning();
+      await hold;
+      return scan(...args);
+    }));
+    const output = toolOutput(own.id, "Bash-1-1");
+    await began;
+    own.rebind(other);
+    expect((await paneTranscript(own.id)).path).toBe(other);
+    const resolved = own.resolution.mock.calls.length;
+    release();
+    expect(await output).toBeNull();
+    // the pane was not resolved again for it
+    expect(own.resolution.mock.calls.length).toBe(resolved);
+  });
+
+  test("answers busy, not missing, when no file thread is free to scan the transcript", async () => {
+    const path = join(root, "transcript.jsonl");
+    writeFileSync(path, call("Bash-1-1", "the call's output"));
+    const own = lettaPane(path);
+    // no thread and no waiting place: every file task is refused at once
+    setFilePoolOptions({ workers: 0, waiting: 0 });
+    await expect(toolOutput(own.id, "Bash-1-1")).rejects.toBeInstanceOf(FileBusyError);
+    setFilePoolOptions();
+    expect(await toolOutput(own.id, "Bash-1-1")).toBe("the call's output");
   });
 
   test("a field the reader does not know falls back, and a ref the output route refuses is not offered", () => {
