@@ -690,6 +690,18 @@
   .file-viewer-toolbar .file-viewer-modes > button:hover { color: var(--text-strong); }
 }
 
+/* a mouse's floor: a mode keeps its drawn height and takes a --pointer-target one through an invisible
+   expander above and below it, inside the toolbar's row; its width is its own, so the two share no click */
+@media (pointer: fine) {
+  .file-viewer-toolbar .file-viewer-modes > button { position: relative; }
+
+  .file-viewer-toolbar .file-viewer-modes > button::before {
+    content: "";
+    position: absolute;
+    inset: calc((var(--control-h) - var(--space-4) - var(--pointer-target)) / 2) 0;
+  }
+}
+
 /* the content fills the panel edge to edge; text keeps its own small inset */
 .file-viewer-docked .file-viewer-body { padding: 0; }
 

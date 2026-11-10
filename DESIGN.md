@@ -2709,6 +2709,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--space-1` carrying the meta line (size or partial-view notice, folder) and, at its end, the
   file's view modes as a compact segmented control (**Preview | Source** for Markdown in place of
   Show source, **Page | Source** for HTML) whose chosen segment is the row's one `--bg-hover` fill.
+  A mode is drawn `--control-h` − `--space-4` tall (`18px`, `16px` compact) and, with a mouse, takes clicks over
+  `--pointer-target` through an invisible `::before` expander above and below it, inside the row.
   The content fills the panel edge to edge (no inset, radius or frame around a page, PDF or
   video; code and Markdown keep their `--space-3` inset). The panel's left edge is an unseen
   `--space-2` grip that draws a 2px `--accent` seam under the pointer, while held and on focus.
@@ -3633,7 +3635,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Claude phone apps draw their composer buttons at the target size, which here would crowd the
   model label off the row. `scripts/tap-targets-demo-regression.ts` measures each hit area by
   `elementFromPoint` at `390px` and `412px` (and `390px` compact), and that a mouse at `1280px`
-  gets the drawn box only.
+  gets the drawn box only. It also holds a long sheet's Cancel, the Rename pane field and Settings'
+  search field to `--touch-target` on a `360x780` phone, and a changed row's Restore defaults and a
+  docked file's view modes to `--pointer-target` under a mouse.
 
 ### Command palette
 - At `<=480px` the header has no palette button: the More menu's first item, **Search panes and
