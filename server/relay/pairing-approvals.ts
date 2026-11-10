@@ -20,6 +20,8 @@ export type RemoteDecision = { outcome: "decided"; device_id: string } | { outco
 
 interface Waiting {
   request: RelayPairingRequest & { intent: PairingIntent };
+  /** when the comparison runs out, on this PC's clock */
+  expiresAt: number;
   /** the new device's key, and the id its row will have (accountDeviceId) */
   key: string;
   deviceId: string;
@@ -209,8 +211,10 @@ export class RelayPairingApprovals {
   /** Outside the window a comparison is refused before any prompt, so nobody the owner did not invite can raise one. */
   windowOpen(now = this.now()): boolean { return now < this.windowUntil; }
 
-  list(): RelayPairingRequest[] {
-    return [...this.waiting.values()].filter(({ membersOnly }) => !membersOnly).map(({ request }) => request);
+  /** `left_ms` is counted on each telling, so a window whose clock differs from this PC's still counts down right. */
+  list(now = this.now()): RelayPairingRequest[] {
+    return [...this.waiting.values()].filter(({ membersOnly }) => !membersOnly)
+      .map(({ request, expiresAt }) => ({ ...request, left_ms: Math.max(0, expiresAt - now) }));
   }
 
   private readonly joins: number[] = [];
@@ -252,9 +256,13 @@ export class RelayPairingApprovals {
       this.changed();
       decided.resolve(decision);
     };
-    this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent }, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false,
-      // fixed when the phone asked (session.ts), so a window that closes before its digits are shown changes nothing
-      localOnly: !(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen()), choices: decoys(digits), finish });
+    // fixed when the phone asked (session.ts), so a window that closes before its digits are shown changes nothing
+    const localOnly = !(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen());
+    // the PC's own windows are told, so their prompt asks for the digits to be typed on the other device.
+    // It follows this PC's window, not the other device's screen: a phone that pairs by an ordinary link
+    // while the add-me window is still open shows digits to compare, and the prompt's words hold for both.
+    this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent, ...(localOnly ? { local_only: true as const } : {}) },
+      expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, choices: decoys(digits), finish });
     this.changed();
     return { decision: decided.promise, withdraw: () => finish({ approved: false }) };
   }

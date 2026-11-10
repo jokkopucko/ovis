@@ -400,6 +400,18 @@ export interface RelayPairingRequest {
   expires_at: string;
   /** absent from an older server: `pc` */
   intent?: PairingIntent;
+  /**
+   * Asked while this PC waited to be added to an account (docs/account.md, "Adding a PC"): the device
+   * added from shows no digits, its person types this PC's there. It follows the PC's window, so a
+   * device that came by an ordinary link meanwhile has it too and shows digits to compare.
+   * Absent from an older server, or when false.
+   */
+  local_only?: boolean;
+  /**
+   * How long the request still waits, counted by the PC when it told this list: a window counts down
+   * from when it heard, since its own clock need not match the PC's `expires_at`. Absent from an older server.
+   */
+  left_ms?: number;
 }
 /**
  * The same request as an account member connected through the relay sees it: three candidates

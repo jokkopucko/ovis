@@ -358,7 +358,11 @@ messages):
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the
    person then **types the six digits the new PC shows** (not a tap: the directory's name is
-   anyone's), and approves on the PC.
+   anyone's), and approves on the PC. The PC's prompt says so (**… wants to add this PC to your
+   account. Type 123 456 on …, or check that … shows the same number, then press Approve here**)
+   instead of only asking to compare digits, since that device shows none: the request carries
+   `local_only: true` in `relay-pairings`. The mark follows the PC's add-me window, not the asking
+   device, so a phone that opens an ordinary link meanwhile gets the same words and compares.
 3. The device is then the PC's first member: it links, and enrolls the PC
    ([Enrolling a PC](#enrolling-a-pc)), so the account's other devices are let in and introduced.
 

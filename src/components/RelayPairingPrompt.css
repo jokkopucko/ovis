@@ -1,4 +1,4 @@
-/* phones waiting for approval: above every dialog (the palette's layer), at the top, a panel each */
+/* devices waiting for approval: above every dialog (the palette's layer), at the top, a panel each */
 .relay-pairing-layer {
   position: fixed;
   inset-block-start: calc(var(--space-3) + env(safe-area-inset-top, 0px));
@@ -30,6 +30,14 @@
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
   letter-spacing: var(--tracking-code);
+}
+
+/* the seconds the request still waits: beside the words, never jumping as the digits change */
+.relay-pairing-prompt .relay-pairing-left {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .relay-pairing-prompt .relay-error {

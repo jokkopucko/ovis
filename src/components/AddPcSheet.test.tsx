@@ -31,7 +31,7 @@ describe("the Add-a-PC sheet", () => {
     const store = new Map<string, string>();
     const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() };
     const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-    class HTMLElement { isConnected = true; focused = 0; focus(): void { this.focused += 1; } }
+    class HTMLElement { isConnected = true; focused = 0; focus(): void { this.focused += 1; } closest(): null { return null; } }
     opener = new HTMLElement();
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: HTMLElement });
