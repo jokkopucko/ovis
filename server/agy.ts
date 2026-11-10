@@ -312,9 +312,12 @@ function outputRef(path: string, step: Step): string {
   const index = indexes.get(path)!;
   return `agy:${hash(JSON.stringify([path, index.identity, index.revision, step.start, step.digest]))}`;
 }
+/** Parses an Agy JSONL transcript into user and assistant conversation turns, splitting background-task wakeups after completed replies. */
 export function parseAgyTranscript(text: string, path?: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const steps = path ? new Map(indexes.get(path)?.visible.map((step) => [step.index, step])) : undefined;
+  let idle = false;
+  let woken = false;
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     const value = entry(line);
@@ -325,6 +328,13 @@ export function parseAgyTranscript(text: string, path?: string): ConversationTur
       const envelope = agyEnvelope(content);
       const skills = envelope === null ? [] : agyInvokedSkills(envelope.request, envelope.metadata).map((skill) => ({ kind: "skill" as const, skill }));
       turns.push({ role: "user", ts, parts: [{ kind: "text", text: envelope?.request ?? content }, ...skills] });
+      idle = false;
+      woken = false;
+      continue;
+    }
+    if (value.type === "SYSTEM_MESSAGE") {
+      // A background task, timer or subagent notification after a tool-free answer resumes the planner in a new turn.
+      if (idle) { woken = true; idle = false; }
       continue;
     }
     if (value.type !== "PLANNER_RESPONSE" && value.type !== "GENERIC") continue;
@@ -350,9 +360,20 @@ export function parseAgyTranscript(text: string, path?: string): ConversationTur
       }
     }
     if (!parts.length) continue;
+    if (value.type === "PLANNER_RESPONSE") {
+      idle = (!Array.isArray(value.tool_calls) || value.tool_calls.length === 0) && content.trim().length > 0;
+    }
     const previous = turns.at(-1);
-    if (previous?.role === "assistant") { previous.parts.push(...parts); previous.end_ts = ts ?? undefined; }
-    else turns.push({ role: "assistant", ts, end_ts: ts ?? undefined, parts });
+    // a wake opens its turn with the planner's first step. A tool result that comes before it (or with no planner step
+    // after the notice at all) belongs to the reply that asked for it, and does not move that reply's end
+    const opens = woken && value.type === "PLANNER_RESPONSE";
+    if (previous?.role === "assistant" && !opens) {
+      previous.parts.push(...parts);
+      if (!woken && (!idle || value.type === "PLANNER_RESPONSE")) previous.end_ts = ts ?? undefined;
+    } else {
+      turns.push({ role: "assistant", ts, end_ts: ts ?? undefined, parts });
+      woken = false;
+    }
   }
   return turns;
 }

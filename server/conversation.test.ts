@@ -3752,10 +3752,15 @@ describe("Agy native ledger through shared paging", () => {
     add(8, "GENERIC", "late result");
     add(9, "EPHEMERAL_MESSAGE", "late context");
     expect((await page()).activity).toBe("idle");
-    add(10, "USER_INPUT", "next turn");
+    add(10, "SYSTEM_MESSAGE", "<SYSTEM_MESSAGE>background task finished</SYSTEM_MESSAGE>");
+    // the notice alone starts nothing: the finished reply is not drawn as running, also when no planner step follows it
+    expect((await page()).activity).toBe("idle");
+    add(11, "PLANNER_RESPONSE", "Woke up and finished", { tool_calls: [] });
+    expect((await page()).activity).toBe("idle");
+    add(12, "USER_INPUT", "next turn");
     expect((await page()).activity).toBe("working");
     // Rewind the new prompt; completion of the retained turn still clears activity.
-    db.exec("DELETE FROM steps WHERE idx >= 10");
+    db.exec("DELETE FROM steps WHERE idx >= 12");
     expect((await page()).activity).toBe("idle");
     forgetTranscriptState();
     expect((await page()).activity).toBe("idle");

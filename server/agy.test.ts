@@ -235,8 +235,55 @@ it("keeps the recorded skill invocation without its expanded metadata", () => {
   ]);
 });
 
+it("keeps a tool result that follows a wake notice with no planner step in the reply that asked for it", () => {
+  const step = (step_index: number, type: string, created_at: string, content = "", extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ step_index, type, status: "DONE", created_at, content, ...extra });
+  const turns = parseAgyTranscript([
+    step(0, "USER_INPUT", "2026-11-09T11:36:17Z", "Run it"),
+    step(1, "PLANNER_RESPONSE", "2026-11-09T11:36:25Z", "Done."),
+    // a hook's injected notice: no planner step answers it
+    step(2, "SYSTEM_MESSAGE", "2026-11-09T11:39:00Z", "<SYSTEM_MESSAGE>note</SYSTEM_MESSAGE>"),
+    step(3, "GENERIC", "2026-11-09T11:40:00Z", "late tool output"),
+  ].join("\n"));
+  expect(turns.map(({ role, end_ts, parts }) => ({ role, end_ts, kinds: parts.map((part) => part.kind) }))).toEqual([
+    { role: "user", end_ts: undefined, kinds: ["text"] },
+    // no wordless third turn, and the reply still ends when it was said
+    { role: "assistant", end_ts: "2026-11-09T11:36:25Z", kinds: ["text", "tool"] },
+  ]);
+});
+
 it("keeps raw input when it is not a complete recognized envelope", () => {
   const content = "<USER_REQUEST>\n/probe-skill hello\n</USER_REQUEST>\n<OTHER>raw</OTHER>";
   const turns = parseAgyTranscript(JSON.stringify({ step_index: 0, type: "USER_INPUT", status: "DONE", content }));
   expect(turns[0]?.parts).toEqual([{ kind: "text", text: content }]);
+});
+
+it("starts a new assistant turn when a SYSTEM_MESSAGE wakes the planner after a completed reply, while keeping mid-turn wakeups in the active turn", () => {
+  const step = (step_index: number, type: string, created_at: string, content = "", extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ step_index, type, status: "DONE", created_at, content, ...extra });
+  const turns = parseAgyTranscript([
+    step(0, "USER_INPUT", "2026-11-09T11:36:17Z", "Run background job"),
+    step(1, "PLANNER_RESPONSE", "2026-11-09T11:36:25Z", "Starting job.", { tool_calls: [{ name: "run_command", args: { CommandLine: "run-job" } }] }),
+    step(2, "GENERIC", "2026-11-09T11:36:30Z", "Tool is running as a background task"),
+    // A SYSTEM_MESSAGE arriving while tools are still active stays in the same assistant turn.
+    step(3, "SYSTEM_MESSAGE", "2026-11-09T11:36:35Z", "<SYSTEM_MESSAGE>early notice</SYSTEM_MESSAGE>"),
+    step(4, "PLANNER_RESPONSE", "2026-11-09T11:36:40Z", "Waiting for it to finish."),
+    // A late GENERIC result after a completed reply preserves the reply's completion timestamp and idle state.
+    step(5, "GENERIC", "2026-11-09T11:36:45Z", "late tool output"),
+    // Once a tool-free answer ends the sub-turn, a later SYSTEM_MESSAGE wakeup opens a new assistant turn with its own timestamps.
+    step(6, "SYSTEM_MESSAGE", "2026-11-09T13:09:40Z", "<SYSTEM_MESSAGE>task finished</SYSTEM_MESSAGE>"),
+    step(7, "PLANNER_RESPONSE", "2026-11-09T13:09:41Z", "Checking results.", { tool_calls: [{ name: "read_file", args: { AbsolutePath: "/out.log" } }] }),
+    step(8, "GENERIC", "2026-11-09T13:09:50Z", "ok"),
+    step(9, "PLANNER_RESPONSE", "2026-11-09T13:10:05Z", "All done."),
+  ].join("\n"));
+  expect(turns.map(({ role, ts, end_ts, parts }) => ({
+    role,
+    ts,
+    end_ts,
+    texts: parts.filter((part): part is Extract<typeof part, { kind: "text" }> => part.kind === "text").map((part) => part.text),
+  }))).toEqual([
+    { role: "user", ts: "2026-11-09T11:36:17Z", end_ts: undefined, texts: ["Run background job"] },
+    { role: "assistant", ts: "2026-11-09T11:36:25Z", end_ts: "2026-11-09T11:36:40Z", texts: ["Starting job.", "Waiting for it to finish."] },
+    { role: "assistant", ts: "2026-11-09T13:09:41Z", end_ts: "2026-11-09T13:10:05Z", texts: ["Checking results.", "All done."] },
+  ]);
 });
