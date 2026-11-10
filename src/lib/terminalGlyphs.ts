@@ -54,6 +54,8 @@ const MAX_STRETCH = 1.1;
 
 /** how many copies of a glyph xterm's WidthCache measures at once (WidthCacheSettings.REPEAT) */
 const XTERM_MEASURE_REPEAT = 32;
+/** composition-view fits kept before the cache starts over: far more syllables than a session types */
+const VIEW_FIT_CACHE_MAX = 4096;
 
 /** marks a cell this module drew itself, so the observer does not take it for a span to adjust */
 const BOX_CLASS = "herdr-box-glyph";
@@ -293,6 +295,8 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
   if (!rows || !screen || !measure) return () => {};
   // glyph advances by "<bold><italic><text>", for the font they were measured in
   const widths = new Map<string, number>();
+  // the composition view's fit by glyph, weight, size, family and cell width (null: drawn as it is)
+  const viewFits = new Map<string, GlyphFit | null>();
   // the characters that asked for their faces in that font (every style's: a face of each weight is followed)
   const asked = new Set<string>();
   // the box characters that asked while drawn as boxes
@@ -539,6 +543,7 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
    */
   const lateFaces = followLateFaces(document.fonts as FontFaceSet | undefined, (callback) => { requestAnimationFrame(callback); }, () => {
     widths.clear();
+    viewFits.clear();
     const family = term.options.fontFamily ?? "";
     const double = `"${ICON_FAMILY}"`;
     const single = `'${ICON_FAMILY}'`;
@@ -546,6 +551,10 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
     else if (family.includes(single)) term.options.fontFamily = family.replace(single, double);
     term.refresh(0, term.rows - 1);
   });
+  // the composition view's own follower: a face that only a composing glyph reached measures the view again
+  // when it arrives, and nothing else. No row drew from it, so the rows are neither measured nor drawn again
+  // (that would blank the pane for a frame under the person's typing)
+  const viewFaces = followLateFaces(document.fonts as FontFaceSet | undefined, (callback) => { requestAnimationFrame(callback); }, () => { viewFits.clear(); });
   adjustAll(rows.querySelectorAll("span"));
   placeBoxes();
   const observer = new MutationObserver((records) => {
@@ -580,16 +589,30 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
     // a span), which a canvas can measure differently (Hangul on macOS WebKit: 13px against 11.2px)
     const xtermMeasure = term.element?.querySelector<HTMLElement>(".xterm-width-cache-measure-container .xterm-char-measure-element");
     if (view.classList.contains("active") && cellWidth > 0 && xtermMeasure) {
-      // xterm's own element: what it held goes back once the width is read
-      const held = xtermMeasure.textContent;
-      xtermMeasure.textContent = first.repeat(XTERM_MEASURE_REPEAT);
-      const drawn = xtermMeasure.offsetWidth / XTERM_MEASURE_REPEAT;
-      xtermMeasure.textContent = held;
-      measure.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
-      const glyphWidth = measure.measureText(first).width;
-      // a glyph wider than its one cell takes two in the row
-      const cells = drawn > cellWidth + MIN_SPACING_PX ? 2 : 1;
-      const fit = glyphFit(cells * cellWidth - drawn, glyphWidth, cellWidth);
+      // xterm rewrites the box several times for each key an IME takes (its text, place and font), and
+      // reading offsetWidth makes the browser recalculate the whole page's style first: measured on
+      // every rewrite, fast Korean typing kept the main thread busy and the box lagged behind. A fit
+      // is measured once for its glyph and font; a face that arrives late clears it with the widths
+      // the device pixel ratio too: xterm measures its cells again when the page zooms or the window changes screen
+      const key = `${first}\u0000${fontWeight}\u0000${fontSize}\u0000${fontFamily}\u0000${cellWidth}\u0000${globalThis.devicePixelRatio ?? 1}`;
+      let fit = viewFits.get(key);
+      if (fit === undefined) {
+        // a face still loading for this glyph is followed from here as well: the rows ask only for text they
+        // draw, and a syllable composed before any row drew its script would keep the stand-in's fit for good
+        viewFaces.ask(fontFamily ?? "", first);
+        // xterm's own element: what it held goes back once the width is read
+        const held = xtermMeasure.textContent;
+        xtermMeasure.textContent = first.repeat(XTERM_MEASURE_REPEAT);
+        const drawn = xtermMeasure.offsetWidth / XTERM_MEASURE_REPEAT;
+        xtermMeasure.textContent = held;
+        measure.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+        const glyphWidth = measure.measureText(first).width;
+        // a glyph wider than its one cell takes two in the row
+        const cells = drawn > cellWidth + MIN_SPACING_PX ? 2 : 1;
+        fit = glyphFit(cells * cellWidth - drawn, glyphWidth, cellWidth);
+        if (viewFits.size >= VIEW_FIT_CACHE_MAX) viewFits.clear();
+        viewFits.set(key, fit);
+      }
       if (fit) {
         size = `${fontSize * fit.scale}px`;
         spacing = `${fit.spacing / fit.stretch}px`;
@@ -625,5 +648,6 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
     observer.disconnect();
     viewObserver.disconnect();
     lateFaces.stop();
+    viewFaces.stop();
   };
 }

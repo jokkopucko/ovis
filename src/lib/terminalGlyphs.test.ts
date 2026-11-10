@@ -269,7 +269,7 @@ class FakeSpan {
  * 6px wide while its face has not loaded (the stand-in's width) and 13px once it has, xterm's rows
  * redrawn only when the test says (`draw`), and frames run by hand.
  */
-function glyphPage(faces: FakeFace[], texts = ["\uf07b", "가"]) {
+function glyphPage(faces: FakeFace[], texts = ["\uf07b", "가"], composing = false) {
   const before = GLOBALS.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const frames: (() => void)[] = [];
   const observers: ((records: { addedNodes: FakeSpan[] }[]) => void)[] = [];
@@ -288,17 +288,37 @@ function glyphPage(faces: FakeFace[], texts = ["\uf07b", "가"]) {
   const span = (text: string): FakeSpan => Object.assign(new FakeSpan(), { textContent: text });
   const drawn = texts.map(span);
   const rows = { querySelectorAll: () => drawn, getBoundingClientRect: () => ({ left: 0, top: 0, width: 78 }), offsetWidth: 78 };
-  const screen = { style: { width: "78px", height: "15px" }, querySelector: () => null };
+  // xterm's composition view, open while an IME composes, and the element its WidthCache measures in:
+  // a Hangul syllable 13px wide there once a late Hangul face has loaded, 11.245px in the stand-in
+  // before it, anything else a 7.8px cell
+  const hangul = faces.find((each) => each.family.includes("Hangul"));
+  const view = Object.assign(new FakeSpan(), { className: "composition-view active" });
+  Object.assign(view.style, { fontSize: "13px", transform: "", transformOrigin: "", paddingLeft: "" });
+  const xtermMeasure = {
+    textContent: "", reads: 0,
+    get offsetWidth() {
+      this.reads += 1;
+      const syllable = hangul && hangul.status !== "loaded" ? IOS_HANGUL : 13;
+      return this.textContent.length * (/^[\uac00-\ud7a3]/u.test(this.textContent) ? syllable : 7.8);
+    },
+  };
+  const screen = { style: { width: "78px", height: "15px" }, querySelector: (selector: string) => composing && selector === ".composition-view" ? view : null };
   const term = {
     cols: 10, rows: 1, refreshes: 0,
     options: { fontFamily: '"Symbols Nerd Font Mono", Menlo, "Ovis Hangul Mono", monospace', fontSize: 13, fontWeight: "normal", fontWeightBold: "bold" },
-    element: { querySelector: (selector: string) => selector === ".xterm-rows" ? rows : selector === ".xterm-screen" ? screen : null },
+    element: { querySelector: (selector: string) => selector === ".xterm-rows" ? rows : selector === ".xterm-screen" ? screen
+      : selector.endsWith(".xterm-char-measure-element") ? xtermMeasure : null },
     refresh() { term.refreshes += 1; },
   };
   const stop = adjustTerminalGlyphs(term as unknown as Terminal);
   return {
-    term, stop,
+    term, stop, view, xtermMeasure,
     runFrames: () => { for (const callback of frames.splice(0)) callback(); },
+    /** xterm writes the composition view's text, which its observer sees as a mutation */
+    compose: (text: string): void => {
+      view.textContent = text;
+      observers[1]!([]);
+    },
     /** xterm draws a row again: its new span goes through the observer, as a MutationObserver delivers it */
     draw: (text: string, className = "", letterSpacing = ""): FakeSpan => {
       const added = Object.assign(span(text), { className });
@@ -358,6 +378,113 @@ describe("adjustTerminalGlyphs fitting wide glyphs", () => {
     expect(graphemes(run.textContent)).toBe(2);
     const px = (property: string): number => Number.parseFloat(declared(run, property)!);
     expect(px("padding-left") + 2 * (13 + px("letter-spacing")) + px("margin-right")).toBeCloseTo(4 * 7.8, 5);
+  });
+});
+
+/** everything the fit writes to the composition view */
+const viewFit = (view: FakeSpan) => ({
+  fontSize: view.style["fontSize"], transform: view.style["transform"], transformOrigin: view.style["transformOrigin"],
+  letterSpacing: view.style["letterSpacing"], paddingLeft: view.style["paddingLeft"],
+});
+
+/** the fit a page that never measured before gives one composing syllable */
+function freshViewFit(faces: FakeFace[], text: string, fontSize = 13) {
+  const fresh = glyphPage(faces, [], true);
+  try {
+    fresh.term.options.fontSize = fontSize;
+    fresh.compose(text);
+    return viewFit(fresh.view);
+  } finally {
+    fresh.stop();
+    fresh.restore();
+  }
+}
+
+describe("adjustTerminalGlyphs fitting the composition view", () => {
+  let page: ReturnType<typeof glyphPage> | undefined;
+  afterEach(() => {
+    page?.stop();
+    page?.restore();
+    page = undefined;
+  });
+
+  it("measures a composing syllable once for its glyph and font, however often xterm rewrites the box", () => {
+    const faces = [face('"Symbols Nerd Font Mono"', ICON_RANGE)];
+    const larger = freshViewFit(faces, "한", 14);
+    page = glyphPage(faces, [], true);
+    // an IME's keys rewrite the box's text, place and font several times each
+    for (const text of ["ㅎ", "하", "한"]) page.compose(text);
+    const fitted = viewFit(page.view);
+    expect(fitted.transform).toMatch(/^scaleX\(/);
+    expect(fitted.transformOrigin).toBe("0 0");
+    expect(Number.parseFloat(fitted.letterSpacing!)).toBeGreaterThan(0);
+    expect(Number.parseFloat(fitted.paddingLeft!)).toBeGreaterThan(0);
+    expect(page.xtermMeasure.reads).toBe(3);
+    for (const text of ["한", "하", "한"]) page.compose(text);
+    expect(page.xtermMeasure.reads).toBe(3);
+    expect(viewFit(page.view)).toEqual(fitted);
+    // xterm's own element holds what it held before each measure
+    expect(page.xtermMeasure.textContent).toBe("");
+
+    page.term.options.fontSize = 14;
+    page.compose("한");
+    expect(page.xtermMeasure.reads).toBe(4);
+    expect(viewFit(page.view)).toEqual(larger);
+    expect(larger.fontSize).not.toBe(fitted.fontSize);
+  });
+
+  it("measures a composing syllable again once its face arrived, though a later arrival set the family back", async () => {
+    const inFace = freshViewFit([face('"Symbols Nerd Font Mono"', ICON_RANGE, "loaded"), face('"Ovis Hangul Mono"', HANGUL_RANGE, "loaded")], "한");
+    const icons = face('"Symbols Nerd Font Mono"', ICON_RANGE);
+    const hangul = face('"Ovis Hangul Mono"', HANGUL_RANGE);
+    page = glyphPage([icons, hangul], ["\uf07b", "가"], true);
+    const family = page.term.options.fontFamily;
+    page.compose("한");
+    const inStandIn = viewFit(page.view);
+    expect(page.xtermMeasure.reads).toBe(1);
+    // each arrival in a frame of its own: the second sets the family back as it was
+    hangul.arrive();
+    await settled([hangul]);
+    page.runFrames();
+    icons.arrive();
+    await settled([icons]);
+    page.runFrames();
+    expect(page.term.options.fontFamily).toBe(family);
+    page.compose("한");
+    expect(page.xtermMeasure.reads).toBe(2);
+    expect(viewFit(page.view)).toEqual(inFace);
+    expect(inFace).not.toEqual(inStandIn);
+  });
+});
+
+describe("adjustTerminalGlyphs fitting a syllable composed before any row drew its script", () => {
+  let page: ReturnType<typeof glyphPage> | undefined;
+  afterEach(() => {
+    page?.stop();
+    page?.restore();
+    page = undefined;
+  });
+
+  it("measures it again once its face arrived, though no row had asked for that face", async () => {
+    const inFace = freshViewFit([face('"Symbols Nerd Font Mono"', ICON_RANGE, "loaded"), face('"Ovis Hangul Mono"', HANGUL_RANGE, "loaded")], "한");
+    const icons = face('"Symbols Nerd Font Mono"', ICON_RANGE);
+    const hangul = face('"Ovis Hangul Mono"', HANGUL_RANGE);
+    // no row holds Korean yet: the composition is the first text to reach the face
+    page = glyphPage([icons, hangul], [], true);
+    const family = page.term.options.fontFamily;
+    page.compose("한");
+    const inStandIn = viewFit(page.view);
+    expect(page.xtermMeasure.reads).toBe(1);
+    hangul.arrive();
+    await settled([hangul]);
+    page.runFrames();
+    page.compose("하");
+    page.compose("한");
+    expect(viewFit(page.view)).toEqual(inFace);
+    expect(inFace).not.toEqual(inStandIn);
+    // no row drew from the face: the rows are not drawn again and the family is left as it was
+    expect(page.term.refreshes).toBe(0);
+    expect(page.term.options.fontFamily).toBe(family);
   });
 });
 
