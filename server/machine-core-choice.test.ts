@@ -1,5 +1,5 @@
 import { expect, it, spyOn } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -23,7 +23,7 @@ const waits = [...quiet, "server error later"];
 // enter, or another socket than the one the server reports; or in a folder another account could swap: outside the
 // account's own roots, or below a folder others may write or another account owns
 const confinement = ["socket link", "not a socket", "open folder", "other socket id", "outside home", "writable parent", "foreign parent", "foreign root parent", "runtime dir"];
-it.each(["connect", "default bridge", "default herdr", "unbridged herdr", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect", "unanswered other name", ...confinement])("chooses the PC's own core server: %s", async (outcome) => {
+it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "default herdr installed", "unbridged herdr", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect", "unanswered other name", ...confinement])("chooses the PC's own core server: %s", async (outcome) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "machine-core-choice-")));
   const id = "12345678-1234-1234-1234-123456789abc";
   // the core adapter's socket in its server's own state folder (server/herdr-core/runtime.ts), as startRuntime leaves it
@@ -60,8 +60,12 @@ it.each(["connect", "default bridge", "default herdr", "unbridged herdr", "newer
   // default bridge: this app's bridge already serves the PC's default herdr socket, as on a saved PC that reconnects
   const bridge = { socket_path: join(dir, ".config/herdr/herdr.sock"), pid: process.pid, port: 23456, token: "b".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true };
   // default herdr: that herdr also answers at its socket, so the PC's own Ovis lists it among the account's sessions
-  const bridged = outcome === "default bridge" || outcome === "default herdr";
-  const listedHere = bridged ? [bridge, descriptor] : [descriptor];
+  // (chosen: by its socket on the card of a PC being added; installed: met by the connect an install ends with)
+  const beside = outcome.startsWith("default herdr");
+  const bridged = outcome === "default bridge" || beside;
+  // and this app's bridge serves the account's named session too, for a setup that chooses it
+  const workBridge = { ...bridge, socket_path: join(dir, ".config/herdr/sessions/work/herdr.sock"), port: 34567, token: "c".repeat(64) };
+  const listedHere = beside ? [bridge, workBridge, descriptor] : bridged ? [bridge, descriptor] : [descriptor];
   const registry = join(dir, ".config/herdr-web-ui/bridges");
   mkdirSync(registry, { recursive: true });
   const registration = join(registry, createHash("sha256").update(socket).digest("hex") + ".json");
@@ -73,9 +77,9 @@ it.each(["connect", "default bridge", "default herdr", "unbridged herdr", "newer
   const herdr = quiet.includes(outcome) ? undefined : Bun.listen({ unix: sessions[0]!.socket_path, socket: { data() {} } });
   // unbridged herdr: herdr answers at the PC's own socket with no bridge in front yet (right after an app update, before
   // this app's runtime is there again), beside the core server
-  const tui = outcome === "unbridged herdr" || outcome === "default herdr" ? Bun.listen({ unix: join(dir, ".config/herdr/herdr.sock"), socket: { data() {} } }) : undefined;
+  const tui = outcome === "unbridged herdr" || beside ? Bun.listen({ unix: join(dir, ".config/herdr/herdr.sock"), socket: { data() {} } }) : undefined;
   if (!herdr) sessions.length = 0;
-  if (outcome === "default herdr") sessions.push({ socket_path: bridge.socket_path, label: "Default session" } as typeof sessions[number]);
+  if (beside) sessions.push({ socket_path: bridge.socket_path, label: "Default session" } as typeof sessions[number]);
   const runtimeDir = join(dir, "runtime");
   mkdirSync(join(runtimeDir, "bin"), { recursive: true });
   symlinkSync(process.execPath, join(runtimeDir, "bin/bun"));
@@ -98,18 +102,21 @@ it.each(["connect", "default bridge", "default herdr", "unbridged herdr", "newer
       return out;
     }),
     spyOn(posixHost, "herdrVersion").mockResolvedValue("herdr 0.9.0"),
-    spyOn(posixHost, "inspect").mockResolvedValue({ platform: "linux-x64", home: dir, herdrPath: "/fixture/herdr", expectedSocket: join(dir, ".config/herdr/herdr.sock"), bundleReady: outcome !== "unbridged herdr", bundleOlder: false, descriptors: listedHere, runtimeDir, registryDir: registry }),
+    // as the PC answers: a chosen socket is the one its bridge registers, beside the default session's own
+    spyOn(posixHost, "inspect").mockImplementation(async (_ssh, _session, chosen) => ({ platform: "linux-x64", home: dir, herdrPath: "/fixture/herdr", expectedSocket: chosen ?? bridge.socket_path, defaultSocket: bridge.socket_path, bundleReady: outcome !== "unbridged herdr", bundleOlder: false, descriptors: listedHere, runtimeDir, registryDir: registry })),
     spyOn(posixHost, "descriptors").mockResolvedValue(listedHere),
+    // default herdr: the fixture's sockets answer no herdr request, so a chosen one is said usable as a running herdr's is
+    ...(beside ? [spyOn(posixHost, "chosenSocketStatus").mockResolvedValue("usable")] : []),
     spyOn(posixHost, "alive").mockImplementation(async () => !selected || outcome !== "stopped after proof"),
     spyOn(posixHost, "installBundle").mockImplementation(async () => { installs++; }),
     spyOn(posixHost, "start").mockImplementation(async () => { starts++; throw new Error("must not start herdr"); }),
     spyOn(SshConnection.prototype, "forward").mockImplementation(async (port, remotePort) => {
-      const served = remotePort === bridge.port && bridged ? bridge : descriptor;
+      const served = remotePort === bridge.port && bridged ? bridge : remotePort === workBridge.port && beside ? workBridge : descriptor;
       expect(remotePort).toBe(served.port);
       relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
         expect(request.headers.get("authorization")).toBe(`Bearer ${served.token}`);
         const path = new URL(request.url).pathname;
-        if (path === "/api/bridge" && served === bridge) return Response.json({ ...bridge, socket_id: "fixture:tui", herdr: { protocol: 22, version: "0.9.0", runtime: "herdr" } });
+        if (path === "/api/bridge" && served !== descriptor) return Response.json({ ...served, socket_id: "fixture:tui", herdr: { protocol: 22, version: "0.9.0", runtime: "herdr" } });
         if (path === "/api/bridge") {
           // the server cannot reach its core adapter right now: every identity request, or (after proof) the one after discovery
           const discovering = new URL(request.url).searchParams.get("discover") === "herdr";
@@ -130,21 +137,17 @@ it.each(["connect", "default bridge", "default herdr", "unbridged herdr", "newer
   ];
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
   const retries = spyOn(MachineManager.prototype as unknown as { retryLater(runtime: unknown): void }, "retryLater");
+  // a setup until it ends, or (approval) goes on, as before this choice existed, to what it installs or starts there
+  const settle = (start: () => SetupJob) => new Promise<SetupJob>((resolve, reject) => {
+    let job: SetupJob | undefined;
+    const timeout = setTimeout(() => { off(); reject(new Error("setup did not settle")); }, 5000);
+    const off = manager.subscribe(() => { if (job && ["failed", "connected", "approval"].includes(job.phase)) { clearTimeout(timeout); off(); resolve(job); } });
+    job = start();
+  });
   // auto: a reconnect or an update that asks nobody; false, a setup the user started in its dialog
-  const run = (request: SetupRequest, auto = true) => new Promise<SetupJob>((resolve, reject) => {
-    let job: SetupJob | undefined;
-    const timeout = setTimeout(() => { off(); reject(new Error("setup did not settle")); }, 5000);
-    // approval: a setup the user started that goes on, as before this choice existed, to what it installs or starts there
-    const off = manager.subscribe(() => { if (job && ["failed", "connected", "approval"].includes(job.phase)) { clearTimeout(timeout); off(); resolve(job); } });
-    job = manager.setup({ ...request, machine_id: id, update_remote: true }, { auto });
-  });
+  const run = (request: SetupRequest, auto = true) => settle(() => manager.setup({ ...request, machine_id: id, update_remote: true }, { auto }));
   // a PC being added in its dialog: no saved PC is named
-  const add = (request: SetupRequest) => new Promise<SetupJob>((resolve, reject) => {
-    let job: SetupJob | undefined;
-    const timeout = setTimeout(() => { off(); reject(new Error("setup did not settle")); }, 5000);
-    const off = manager.subscribe(() => { if (job && ["failed", "connected", "approval"].includes(job.phase)) { clearTimeout(timeout); off(); resolve(job); } });
-    job = manager.setup({ ...request, update_remote: true }, { auto: false });
-  });
+  const add = (request: SetupRequest) => settle(() => manager.setup({ ...request, update_remote: true }, { auto: false }));
   // the saved PC's own reconnect: a retry scheduled, or a decision for the user, whichever comes first
   const reconnect = () => {
     const settled = Promise.withResolvers<"retry" | "decision">();
@@ -184,6 +187,32 @@ it.each(["connect", "default bridge", "default herdr", "unbridged herdr", "newer
       expect(manager.endpoint(added.machine_id!)).toBeUndefined();
       // and connects to the one chosen
       expect(await add({ destination: "fixture-added", own_ovis: socket })).toMatchObject({ phase: "connected", runtime: "herdr-core" });
+      expect(starts).toBe(0);
+      return;
+    }
+    if (outcome === "default herdr chosen") {
+      // "Use Default session" on that card names the default socket: the PC connects to it and is saved with no socket
+      // chosen, so after its reboot it starts herdr by itself instead of stopping at a session that is gone (#3518)
+      const byDefault = await add({ destination: "fixture-default", herdr_socket: bridge.socket_path });
+      expect(byDefault).toMatchObject({ phase: "connected", runtime: "herdr" });
+      expect(manager.list().find((pc) => pc.id === byDefault.machine_id)?.target).toEqual({ destination: "fixture-default" });
+      expect((JSON.parse(readFileSync(join(dir, "machines.json"), "utf8")) as { id: string; target: unknown }[]).find((pc) => pc.id === byDefault.machine_id)?.target).toEqual({ destination: "fixture-default" });
+      // saved, it is not asked again: its dialog connects to its herdr as any saved PC's does
+      const again = await settle(() => manager.setup({ destination: "fixture-default", machine_id: byDefault.machine_id! }));
+      expect(again).toMatchObject({ phase: "connected", runtime: "herdr" });
+      expect(again.action_required ?? null).toBeNull();
+      // a named session's socket stays the choice it was
+      const named = await add({ destination: "fixture-named", session: "work", herdr_socket: sessions[0]!.socket_path });
+      expect(named).toMatchObject({ phase: "connected", runtime: "herdr" });
+      expect(manager.list().find((pc) => pc.id === named.machine_id)?.target).toEqual({ destination: "fixture-named", session: "work", herdr_socket: sessions[0]!.socket_path });
+      expect(starts).toBe(0);
+      return;
+    }
+    if (outcome === "default herdr installed") {
+      // an install's own connect of a PC not added yet has no card to ask on: it connects to that herdr, as before (#3518)
+      const installed = await settle(() => manager.setup({ destination: "fixture-installed" }, { keysOnly: true, fromInstall: true }));
+      expect(installed).toMatchObject({ phase: "connected", runtime: "herdr" });
+      expect(installed.action_required ?? null).toBeNull();
       expect(starts).toBe(0);
       return;
     }
@@ -420,5 +449,28 @@ it("asks for a new choice instead of retrying when a saved Windows PC is set to 
     expect(retries).not.toHaveBeenCalled();
   } finally {
     clearTimeout(timeout); off(); manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// What tells the default session chosen by its socket (saved as no choice) from any other socket: both are spelled as
+// the bridge spells its own, through a link too
+it("spells the session's own socket beside the one chosen", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "machine-core-inspect-")));
+  mkdirSync(join(dir, ".config/herdr/sessions/work"), { recursive: true });
+  symlinkSync(dir, join(dir, "link"));
+  const ssh = { run: async (command: string) => {
+    const shell = Bun.spawn(["sh", "-c", command], { env: { PATH: process.env["PATH"] ?? "", HOME: dir }, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(shell.stdout).text(), new Response(shell.stderr).text(), shell.exited]);
+    if (code !== 0) throw new Error(err);
+    return out;
+  } } as unknown as SshConnection;
+  try {
+    const own = join(dir, ".config/herdr/herdr.sock"), work = join(dir, ".config/herdr/sessions/work/herdr.sock");
+    expect(await posixHost.inspect(ssh)).toMatchObject({ expectedSocket: own, defaultSocket: own });
+    expect(await posixHost.inspect(ssh, undefined, join(dir, "link/.config/herdr/herdr.sock"))).toMatchObject({ expectedSocket: own, defaultSocket: own });
+    expect(await posixHost.inspect(ssh, undefined, work)).toMatchObject({ expectedSocket: work, defaultSocket: own });
+    expect(await posixHost.inspect(ssh, "work", work)).toMatchObject({ expectedSocket: work, defaultSocket: work });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

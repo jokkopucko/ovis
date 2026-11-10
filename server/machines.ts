@@ -129,6 +129,10 @@ interface JobState {
   installationApproved?: boolean;
   /** started by the server for a PC whose bridge is out of date: key-only SSH, approval already given */
   auto: boolean;
+  /** the connect an install ends with: it has no dialog to show a choice in */
+  fromInstall?: boolean;
+  /** the socket chosen in this setup is the default session's own (prepare): the PC is saved with none chosen */
+  defaultSocket?: boolean;
   public: SetupJob;
   abort: AbortController;
   pending?: { resolve(value: string): void; reject(error: Error): void };
@@ -1259,6 +1263,7 @@ export class MachineManager {
     const resumeRetry = existing?.machine.state === "reconnecting";
     const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: "Connecting with SSH keys and ssh-agent…", challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
     if (options.expectedRevision) job.expectedRevision = options.expectedRevision;
+    if (options.fromInstall) job.fromInstall = true;
     if (job.update && existing) { job.runtime = existing; existing.machine.update_error = null; }
     if (job.update && existing && !auto) existing.updateCancelled = false;
     job.timer.unref();
@@ -1302,7 +1307,11 @@ export class MachineManager {
         runtime.move = undefined;
         const left = { target: runtime.machine.target, error: runtime.machine.error, herdr: runtime.machine.herdr, snapshot: runtime.machine.snapshot, ownOvisAt: runtime.ownOvisAt, finishes: runtime.finishes.copy() };
         try {
-          runtime.machine.target = target;
+          // The default session chosen by its socket is saved as no choice: a PC pinned to that socket would stop at
+          // "no longer running" after its reboot, where one saved without it starts herdr by itself
+          let saved = target;
+          if (job.defaultSocket) { saved = { ...target }; delete saved.herdr_socket; }
+          runtime.machine.target = saved;
           if (move) {
             // what went wrong at the address it left is not this one's: a read there clears it as any read does
             runtime.machine.error = null;
@@ -1492,6 +1501,7 @@ export class MachineManager {
       if (runtime.generation === generation && !moving) runtime.machine.remote_ovis = left;
     };
     const { host, inspection } = await detectHost(ssh, session, target.herdr_socket);
+    if (job) job.defaultSocket = !session && !!target.herdr_socket && inspection.expectedSocket === inspection.defaultSocket;
     // the account's herdr sessions by the confined rule (server/herdr-discovery.ts), for when no Ovis there lists them
     const localSessions = async () => {
       let sessions: FoundHerdrSession[] = [];
@@ -1540,7 +1550,8 @@ export class MachineManager {
     const asked = !!job && !job.auto;
     // A PC being added has no connection to keep: its setup offers the PC's own Ovis beside a herdr that already runs
     // there too, so a PC that runs both is not taken for a herdr PC without a word. A saved PC connects as before
-    const adding = asked && !this.machines.has(runtime.machine.id);
+    // An install's own connect is not asked either: its job has no card to show the choice on
+    const adding = asked && !job.fromInstall && !this.machines.has(runtime.machine.id);
     if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || asked && candidates.length > 0 && (adding || !await servedAlready()))) {
       const found: FoundOvis[] = [];
       const sessions = new Map<string, FoundHerdrSession>();

@@ -83,6 +83,8 @@ export interface HostInspection {
   herdrPath: string;
   /** the socket the bridge will register, exactly as its own bridgeIdentity() spells it */
   expectedSocket: string;
+  /** the socket of the session itself, spelled the same way: tells a chosen socket that is no choice (POSIX only) */
+  defaultSocket?: string;
   bundleReady: boolean;
   bundleOlder: boolean;
   descriptors: BridgeDescriptor[];
@@ -172,11 +174,13 @@ export const posixHost: RemoteHost = {
     // the same XDG_CONFIG_HOME rule remote-entry.ts and herdr itself follow
     const herdrConfig = `${xdgConfig?.startsWith("/") ? xdgConfig : `${home}/.config`}/herdr`;
     if (socket !== undefined && !validHerdrSocket(socket)) throw new Error("Invalid herdr socket path");
-    const nominalSocket = socket ?? (session ? `${herdrConfig}/sessions/${session}/herdr.sock` : `${herdrConfig}/herdr.sock`);
-    const expectedSocket = await ssh.run(`socket=${shellQuote(nominalSocket)}; if test -d "\${socket%/*}"; then cd -P "\${socket%/*}" && printf '%s/herdr.sock' "$PWD"; else printf '%s' "$socket"; fi`);
+    const sessionSocket = session ? `${herdrConfig}/sessions/${session}/herdr.sock` : `${herdrConfig}/herdr.sock`;
+    const spelled = (nominal: string) => ssh.run(`socket=${shellQuote(nominal)}; if test -d "\${socket%/*}"; then cd -P "\${socket%/*}" && printf '%s/herdr.sock' "$PWD"; else printf '%s' "$socket"; fi`);
+    const expectedSocket = await spelled(socket ?? sessionSocket);
+    const defaultSocket = socket === undefined ? expectedSocket : await spelled(sessionSocket);
     return {
       platform: `${os === "Darwin" ? "darwin" : "linux"}-${arch === "x86_64" ? "x64" : "arm64"}`,
-      home, herdrPath: herdrPath ?? "", expectedSocket,
+      home, herdrPath: herdrPath ?? "", expectedSocket, defaultSocket,
       bundleReady: lines.includes("bundle-ready"), bundleOlder: lines.includes("bundle-older"),
       descriptors: parseDescriptors(lines),
       runtimeDir: `${home}/${BUNDLE_DIR}`, registryDir: `${home}/.config/herdr-web-ui/bridges`,
