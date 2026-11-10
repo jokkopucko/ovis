@@ -127,7 +127,8 @@ describe("account enrollment ownership", () => {
   const laterSignIn = async (run: Run) => {
     const first = await run.accountStore.get("session");
     if (first === undefined) throw new TypeError("Missing sign-in");
-    return { first, later: { ...first, access_token: run.service.issueToken("account"), refresh_token: "later" } };
+    // a sign-in of its own, as the service's answer makes one (sessionOf): the stored one may carry an id by now
+    return { first, later: { ...first, access_token: run.service.issueToken("account"), refresh_token: "later", sign_in_id: "later" } };
   };
 
   it("does not list a pairing after Forget releases a held renewal", async () => {

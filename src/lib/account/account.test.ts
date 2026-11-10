@@ -121,6 +121,27 @@ describe("a sign-in shared by tabs", () => {
     expect(await store.get("session")).toBeDefined();
   });
 
+  it("keeps a sign-in saved without an id the same one across its first refresh, for a call bound to a copy read before it", async () => {
+    const service = serviceWithSignIn();
+    let now = Date.now();
+    const { store, session } = await signIn(service, memoryAccountStore(), () => now);
+    // as a build from before sign-ins had an id stored it
+    const { sign_in_id: _later, ...old } = session;
+    await store.set("session", old);
+    const account = new AccountService({ store, fetch: service.fetch, now: () => now, lock: memoryLock() });
+    const read = await account.session();
+    expect(read?.sign_in_id).toBeDefined();
+    expect((await store.get("session"))?.sign_in_id).toBe(read!.sign_in_id);
+    // two readers agree on the id
+    expect((await account.session())?.sign_in_id).toBe(read!.sign_in_id);
+    // the access token runs out: any call refreshes it, which changes the refresh token
+    now = session.expires_at;
+    await account.listPcs();
+    expect((await store.get("session"))?.refresh_token).not.toBe(read!.refresh_token);
+    // a call bound to the copy read before the refresh still acts: it is the same sign-in
+    expect(await account.forSignIn(read!).listPcs()).toEqual([]);
+  });
+
   it("ends the sign-in on the service even when its access token has run out", async () => {
     const service = serviceWithSignIn();
     let now = Date.now();

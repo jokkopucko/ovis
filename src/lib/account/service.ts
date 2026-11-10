@@ -256,8 +256,23 @@ export class AccountService {
     this.lock = options.lock ?? accountLock;
   }
 
+  /**
+   * The stored sign-in. One saved before sign-ins had an id (`sign_in_id`) gets one here, in the store: without it
+   * its first refresh, which changes the refresh token, would make every copy read before it another sign-in
+   * (sameSignIn), and a call bound to such a copy (forSignIn) would then refuse its own sign-in.
+   */
   async session(): Promise<AccountSession | undefined> {
-    return this.options.store.get("session");
+    const stored = await this.options.store.get("session");
+    if (stored === undefined || stored.sign_in_id !== undefined) return stored;
+    // what was read stays the answer when another sign-in (or none) is stored meanwhile: that one is not named here
+    let named: AccountSession = stored;
+    // in the store's own update, so two tabs reading at once agree on one id
+    await this.options.store.update("session", (current) => {
+      if (current === undefined || current.refresh_token !== stored.refresh_token) return current;
+      named = current.sign_in_id !== undefined ? current : { ...current, sign_in_id: newRecordId() };
+      return named;
+    });
+    return named;
   }
 
   /**
