@@ -64,11 +64,39 @@ export function conversationTurnAnchor(turn: ConversationTurn): string {
  * Text near enough to how the chat draws it: a fence's line, a heading's, a quote's or a list item's
  * mark, a link's address, bold's asterisks and code's backticks are not words anyone looks for.
  */
-const plainText = (markdown: string): string => markdown
+const plainText = (markdown: string): string => linkLabels(markdown
   .replace(/^ {0,3}(?:```|~~~).*$/gm, "")
-  .replace(/^ {0,3}(?:#{1,6}|>|[-*+]|\d{1,9}[.)])[ \t]+/gm, "")
-  .replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g, "$1")
+  .replace(/^ {0,3}(?:#{1,6}|>|[-*+]|\d{1,9}[.)])[ \t]+/gm, ""))
   .replace(/\*\*|`/g, "");
+
+/**
+ * `[label](address)` and `![alt](address)` as the label alone: what
+ * `.replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g, "$1")` gives, read in one pass. That pattern starts over
+ * at every `[` and reads on to the line's end from each, so a long line of brackets that never
+ * close (a log, minified text) took its length squared, on the server's only thread.
+ */
+function linkLabels(text: string): string {
+  const pieces: string[] = [];
+  let kept = 0;
+  let open = text.indexOf("[");
+  while (open >= 0) {
+    // a label ends at the first `]` of its line: every `[` before that one shares it, so when the
+    // first of them is no link, none is
+    let close = open + 1;
+    while (close < text.length && text[close] !== "]" && text[close] !== "\n") close++;
+    if (close === text.length) break;
+    if (text[close] === "\n" || text[close + 1] !== "(") { open = text.indexOf("[", close + 1); continue; }
+    let end = close + 2;
+    while (end < text.length && text[end] !== ")" && text[end] !== "\n") end++;
+    if (end === text.length) break;
+    // no `)` before the line ends: none closes a later link of this line either
+    if (text[end] === "\n") { open = text.indexOf("[", end + 1); continue; }
+    pieces.push(text.slice(kept, open > kept && text[open - 1] === "!" ? open - 1 : open), text.slice(open + 1, close));
+    kept = end + 1;
+    open = text.indexOf("[", kept);
+  }
+  return kept === 0 ? text : pieces.join("") + text.slice(kept);
+}
 
 /**
  * What a search reads of a turn: the user's own words, or the agent's answers as the chat shows

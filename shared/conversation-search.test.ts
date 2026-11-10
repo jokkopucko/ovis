@@ -38,6 +38,39 @@ describe("searchableText", () => {
       .toBe("Done\n\nPOST /payments replays the stored response.\nA snake_case_name stays.\nquoted\n\nconst a = 1;\n");
     expect(searchPattern("payments replays the stored")!.test(searchableText({ role: "assistant", ts: null, parts: [{ kind: "text", text: answer }] }))).toBe(true);
   });
+
+  it("reads a link as its label wherever the pattern it replaced did", () => {
+    // the pattern as it was written; none of these characters is another mark searchableText drops
+    const was = (text: string): string => text.replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g, "$1");
+    const marks = ["[", "]", "(", ")", "!", "\n", "a"];
+    const differ: string[] = [];
+    const check = (text: string): void => { if (searchableText(user(text)) !== was(text)) differ.push(text); };
+    // every text of up to six of them
+    const every = (text: string): void => {
+      check(text);
+      if (text.length < 6) for (const mark of marks) every(text + mark);
+    };
+    every("");
+    // and longer ones, where one link follows another: the same 20,000 texts each run
+    let seed = 1;
+    const next = (below: number): number => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+      return (seed >>> 16) % below;
+    };
+    for (let count = 0; count < 20_000; count++) check(Array.from({ length: 8 + next(33) }, () => marks[next(marks.length)]).join(""));
+    expect(differ).toEqual([]);
+    expect(searchableText(user("see ![a [b](c) and [d](e)(f) [g]\n(h) [i](j\n) ![](k)![l](m)"))).toBe("see a [b and d(f) [g]\n(h) [i](j\n) l");
+  });
+
+  it("reads a long line of brackets that never close in one pass", () => {
+    // read as a pattern, 20,000 such characters took 0.4 s and twice as many four times that: these
+    // lines of 200,000 took from 4 to 36 s each, and in one pass they take a few milliseconds.
+    // The timeout is the bound: a test that returns after it has failed
+    for (const line of ["[".repeat(200_000), `${"[".repeat(200_000)}]`, "![".repeat(100_000), "[a](".repeat(50_000)]) {
+      expect(searchableText(user(line)) === line).toBe(true);
+      expect(searchTurns([user(`needle ${line}`)], searchPattern("needle")!)).toHaveLength(1);
+    }
+  }, 5_000);
 });
 
 describe("matchSnippet", () => {
