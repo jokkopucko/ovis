@@ -3437,7 +3437,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   ones; same browser resume ID and device). A `sent` one is never dropped before its ten minutes, and
   neither is the note of a Send now that may have typed the copy, which answers every later resend of
   it "not confirmed" and is told to no browser: a copy another tab still holds on a held receipt is
-  not typed again. A pane herdr moves under a new ID takes its receipts with it. They are replayed
+  not typed again. That note also outlives its owner's record, which ages out as `dismissed` a minute
+  after its connection closed: a dismissed record ends a held receipt and nothing else. A pane herdr
+  moves under a new ID takes its receipts with it. A pane that ends takes its held receipts away:
+  herdr may give its ID to another pane, so no browser there is told the old pane's copy is held, and
+  a follow-up the bridge still holds for the pane that ended gets no held receipt when its connection
+  closes later. What was sent, or may have been, stays and only refuses. Receipts are replayed
   with `resumed: true` on its
   browser's reattach, or to that browser's already attached successor when the Enter's reply or the
   hold comes after the reload. `sent` and `discarded` settle only that exact ID's saved copy, while
@@ -3453,11 +3458,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   from the reconnect: a browser that returns after nine has one left. The page holds the copy until the
   sooner of its arrival plus `held_ms` and `held_until`
   on its own clock, on this page only (saved, the copy stays uncertain), then shows it uncertain again;
-  every read checks that time too, so a tab that slept or a Send now press past it sends nothing. The
+  every read checks that time too, so a tab that slept or a Send now press past it sends nothing. What
+  is left of the proof runs on a clock that steps forward by the larger of what the device's clock and
+  `performance.now()` moved since it was last read (`proofNow`): a device clock set back does not
+  stretch a proof past the bridge's receipt, and a sleep the forward-only clock did not count still
+  ends it. The
   proof also ends with the connection that brought it, and only with that one: a page that shows several
   PCs keeps one PC's held copies when another PC's connection drops. A resend checks and claims the
   receipt in the pane's serialized turn, by its original ID and for its own pane and browser only, so two
-  resends of one copy type it once. A connection that may no longer resume when it closes (read-only, a
+  resends of one copy type it once. The claim is made before anything is typed and is itself among the
+  receipts (`sending`, told to no browser): while it stands, every resend of that ID, under any pane
+  ID, is answered `pending_busy` and types nothing. A turn is its pane ID's, so a pane herdr moves
+  while the text is on its way would otherwise let the other tab's copy, under the new ID, be typed
+  beside it. The move carries the claim, and the send's end is recorded under the ID the pane has
+  then: `sent`, the "not confirmed" note, or the held receipt back in place when nothing was typed.
+  A connection that may no longer resume when it closes (read-only, a
   revoked device) leaves no held receipt; a send of its that ends after the close still leaves its `sent`
   receipt for that browser's next connection.
 - Not connected, the one word `Reconnecting…` (`Connecting…` before this page's first connection to

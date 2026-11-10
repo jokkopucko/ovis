@@ -194,10 +194,11 @@ function heldCopyBridge(submit: () => Promise<void> = async () => {}) {
     for (const pane of panes.length ? panes : ["p"]) owner.data.attached.set(pane, { keepSize: false, receiptResumeId: token });
     clients.add(owner); frames.set(owner, output); return owner;
   };
-  let turns: Promise<void> = Promise.resolve();
+  // a turn is its pane ID's, as in the bridge (server/core/input.ts): a request that names another ID does not wait for it
+  const turns = new Map<string, Promise<void>>();
   const typed: string[] = [];
   const delivery = createPendingDelivery({
-    options: {}, clients, attachments: new Map(), serialize: (_pane, task) => { const run = turns.then(task); turns = run.then(() => {}, () => {}); return run; }, lastTyped: new Map(),
+    options: {}, clients, attachments: new Map(), serialize: (pane, task) => { const run = (turns.get(pane) ?? Promise.resolve()).then(task); turns.set(pane, run.then(() => {}, () => {})); return run; }, lastTyped: new Map(),
     sight: () => { throw new Error("a receipt replay takes no input lease"); },
     submitText: async (pane: string) => { await submit(); typed.push(pane); },
     authorizeSocket: () => {},
@@ -212,7 +213,8 @@ function heldCopyBridge(submit: () => Promise<void> = async () => {}) {
     removed: (to: Client) => told(to).flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []),
     answer: (to: Client, id: number) => frames.get(to)!.find((frame) => frame.type === "submit-result" && frame.id === id),
     /** a tab's Send now of its saved copy of `pending` */
-    resend: (to: Client, id: number, pending: string, pane = "p") => delivery.pendingFrames.submit(to, { type: "submit", id, pane_id: pane, text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: pending }),
+    resend: (to: Client, id: number, pending: string, pane = "p", generation?: number) => delivery.pendingFrames.submit(to, { type: "submit", id, pane_id: pane, text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: pending,
+      ...(generation !== undefined ? { resend_generation: generation } : {}) }),
     /** a queued follow-up whose own connection then closes: the bridge holds it and keeps its held receipt */
     heldAsItsConnectionClosed: () => {
       const first = tab();
@@ -250,6 +252,125 @@ it("carries a pane's receipts to its new ID when herdr moves it: the sent one st
     expect(bridge.answer(moved, 3)).toMatchObject({ ok: true });
     // and the follow-up that was never sent is still told held under the new ID
     expect(bridge.heldIds(moved)).toEqual([unsent]);
+  } finally { clock.mockRestore(); }
+});
+
+/** a first send the test lets through when it says so: `started` once its text is on its way, `finish` to let it end; later sends are not held up */
+function gatedSend(end: () => void = () => {}) {
+  let begin!: () => void, finish!: () => void;
+  const started = new Promise<void>((resolve) => { begin = resolve; }), gate = new Promise<void>((resolve) => { finish = resolve; });
+  let first = true;
+  return { started, finish, submit: async () => { if (first) { first = false; begin(); await gate; } end(); } };
+}
+
+for (const outcome of ["sent", "uncertain", "not typed"] as const) {
+  it(`claims a held copy before its Send now types it, and a pane herdr moves meanwhile takes the claim along (${outcome})`, async () => {
+    let now = Date.now();
+    const clock = clocks(() => now);
+    try {
+      let fail: string | null = outcome === "sent" ? null : outcome === "uncertain" ? "submit_changed" : "agent_not_ready";
+      const send = gatedSend(() => { if (fail !== null) throw new herdr.HerdrError(fail, "refused"); });
+      const bridge = heldCopyBridge(send.submit);
+      const id = bridge.heldAsItsConnectionClosed();
+      const one = bridge.tab(), other = bridge.tab();
+      bridge.delivery.attached(one, "p"); bridge.delivery.attached(other, "p");
+      // the closed owner's record is gone: only the receipt stands for the copy
+      now += 60_001; bridge.delivery.pending.expire();
+      const going = bridge.resend(one, 2, id);
+      await send.started;
+      // herdr moves the pane while the text is on its way
+      bridge.delivery.movePendingPane("p", "q");
+      const moved = bridge.tab("q");
+      bridge.delivery.attached(moved, "q");
+      // the other tab's Send now on the pane's new ID, another generation of the copy: refused while the first is on its way
+      await bridge.resend(moved, 3, id, "q", 1);
+      expect(bridge.answer(moved, 3)).toMatchObject({ ok: false, code: "pending_busy" });
+      send.finish();
+      await going;
+      expect(bridge.typed).toEqual(outcome === "sent" ? ["p"] : []);
+      // a minute later the resend record is gone; what the send ended as is known under the new ID
+      now += 60_001; bridge.delivery.pending.expire();
+      const late = bridge.tab("q");
+      bridge.delivery.attached(late, "q");
+      if (outcome === "sent") {
+        expect(bridge.removed(moved).filter((entry) => entry.id === id)).toEqual([{ id, outcome: "sent", resumed: true }]);
+        expect(bridge.removed(late).filter((entry) => entry.id === id)).toEqual([{ id, outcome: "sent", resumed: true }]);
+        await bridge.resend(late, 4, id, "q", 1);
+        expect(bridge.answer(late, 4)).toMatchObject({ ok: true });
+        expect(bridge.typed).toEqual(["p"]);
+      } else if (outcome === "uncertain") {
+        expect([bridge.removed(late).filter((entry) => entry.id === id), bridge.heldIds(late)]).toEqual([[], []]);
+        fail = null;
+        await bridge.resend(late, 4, id, "q", 1);
+        expect(bridge.answer(late, 4)).toMatchObject({ ok: false, code: "pending_uncertain" });
+        expect(bridge.typed).toEqual([]);
+      } else {
+        // nothing was typed: the held receipt is the copy's again, under the pane's new ID, and its Send now there types it once
+        expect(bridge.heldIds(late)).toEqual([id]);
+        fail = null;
+        await bridge.resend(late, 4, id, "q", 1);
+        expect(bridge.answer(late, 4)).toMatchObject({ ok: true });
+        expect(bridge.typed).toEqual(["q"]);
+      }
+    } finally { clock.mockRestore(); }
+  });
+}
+
+it("keeps the note of a Send now that may have typed the copy when its owner's record ages out: a second tab is still refused past a thousand other receipts", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    let fail = true;
+    const bridge = heldCopyBridge(async () => { if (fail) throw new herdr.HerdrError("submit_changed", "Enter was not confirmed"); });
+    const id = bridge.heldAsItsConnectionClosed();
+    const one = bridge.tab(), other = bridge.tab();
+    bridge.delivery.attached(one, "p"); bridge.delivery.attached(other, "p");
+    // two seconds after the reload, while the closed owner's record still stands, one tab's Send now ends without an answer
+    now += 2_000;
+    await bridge.resend(one, 2, id);
+    expect(bridge.answer(one, 2)).toMatchObject({ ok: false, code: "submit_changed" });
+    fail = false;
+    // the record ages out as dismissed, and more than a thousand other receipts come
+    now += 60_001; bridge.delivery.pending.expire();
+    const busy = bridge.tab();
+    for (let n = 0; n < 1100; n++) {
+      if (n > 0 && n % 400 === 0) { now += 60_001; bridge.delivery.pending.expire(); }
+      expect(bridge.delivery.pending.discard(bridge.delivery.pending.enqueue(busy, "p", 10 + n, `other ${n}`, null, bridge.identity))).toBe(true);
+    }
+    now += 60_001; bridge.delivery.pending.expire();
+    // the other tab, inside its ten minutes: still not confirmed, nothing typed
+    await bridge.resend(other, 3, id);
+    expect(bridge.answer(other, 3)).toMatchObject({ ok: false, code: "pending_uncertain" });
+    expect(bridge.typed).toEqual([]);
+  } finally { clock.mockRestore(); }
+});
+
+it("gives no held receipt of a pane that ended to the pane that has its ID next", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    const bridge = heldCopyBridge();
+    const ended = { code: "pane_not_found", message: "The pane ended; its pending messages were not sent" };
+    // held as its connection closed, then the pane ends
+    const before = bridge.heldAsItsConnectionClosed();
+    // held on a connection that is still there when the pane ends, and closes after it
+    const live = bridge.tab();
+    const after = bridge.delivery.pending.enqueue(live, "p", 5, "held by request", null, bridge.identity, true).message.id;
+    now += 30_000;
+    bridge.delivery.holdPendingPane("p", ended);
+    bridge.delivery.pending.forget("p");
+    bridge.clients.delete(live); bridge.delivery.closeConnection(live);
+    // herdr gives the ID to a new pane two minutes later: the same browser there is told nothing is held
+    now += 120_000; bridge.delivery.pending.expire();
+    const reused = bridge.tab();
+    bridge.delivery.attached(reused, "p");
+    expect(bridge.heldIds(reused)).toEqual([]);
+    expect(bridge.removed(reused).filter((entry) => entry.id === before || entry.id === after)).toEqual([]);
+    // a follow-up taken for the new pane is held and told as before
+    const fresh = bridge.heldAsItsConnectionClosed();
+    const again = bridge.tab();
+    bridge.delivery.attached(again, "p");
+    expect(bridge.heldIds(again)).toEqual([fresh]);
   } finally { clock.mockRestore(); }
 });
 

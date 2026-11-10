@@ -2,7 +2,7 @@ import type { PendingMessage, PendingRemoval } from "../../shared/protocol.ts";
 import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
 
 /**
- * `heldUntil`: held only on this page, by a held receipt, until this time (Date.now); saved, and once it passes, the copy is uncertain.
+ * `heldUntil`: held only on this page, by a held receipt, until this time on the page's proof clock (`proofNow`); saved, and once it passes, the copy is uncertain.
  * `heldBy`: the connection whose receipt holds it (its scope: one per PC and connection). The proof ends with that
  * connection, not with another PC's.
  * `heldByRequest`: its sender held it on purpose (`delivery: "hold"`: Alt+Enter, or a follow-up with automatic sending off). The
@@ -44,8 +44,23 @@ export const frameRemovals = (frame: { removed?: PendingRemoval[]; held?: unknow
 const PREFIX = "ovis:pending:";
 /** the bridge keeps a held receipt this long (server/core/pending.ts PI_RESUME_MS), at most: a bridge that names no time gets this */
 const HELD_RECEIPT_MS = 10 * 60 * 1000;
-/** a held receipt's proof, by the time it ends */
-const freshReceipt = (until: number | undefined): until is number => until !== undefined && Date.now() < until;
+/**
+ * The clock a held receipt's proof ends on. The bridge ends its receipt on a clock that only moves forward
+ * (server/core/pending.ts `elapsed`), so the proof must not outlast it because this device's clock was set back.
+ * This clock starts as `Date.now()` and, each time it is read, steps forward by the larger of what the wall clock
+ * and `performance.now()` moved since the last reading: a wall clock set back takes nothing from the time that
+ * passed, and a sleep that `performance.now()` did not count is counted by the wall clock. A wall clock set
+ * forward ends a proof early, which costs a Send now and types nothing.
+ */
+let wallRead = Date.now(), steadyRead = performance.now(), proofTime = wallRead;
+const proofNow = (): number => {
+  const wall = Date.now(), steady = performance.now();
+  proofTime += Math.max(wall - wallRead, steady - steadyRead, 0);
+  wallRead = wall; steadyRead = steady;
+  return proofTime;
+};
+/** a held receipt's proof, by the time it ends (`proofNow`) */
+const freshReceipt = (until: number | undefined): until is number => until !== undefined && proofNow() < until;
 const piReceipt = (message: PendingMessage): boolean => message.id.startsWith("pi:")
   && (message.error?.code === "pi_transcript_pending" || message.error?.code === "transcript_unconfirmed");
 
@@ -100,11 +115,13 @@ export class PendingMessageStore {
       if (message.heldUntil !== undefined && message.state === "held" && !this.isBusy(owner, message.id)) first = Math.min(first, message.heldUntil);
     }
     if (first === Infinity) return;
+    // never before the end itself: the clock runs in fractions of a millisecond, and a timer that came early would find the proof still there
+    const wait = Math.max(0, Math.ceil(first - proofNow()));
     this.expiry = setTimeout(() => {
       this.expiry = undefined;
       for (const owner of [...this.rows.keys()]) this.read(owner);
       this.notify();
-    }, Math.max(0, first - Date.now()));
+    }, wait);
   }
   /** a page-only held copy whose proof has ended is uncertain again (saved, it already is); one being sent ends with its send */
   private dropExpired(owner: string, rows: PendingMessageView[]): PendingMessageView[] {
@@ -332,8 +349,9 @@ export class PendingMessageStore {
       && (proofs?.get(item.id) === undefined || proofs.get(item.id) === scope)) {
       const held = this.heldResumed.get(owner) ?? new Map<string, { until: number; scope: string }>();
       // until the bridge's receipt ends: never longer than its window, whatever a frame says; and for as long as
-      // the connection that brought it lives
-      held.set(item.id, { until: Math.min(item.until, Date.now() + HELD_RECEIPT_MS), scope });
+      // the connection that brought it lives. What is left of it (the frame's end is on the wall clock) runs on the
+      // proof clock from here on
+      held.set(item.id, { until: proofNow() + Math.min(item.until - Date.now(), HELD_RECEIPT_MS), scope });
       if (held.size > 1024) held.delete(held.keys().next().value!);
       this.heldResumed.set(owner, held);
     }

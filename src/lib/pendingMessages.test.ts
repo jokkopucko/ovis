@@ -6,6 +6,14 @@ const storage = () => {
   const data = new Map<string, string>();
   return { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
 };
+/**
+ * This device's clock and the forward-only one, read from one value unless `steady` gives the second its own: a
+ * proof's end is reckoned on both (`proofNow`), so a test that stops one stops the other.
+ */
+const clocks = (wall: () => number, steady: () => number = wall): { mockRestore: () => void } => {
+  const date = spyOn(Date, "now").mockImplementation(wall), run = spyOn(performance, "now").mockImplementation(steady);
+  return { mockRestore: () => { date.mockRestore(); run.mockRestore(); } };
+};
 /** a held receipt frame as the bridge sends it now (its clock = this page's): each ID with the ms it has left */
 const heldFrame = (left: Record<string, unknown>, sentAt = Date.now()) => ({ held: Object.keys(left), held_ms: left, server_time: sentAt,
   held_until: Object.fromEntries(Object.entries(left).map(([id, ms]) => [id, typeof ms === "number" ? sentAt + ms : ms])) });
@@ -19,7 +27,7 @@ const requested = (id: string, text = "check the tests"): PendingMessage => ({ i
 describe("pending message ownership", () => {
   it("keeps a hold its sender asked for held, with Send now, through a lost connection, a reload, a restarted bridge and a refused send; it takes no receipt's end", () => {
     let now = Date.parse("2026-11-10T00:00:00Z");
-    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const clock = clocks(() => now);
     try {
       const port = storage(), page = new PendingMessageStore(() => port);
       const shown = (store: PendingMessageStore) => store.read("p").map(({ id, state, serverOwned, heldByRequest, heldUntil }) => [id, state, serverOwned, heldByRequest ?? false, heldUntil ?? null]);
@@ -238,7 +246,7 @@ describe("pending message ownership", () => {
   });
   it("holds a copy only on a fresh receipt: one older than the bridge's ten minutes proves nothing", () => {
     let now = Date.parse("2026-11-08T00:00:00Z");
-    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const clock = clocks(() => now);
     try {
       const port = storage(), tab = new PendingMessageStore(() => port);
       // an early receipt, for a copy another tab saves only after the bridge's window has passed
@@ -276,7 +284,7 @@ describe("pending message ownership", () => {
   it("ends a receipt's held copy with the bridge's receipt: uncertain once its time passes, one timer to it, cleared on discard", () => {
     let now = Date.parse("2026-11-08T00:00:00Z");
     const timers: Array<{ run: () => void; ms: number; cleared: boolean }> = [];
-    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const clock = clocks(() => now);
     const set = spyOn(globalThis, "setTimeout").mockImplementation(((run: () => void, ms: number) => {
       const timer = { run, ms, cleared: false };
       timers.push(timer);
@@ -313,9 +321,33 @@ describe("pending message ownership", () => {
       expect(new PendingMessageStore(() => port).read("p").map(({ id, state }) => [id, state])).toEqual([["read", "uncertain"], ["timed", "uncertain"]]);
     } finally { clock.mockRestore(); set.mockRestore(); clear.mockRestore(); }
   });
+  it("ends a proof by the time that passed: a device clock set back does not stretch it, and a sleep the forward-only clock missed still ends it", () => {
+    let wall = Date.parse("2026-11-08T00:00:00Z"), steady = 5_000;
+    const clock = clocks(() => wall, () => steady);
+    try {
+      const port = storage(), tab = new PendingMessageStore(() => port);
+      for (const id of ["set-back", "slept"]) tab.accept("p", message(id), "old");
+      tab.suspendScope("old");
+      tab.publish("p", [], frameRemovals(heldFrame({ "set-back": 600_000 })), "new");
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["set-back", "held"], ["slept", "uncertain"]]);
+      // nine minutes pass on both clocks: still proven
+      wall += 540_000; steady += 540_000;
+      expect(tab.read("p")[0]!.state).toBe("held");
+      // two more pass while the device's clock is set back an hour: the bridge's receipt has ended, and so has the proof
+      wall += 120_000 - 3_600_000; steady += 120_000;
+      expect(tab.read("p")[0]!.state).toBe("uncertain");
+      // a proof that came after the clock was set back runs its own ten minutes
+      tab.publish("p", [], frameRemovals(heldFrame({ slept: 600_000 })), "new");
+      expect(tab.read("p")[1]!.state).toBe("held");
+      // the device sleeps eleven minutes: the forward-only clock stood still, the wall clock did not
+      wall += 660_000;
+      expect(tab.read("p")[1]!.state).toBe("uncertain");
+    } finally { clock.mockRestore(); }
+  });
+
   it("never lets a proof outlive the bridge's receipt: a late held answer, a shorter replay, a frame that waited", () => {
     let now = Date.parse("2026-11-08T00:00:00Z");
-    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const clock = clocks(() => now);
     try {
       const port = storage(), tab = new PendingMessageStore(() => port);
       for (const id of ["late", "short", "waited"]) tab.accept("p", message(id), "old");
@@ -370,7 +402,7 @@ describe("pending message ownership", () => {
   });
   it("never holds a copy past the bridge's own end: a late features frame, a late held frame, one that came after the end", () => {
     let now = Date.parse("2026-11-08T00:00:00Z");
-    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const clock = clocks(() => now);
     try {
       // the PC's clock runs an hour behind this page's; the bridge's receipt ends at bridgeEnd on its clock
       const behind = 60 * 60 * 1000, pc = () => now - behind, bridgeEnd = pc() + 10 * 60 * 1000;
