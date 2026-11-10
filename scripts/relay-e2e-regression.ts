@@ -272,9 +272,13 @@ async function main(): Promise<void> {
     note(`paired: ${deskScope}#offer=… -> confirm -> app; device ${deskDevice.device_id} enrolled via the relay, key not extractable`);
 
     await page.locator(`.workspace-group[data-workspace=${JSON.stringify(workspace.workspace.workspace_id)}] .workspace-select`).first().click();
-    const screen = page.locator(`.terminal-stack[data-pane-owner=${JSON.stringify(pane)}] .xterm-screen`);
+    const stack = page.locator(`.terminal-stack[data-pane-owner=${JSON.stringify(pane)}]`);
+    const screen = stack.locator(".xterm-screen");
     await screen.waitFor({ state: "attached" });
-    const live = async (): Promise<boolean> => await page.locator(".terminal-banner-warning").count() === 0 && (await terminalText(page, pane)).trim() !== "";
+    // this pane's banners only: the pane the app opened by itself at load (herdr's focused one, lib/useSelection.ts)
+    // stays mounted behind it with its own (components/PaneCanvas.tsx), and on the test session every script's
+    // server shares, another server may hold that pane's attach, which says nothing of this pane's
+    const live = async (): Promise<boolean> => await stack.locator(".terminal-banner-warning").count() === 0 && (await terminalText(page, pane)).trim() !== "";
     await frames(page, "the pane's terminal attached and drew its prompt", live);
     await screen.click();
     await page.keyboard.type("echo relay-ok");
