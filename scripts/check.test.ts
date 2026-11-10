@@ -474,8 +474,10 @@ describe("slots", () => {
     const checkoutLock = join(scratch(), "checkout.lock");
     const marker = `${checkoutLock}.check-lock`;
     // a parent that never reaps its child: the child exits at once, and the parent's SIGCHLD, which the
-    // kernel sends as the child becomes a zombie, says so
-    const parent = spawn("perl", ["-MPOSIX", "-e", '$| = 1; $SIG{CHLD} = sub { print "ZOMBIE\\n" }; my $pid = fork() // die "fork: $!"; POSIX::_exit(0) unless $pid; print "PID $pid\\n"; POSIX::pause() while 1;'], { stdio: ["ignore", "pipe", "inherit"] });
+    // kernel sends as the child becomes a zombie, says so. The signal is held back until the parent waits
+    // for it: one that lands between the parent's last look for signals and its wait is seen by neither,
+    // and the parent would wait for ever without a word
+    const parent = spawn("perl", ["-MPOSIX", "-e", '$| = 1; POSIX::sigprocmask(POSIX::SIG_BLOCK, POSIX::SigSet->new(POSIX::SIGCHLD)); $SIG{CHLD} = sub { print "ZOMBIE\\n" }; my $pid = fork() // die "fork: $!"; POSIX::_exit(0) unless $pid; print "PID $pid\\n"; POSIX::sigsuspend(POSIX::SigSet->new) while 1;'], { stdio: ["ignore", "pipe", "inherit"] });
     try {
       let said = "";
       const heard = new Promise<void>((resolve, reject) => {
