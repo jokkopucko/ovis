@@ -42,9 +42,10 @@ try {
     + event("assistant.message", { content: "Native Copilot answer.", phase: "final_answer", model: "fixture-model" }));
   // A Node script named copilot is a genuine foreground process with a PID-held native
   // marker; its stdin remains the pane's PTY so the regular composer can reach it.
+  // It keeps node's own process name, like an npm-installed Copilot: on WSL herdr leaves
+  // out the argv of a process named after an agent, which Copilot ownership cannot prove.
   writeFileSync(executable, `import { appendFileSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
-process.title = "copilot";
 const home = process.env.COPILOT_HOME;
 const marker = join(home, "session-state", process.argv[2], \`inuse.\${process.pid}.hold\`);
 mkdirSync(join(home, "session-state", process.argv[2]), { recursive: true });
