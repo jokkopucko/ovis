@@ -4959,7 +4959,12 @@ describe("repository diff of a pane's folder", () => {
 describe("GET /api/sessions/history", () => {
   const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 
-  /** Own all setup and cleanup, including failures before a server or workspace is returned. */
+  /**
+   * Own all setup and cleanup, including failures before a server or workspace is returned.
+   * The server's state is kept out of `root`: stop() does not wait for a read of the panes that is still in
+   * flight, and that read saves completions.json when it lands, which would bring back a `root` removed here.
+   * It goes under this file's state folder, which afterAll removes.
+   */
   async function withPiHistoryFixture(root: string, run: (fixture: { file: string; initial: string; url: string }) => Promise<void>, piSessionDeadlineMs?: number): Promise<void> {
     const previous = process.env["PI_CODING_AGENT_SESSION_DIR"];
     let created: Awaited<ReturnType<typeof workspaceCreate>> | undefined;
@@ -4980,7 +4985,7 @@ describe("GET /api/sessions/history", () => {
       writeFileSync(file, initial);
       process.env["PI_CODING_AGENT_SESSION_DIR"] = store;
       created = await workspaceCreate({ cwd, label: "ovis-test-pi-history" });
-      app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: join(root, "state"), piSessionDeadlineMs });
+      app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: join(stateDir, basename(root)), piSessionDeadlineMs });
       const url = `http://127.0.0.1:${app.port}/api/sessions/history?workspace_id=${encodeURIComponent(created.workspace.workspace_id)}&agent=pi`;
       await run({ file, initial, url });
     } finally {
