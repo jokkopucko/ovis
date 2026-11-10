@@ -447,6 +447,21 @@ for (const onCore of [true, false]) {
   });
 }
 
+// an SSH PC's bridge starts no runtime (remote-entry.ts): an OVIS_RUNTIME its shell exports names what was
+// chosen somewhere, not what this process serves, and its panes are herdr's
+it("attaches with herdr's own command where OVIS_RUNTIME names herdr-core but no runtime was started", async () => {
+  const previous = process.env["OVIS_RUNTIME"];
+  process.env["OVIS_RUNTIME"] = "herdr-core";
+  try {
+    using pane = await resizableAttach();
+    expect(pane.core).toBeUndefined();
+    expect(pane.pty?.args).toEqual(["terminal", "attach", "term_0"]);
+  } finally {
+    if (previous === undefined) delete process.env["OVIS_RUNTIME"];
+    else process.env["OVIS_RUNTIME"] = previous;
+  }
+});
+
 // #2289: a resized attach goes out on herdr's screen at the pty's grid, not on an older one
 for (const ordering of ["a resize back to the start size", "a redraw later than the hold", "a screen queued from before a round trip"] as const) {
   it(`keeps a resized attach held until herdr draws the current grid: ${ordering}`, async () => {
