@@ -107,14 +107,26 @@ const NODE_HOST = join(import.meta.dir, "pty-host.mjs");
 const IDENTITY = 'if [ "$#" -eq 0 ]; then printf "pty-sidecar: usage: fixture\\n" >&2; exit 2; fi';
 const DELEGATE = `exec node '${NODE_HOST}' "$@"`;
 
-// No core dump from a fake that crashes on purpose: with a relative core_pattern it would land in
-// the working directory, the checkout, where check.ts counts it as a source change.
+// No core dump from a process that crashes on purpose: with a relative core_pattern it would land in
+// the working directory, the checkout, where check.ts counts it as a source change. A piped one
+// (systemd-coredump) ignores a limit of 0 and reports the crash to the desktop on every run; a limit
+// of 1 byte keeps the kernel from starting it. `prlimit` is Linux's, and it cannot raise a hard limit
+// of 0; there, and where `prlimit` is missing, only `ulimit -c 0` applies, as before.
+// https://github.com/torvalds/linux/blob/028ef9c96e96197026887c0f092424679298aae8/fs/coredump.c#L978-L996
+const NO_CORE = "prlimit --pid $$ --core=1:1 2>/dev/null || ulimit -c 0";
+const HARD_CORE_LIMIT = process.platform === "linux" ? /^Max core file size\s+\S+\s+(\S+)/m.exec(readFileSync("/proc/self/limits", "utf8"))?.[1] : undefined;
+
 function fakeHost(body: string, mode = 0o755, shebang = true): string {
   const path = join(fixtures, crypto.randomUUID());
-  writeFileSync(path, `${shebang ? "#!/bin/sh\nulimit -c 0\n" : ""}${body}\n`);
+  writeFileSync(path, `${shebang ? `#!/bin/sh\n${NO_CORE}\n` : ""}${body}\n`);
   chmodSync(path, mode);
   return path;
 }
+
+it.skipIf(process.platform !== "linux" || !Bun.which("prlimit") || HARD_CORE_LIMIT === "0")("runs the processes it crashes with a core limit of 1 byte, which no piped core_pattern is started for", () => {
+  const limits = Bun.spawnSync(["sh", "-c", `${NO_CORE}; grep 'Max core file size' /proc/$$/limits`], { stdout: "pipe", stderr: "pipe" });
+  expect(limits.stdout.toString()).toMatch(/^Max core file size\s+1\s+1\s+bytes/);
+});
 
 describe.skipIf(process.platform === "win32")("probeRustHost", () => {
   beforeEach(resetPtyHostForTests);
@@ -788,8 +800,8 @@ parity("rust");
 
 /** The Rust host run directly, so a test can write what PtySession never does: frames cut off, floods. */
 function direct(args: string[]) {
-  // exec keeps the host's pid; no core dump in the checkout when a test aborts it (see fakeHost)
-  const proc = Bun.spawn(["sh", "-c", 'ulimit -c 0; exec "$0" "$@"', RUST_HOST ?? "", "40", "5", ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  // exec keeps the host's pid; no core dump when a test aborts it (NO_CORE)
+  const proc = Bun.spawn(["sh", "-c", `${NO_CORE}; exec "$0" "$@"`, RUST_HOST ?? "", "40", "5", ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   let output = "";
   const waiters = new Set<() => void>();
   void (async () => {
