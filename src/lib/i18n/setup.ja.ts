@@ -76,7 +76,6 @@ export const SETUP_JA: Record<string, string> = {
   "Other agents herdr knows ({count})": "herdr が知る他のエージェント ({count})",
   "Accounts are read on the PC Ovis runs on.": "アカウントは Ovis が動いている PC で読み取ります。",
   "Show {name}": "{name} を表示",
-  "Check again": "再確認",
   "Cannot check": "確認できません",
   "Manual install": "手動でインストール",
 };

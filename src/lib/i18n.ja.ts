@@ -224,6 +224,7 @@ const BASE: Record<string, string> = {
   "Through the relay": "リレー経由",
   "{n} ms": "{n} ms",
   "Check now": "今すぐ確認",
+  "Check again": "再確認",
   "Checking…": "確認しています…",
   "relay": "リレー",
   "direct": "直接",

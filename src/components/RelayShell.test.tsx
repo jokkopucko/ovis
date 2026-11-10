@@ -306,10 +306,13 @@ describe("the dashboard", () => {
     expect(html).toContain("Overview");
   });
 
-  it("shows one sentence, Add a PC and Pair with a QR or code for an empty account, and skeleton rows while the directory loads", () => {
-    const empty = render(signedIn([]));
-    expect(empty).toContain('<h2 class="relay-overview-empty-title">No PCs yet</h2><p class="relay-overview-empty-copy">Sign in on a PC, or scan the QR code it shows, to see it here.</p>');
-    expect(actionsOf(empty)).toEqual(["Add a PC", "Add a PC", "Pair with a QR or code"]);
+  it("shows the steps to add a PC, Check again, Add a PC and Pair with a QR or code for an empty account, and skeleton rows while the directory loads", () => {
+    const empty = render(signedIn([], { onRefreshAccount: none }));
+    expect(empty).toContain('<h2 class="relay-overview-empty-title">No PCs yet</h2><ol class="relay-overview-empty-steps"');
+    expect(text(empty)).toContain("sign in with the same GitHub account as on this device.");
+    expect(actionsOf(empty)).toEqual(["Add a PC", "Copy", "Copy", "Check again", "Add a PC", "Pair with a QR or code"]);
+    // Check again needs the account's refresh: without one the dashboard offers none
+    expect(actionsOf(render(signedIn([])))).toEqual(["Add a PC", "Copy", "Copy", "Add a PC", "Pair with a QR or code"]);
     expect(empty).not.toContain("<table");
     expect(empty).not.toContain('data-slot="relay-map"');
     expect(empty).not.toContain("relay-dash-nav-count");

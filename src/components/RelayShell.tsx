@@ -31,7 +31,7 @@ export interface RelayShellProps {
   /** Check now: probe the saved PCs again; Details' Check now: one PC, not the fleet sweep */
   onCheckPcs?: () => void; onCheckPc?: (serverId: string) => void;
   /** Explicit directory retry; independent of the liveness probe sweep. */
-  onRefreshAccount?: () => void;
+  onRefreshAccount?: () => void | Promise<void>;
   /** Admission succeeded; only this action hands the scoped page to the PC app. */
   onOpenPc?: () => void;
   /** Reloaded independently after a scope navigation, never copied into session storage. */

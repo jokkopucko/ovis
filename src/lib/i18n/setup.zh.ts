@@ -76,7 +76,6 @@ export const SETUP_ZH: Record<string, string> = {
   "Other agents herdr knows ({count})": "herdr 知道的其他代理 ({count})",
   "Accounts are read on the PC Ovis runs on.": "账号在运行 Ovis 的电脑上读取。",
   "Show {name}": "显示 {name}",
-  "Check again": "重新检查",
   "Cannot check": "无法检查",
   "Manual install": "需手动安装",
 };

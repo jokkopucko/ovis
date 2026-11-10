@@ -76,7 +76,6 @@ export const SETUP_KO: Record<string, string> = {
   "Other agents herdr knows ({count})": "herdr가 아는 다른 에이전트 ({count})",
   "Accounts are read on the PC Ovis runs on.": "계정은 Ovis가 실행되는 PC에서 읽습니다.",
   "Show {name}": "{name} 표시",
-  "Check again": "다시 확인",
   "Cannot check": "확인 불가",
   "Manual install": "직접 설치",
 };

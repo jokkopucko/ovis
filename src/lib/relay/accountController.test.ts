@@ -277,6 +277,46 @@ describe("the hosted shell's front page", () => {
     expect(account().pcs!.map((pc) => pc.name)).toEqual(["Desk PC"]);
   });
 
+  it("reads once more for a Check again asked while a read is out, since that read may predate the PC just added, and settles only then", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const added = [{ server_id: desk.server_id, label: "Desk PC", added_at: new Date(now - 60_000).toISOString(), last_seen_at: new Date(now - 1_000).toISOString(), public_key: null, relay: AP }];
+    let reads = 0;
+    /** the background read that left before the PC was added: it answers an empty account, late */
+    const early = Promise.withResolvers<void>();
+    const accountFetch = async (input: Request | string | URL): Promise<Response> => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname !== "/v1/pcs") throw new Error(`unexpected request ${url.pathname}`);
+      const read = ++reads;
+      if (read === 2) await early.promise;
+      return { status: 200, ok: true, json: async () => ({ pcs: read >= 3 ? added : [] }) } as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: now + 3_600_000 });
+    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => reads === 1 && rendered.length > 0 && account().pcs?.length === 0, "the empty account drawn");
+
+    visible("visible");
+    await until(() => reads === 2, "the background read out");
+    // the PC is added now; Check again, pressed twice (the banner's Try again calls the same), asks while that read is out
+    let settled = 0;
+    for (let press = 0; press < 2; press++) void Promise.resolve(last().onRefreshAccount?.()).then(() => { settled += 1; });
+    await drain();
+    expect([reads, settled]).toEqual([2, 0]);
+
+    early.resolve();
+    await until(() => settled === 2, "both asks settled");
+    // one read more for both asks, begun after them, and its answer is on screen by the time they settle
+    expect(reads).toBe(3);
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["Desk PC"]);
+
+    // with no read out, every ask reads at once: none is answered by an earlier ask's finished read
+    for (const want of [4, 5]) {
+      await last().onRefreshAccount?.();
+      expect(reads).toBe(want);
+    }
+  });
+
   it("keeps a code being typed when the first read lands under it", async () => {
     let answer: () => void = () => {};
     const held = new Promise<void>((resolve) => { answer = resolve; });

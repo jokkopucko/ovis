@@ -226,6 +226,7 @@ const BASE: Record<string, string> = {
   "Through the relay": "经由中继",
   "{n} ms": "{n} ms",
   "Check now": "立即检查",
+  "Check again": "重新检查",
   "Checking…": "正在检查…",
   "relay": "中继",
   "direct": "直连",

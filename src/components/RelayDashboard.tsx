@@ -23,7 +23,7 @@ const PHONE_QUERY = "(max-width: 768px)", NARROW_DETAILS_QUERY = "(max-width: 10
 export interface RelayDashboardProps {
   pcs: readonly DashboardPc[] | null; account: { provider: AccountProvider } | null; defaultRelay: string; meLabel: string;
   error?: string | null; pcStatus?: ReadonlyMap<string, PcStatus>; observedVersions?: ReadonlyMap<string, ObservedVersion>;
-  onCheckPcs?: () => void; onCheckPc?: (serverId: string) => void; onRefreshAccount?: () => void; onAddPc: () => void; onPairByQr?: () => void;
+  onCheckPcs?: () => void; onCheckPc?: (serverId: string) => void; onRefreshAccount?: () => void | Promise<void>; onAddPc: () => void; onPairByQr?: () => void;
   onOpenSheet: (pc: MyPc, mode: "new" | "join") => void; onForgetPc?: (serverId: string) => Promise<void> | void;
   onSignIn?: () => void; onSignOut?: () => void; onLeave?: () => void;
 }
@@ -199,7 +199,7 @@ export function RelayDashboard({
           {error !== null && (
             <div className="relay-overview-banner" role="alert" data-directory-error="">
               <p className="relay-overview-banner-text">{error}</p>
-              {onRefreshAccount && <button type="button" className="btn" data-action="retry-directory" onClick={onRefreshAccount}>{t("Try again")}</button>}
+              {onRefreshAccount && <button type="button" className="btn" data-action="retry-directory" onClick={() => { void onRefreshAccount(); }}>{t("Try again")}</button>}
             </div>
           )}
           <section className="relay-dash-map" data-slot="relay-map" aria-labelledby="relay-dash-map-title">
@@ -221,7 +221,7 @@ export function RelayDashboard({
           {error !== null && (
             <div className="relay-overview-banner" role="alert" data-directory-error="">
               <p className="relay-overview-banner-text">{error}</p>
-              {onRefreshAccount && <button type="button" className="btn" data-action="retry-directory" onClick={onRefreshAccount}>{t("Try again")}</button>}
+              {onRefreshAccount && <button type="button" className="btn" data-action="retry-directory" onClick={() => { void onRefreshAccount(); }}>{t("Try again")}</button>}
             </div>
           )}
           {renderTableSection(route.relay)}
@@ -229,11 +229,11 @@ export function RelayDashboard({
       );
     }
     return (
-      <RelayOverview pcs={pcs} mode={mode} defaultRelay={defaultRelay} meLabel={meLabel} error={error}
+      <RelayOverview pcs={pcs} mode={mode} defaultRelay={defaultRelay} meLabel={meLabel} error={error} {...(account ? { provider: account.provider } : {})}
         {...(pcStatus ? { pcStatus } : {})} {...(observedVersions ? { observedVersions } : {})} activeFilter={activeFilter}
         onSelectFilter={(f) => navigateTo(formatDashboardHash({ view: "pcs", filter: f }))}
         onOpenRelay={(origin) => navigateTo(origin ? formatDashboardHash({ view: "pcs", relay: relayHost(origin) }) : "#relay")}
-        {...(onRefreshAccount ? { onRetryError: onRefreshAccount } : {})} onAddPc={onAddPc} {...(onPairByQr ? { onPairByQr } : {})}
+        {...(onRefreshAccount ? { onRetryError: onRefreshAccount, onRefreshAccount } : {})} onAddPc={onAddPc} {...(onPairByQr ? { onPairByQr } : {})}
         onOpenSheet={onOpenSheet} onSelectPc={selectPc}>
         {pcs !== null && pcs.length > 0 && renderTableSection(null)}
       </RelayOverview>
