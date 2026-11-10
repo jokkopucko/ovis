@@ -103,6 +103,31 @@ export interface RelayShellCardContentProps {
   readonly setSignedOutView: (view: "sign-in" | "pair" | "saved") => void; readonly setAddingPc: (adding: boolean) => void;
 }
 
+/**
+ * Asks before pairing with the PC a link names. While the sign-in is read nothing is claimed and the button is held;
+ * while a press is checked, the wording it was made on stays up (`pressed`), so the question does not change under it.
+ */
+function PairConfirm({ state, pc, onPair, onCancel }: { state: Extract<RelayShellProps["state"], { kind: "confirm" }>; pc: string; onPair: () => void; onCancel: () => void }) {
+  const t = useT();
+  const checking = state.account === "checking";
+  const said = checking ? state.pressed : state.account ?? "own";
+  return (
+    <>
+      <h1 className="relay-shell-title">{said === "unlisted" ? t("Add {name} to your account?", { name: pc }) : t("Pair with {name}?", { name: pc })}</h1>
+      {said === "unlisted" && <p className="relay-shell-copy">{t("Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.")}</p>}
+      {said === "listed" && <p className="relay-shell-copy">{t("This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
+      {said === "own" && <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
+      {said === "unlisted" && <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this link names")} /></p>}
+      {/* a device whose confirm spoke of no account is told of none */}
+      {checking && said !== "own" && <p className="relay-shell-detail" role="status">{t("Checking your account…")}</p>}
+      <div className="relay-shell-actions">
+        <button type="button" className="btn btn-primary" disabled={checking} aria-busy={checking || undefined} onClick={onPair}>{said === "unlisted" ? t("Add and pair") : t("Pair")}</button>
+        <button type="button" className="btn" onClick={onCancel}>{t("Not now")}</button>
+      </div>
+    </>
+  );
+}
+
 export function RelayShellCardContent({ props, view, signInFirst, saved, addingPc, setSignedOutView, setAddingPc }: RelayShellCardContentProps) {
   const { state, pcStatus, onCheckPcs, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, onSignIn, accountProviders } = props;
   const t = useT();
@@ -187,13 +212,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
           <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onCodeMatch}>{t("It matches")}</button><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
         </>
       )}
-      {state.kind === "confirm" && (
-        <>
-          <h1 className="relay-shell-title">{t("Pair with {name}?", { name: pc })}</h1>
-          <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>
-          <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onPair}>{t("Pair")}</button><button type="button" className="btn" onClick={onCancel}>{t("Not now")}</button></div>
-        </>
-      )}
+      {state.kind === "confirm" && <PairConfirm state={state} pc={pc} onPair={onPair} onCancel={onCancel} />}
       {state.kind === "connecting" && (
         <>
           <h1 className="relay-shell-title">{t("Connecting to {name}…", { name: pc })}</h1>

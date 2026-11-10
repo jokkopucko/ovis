@@ -413,14 +413,12 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     assert.equal(await page.locator("main[data-relay-state]").count(), 0, "the shell's screen is gone once the app is up");
   };
   /**
-   * A first pairing stops at its Ready checkpoint (lib/relay/shell.tsx): the app is not up until Open PC, and Open PC enters it.
-   * A saved PC opened again goes straight to the app (inApp alone).
+   * An admitted pairing enters the app by itself (lib/relay/shell.tsx): no Ready checkpoint with an Open PC button stands
+   * before it. Ready is only for a saved PC whose joining the account failed on an earlier open.
    */
-  const openFromReady = async (page: Page): Promise<void> => {
-    const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
-    await ready.waitFor();
-    assert.equal(await page.locator(".app").count(), 0, "Ready is shown before the app: nothing opens until Open PC");
-    await ready.getByRole("button", { name: "Open PC" }).click();
+  const pairedStraightIn = async (page: Page): Promise<void> => {
+    await page.locator(".app").waitFor();
+    assert.equal(await page.locator('[role=dialog][data-add-pc-phase="ready"]').count(), 0, "no Ready checkpoint stands before the app after a pairing");
   };
   /** Opens a pairing offer, confirms it, and pairs; resolves once the connection attempt is under way. */
   const pairFrom = async (page: Page, offer: RelayOffer): Promise<void> => {
@@ -668,7 +666,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await a.goto(encodeOffer(pc1.offer, APP));
       await state(a, "confirm").waitFor();
       await a.getByRole("button", { name: "Pair", exact: true }).click();
-      await openFromReady(a);
+      await pairedStraightIn(a);
       await inApp(a);
       await a.goto(`${APP}/`);
       await signInScreen(a);
@@ -779,7 +777,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await a.locator("[role=dialog]").getByRole("button", { name: "Add this PC" }).click();
       await a.getByText("Approve this device on Mac mini within 90 seconds to finish.").waitFor();
       assert.equal((await pc2.local("/api/relay/pairing", { body: { id: asked!.id, decision: "approve" } })).status, 200);
-      await openFromReady(a);
+      await pairedStraightIn(a);
       await inApp(a);
       await until(async () => pc2.joined() && (await saved(a, pc2.id))?.enrollment === "complete", "Mac mini joined the account and this device recorded completion", 75_000);
       await pc2.mailbox.pull();
@@ -816,7 +814,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await b.locator("[role=dialog]").getByRole("button", { name: "The numbers match" }).click();
       await prompt.getByRole("radio", { name: shown.split("").join(" ") }).click();
       await prompt.getByRole("button", { name: "Approve" }).click();
-      await openFromReady(b);
+      await pairedStraightIn(b);
       await inApp(b);
       await until(async () => (await pc1.pairings()).length === 0 && pc1.joined() && (await saved(b, pc1.id))?.enrollment === "complete", "Desk PC settled and this device recorded completion after the member's approval", 75_000);
       await pc1.mailbox.pull();
@@ -984,7 +982,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         url.searchParams.set("view", "terminal");
         await page.goto(url.href);
         await page.getByRole("button", { name: "Pair", exact: true }).click();
-        await openFromReady(page);
+        await pairedStraightIn(page);
         await inApp(page);
         assert.equal(await bounded(preference.promise, "the app consumed the PC's /api/herdr-ui answer"), true);
         assert.deepEqual(nativeApi, [], "/api/herdr-ui never went to the static shell host");
@@ -1025,7 +1023,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const from = hostRequests.length;
       try {
         await pairFrom(page, await serverOffer());
-        await openFromReady(page);
+        await pairedStraightIn(page);
         await inApp(page);
         await page.locator(`.workspace-group[data-workspace=${JSON.stringify(workspace.workspace.workspace_id)}] .pane-select`).first().click();
         await page.locator(".header-files-button").click();
@@ -1144,7 +1142,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       bridge.release.resolve();
       await bounded(socket.assigned, "the relay assigned the connection");
       await bounded(socket.pcAnswered, "the PC answered through the relay");
-      await openFromReady(page);
+      await pairedStraightIn(page);
       await inApp(page);
       await pcConnections(1, "the earlier pages' connections closed");
       assert.equal(service.status().sessions, 1, "the PC counts one relay session");
@@ -1199,7 +1197,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     {
       const { context, page, bridge } = await open({ clock: true, theme: "light" });
       await pairFrom(page, await serverOffer());
-      await openFromReady(page);
+      await pairedStraightIn(page);
       await inApp(page);
       await bounded(bridge.next(), "the pairing socket");
       // Unload the paired app before stopping the PC, so it cannot race this visit with a reconnect.
@@ -1256,7 +1254,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await restartRelay();
       await page.getByRole("button", { name: "Try again" }).click();
       await state(page, "connecting").waitFor();
-      await openFromReady(page);
+      await pairedStraightIn(page);
       await inApp(page);
       assert.equal(bridge.sockets.length, 2, "Try again opened one more socket");
       note("relay-unreachable (stopped): connection refused -> relay-unreachable; relay restarted, PC reconnected, Try again -> app");
@@ -1302,7 +1300,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await shot(page, "forgotten");
       // a new QR code from the PC itself pairs as a first pairing
       await pairFrom(page, await serverOffer());
-      await openFromReady(page);
+      await pairedStraightIn(page);
       await inApp(page);
       assert.equal(bridge.sockets.length, 1, "the new QR code pairs over one socket");
       note("identity-changed: stale key refused with 0 sockets; Forget this PC -> forgotten, key gone, 0 sockets; a new QR code -> paired -> app");
@@ -1477,12 +1475,12 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const subscribedA = subscribedTo(pushA, fakeA);
       const subscribedB = subscribedTo(pushB, fakeB);
       await pairFrom(pageA, offerA);
-      await openFromReady(pageA);
+      await pairedStraightIn(pageA);
       await inApp(pageA);
       const pageB = await context.newPage();
       csp.push(await watchCsp(pageB));
       await pairFrom(pageB, offerB);
-      await openFromReady(pageB);
+      await pairedStraightIn(pageB);
       await inApp(pageB);
       const deviceA = (await saved(pageA, A))!.device_id!;
       const deviceB = (await saved(pageB, B))!.device_id!;
@@ -1736,14 +1734,11 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
           const loads: string[] = [];
           page.on("load", () => loads.push(page.url()));
           await pairFrom(page, pc.offer);
-          // the service worker's update reloads the page mid-pairing; the saved key then reconnects, and only a pairing
-          // the reload did not cut short stops at Ready first
-          const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
-          await ready.or(page.locator(".app")).first().waitFor();
-          const sawReady = await ready.count() > 0;
-          if (sawReady) await openFromReady(page);
+          // the service worker's update reloads the page mid-pairing; the saved key then reconnects. Cut short or not,
+          // the pairing ends in the app
+          await pairedStraightIn(page);
           await inApp(page);
-          lines.push(`server ${newer}: ${sawReady ? "Ready, then Open PC" : "the reload reconnected with the saved key, straight to the app"}`);
+          lines.push(`server ${newer}: paired, then straight to the app across the reload`);
           assert.equal(loads.length, 2, `the pairing load and exactly one reload (loads: ${JSON.stringify(loads)})`);
           await page.reload();
           await inApp(page);
@@ -1759,7 +1754,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         const loads: string[] = [];
         page.on("load", () => loads.push(page.url()));
         await pairFrom(page, await serverOffer("Same PC"));
-        await openFromReady(page);
+        await pairedStraightIn(page);
         await inApp(page);
         assert.equal(loads.length, 1, `no reload for a server at the shell's own version (loads: ${JSON.stringify(loads)})`);
         lines.push(`server ${shellVersion} (the shell's own version): paired -> app, ${loads.length} page load, no reload, no update screen`);

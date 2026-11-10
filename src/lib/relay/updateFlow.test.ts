@@ -199,7 +199,7 @@ function shellFixture() {
   } };
 }
 
-it.each(["retry", "disconnect"] as const)("keeps Ready pending through %s after a fresh outdated admission until Open PC", async (recovery) => {
+it.each(["retry", "disconnect"] as const)("enters the PC once %s gets past a fresh outdated admission, with no Ready checkpoint", async (recovery) => {
   const fixture = shellFixture();
   class Admitted extends RelayTransport {
     version = "0.0.1";
@@ -218,10 +218,8 @@ it.each(["retry", "disconnect"] as const)("keeps Ready pending through %s after 
     if (recovery === "disconnect") fatal?.(new MuxProtocolError("timeout", "fixture disconnected"));
     fixture.view().onRetry();
     for (let i = 0; i < 500; i++) await Promise.resolve();
-    expect(fixture.apps()).toBe(0);
-    expect(fixture.view().state.kind).toBe("ready");
-    fixture.view().onOpenPc?.();
     expect(fixture.apps()).toBe(1);
+    expect(fixture.view().state.kind).not.toBe("ready");
     fatal?.(new MuxProtocolError("timeout", "fixture disconnected"));
     fixture.view().onRetry();
     for (let i = 0; i < 500; i++) await Promise.resolve();

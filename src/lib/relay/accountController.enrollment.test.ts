@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
@@ -18,7 +18,8 @@ import { AccountService } from "../account/service.ts";
 import { myPcs } from "../account/myPcs.ts";
 import { SettingsProvider } from "../settings.ts";
 import { setCurrentLanguage, translate } from "../i18n.ts";
-import { createAccountController } from "./accountController.ts";
+import { ConsentChangedError, createAccountController } from "./accountController.ts";
+import { offerOf } from "./shellState.ts";
 import { enrollmentOf, type RelayDevice, type RelayDeviceStore } from "./device.ts";
 import { dashboardModel, dashboardPcs } from "./dashboard.ts";
 import { createShellTestPage } from "./shell.test.tsx";
@@ -31,6 +32,7 @@ describe("account enrollment ownership", () => {
   const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
   afterEach(() => {
+    jest.useRealTimers();
     for (const transport of transports.splice(0)) transport.close();
     browser.dispose();
     if (savedNavigator) Object.defineProperty(globalThis, "navigator", savedNavigator);
@@ -71,12 +73,13 @@ describe("account enrollment ownership", () => {
     const viewChanged = Promise.withResolvers<void>();
     let accountHeld = false;
     let linked = !options.linking;
+    let introductions = 0;
     const answer = (path: string): Response => {
       switch (path) {
         case "/api/account/status": return Response.json({ account: linked ? "account" : null, unlinked: [], removals: [], enrolling: true });
         case "/api/account/link": linked = true; return Response.json({});
         case "/api/account/enroll": return Response.json({ results: records.map((record, index) => ({ id: record.id, outcome: index < (options.admitted ?? 2) ? "applied" : "refused", code: "key_held" })) });
-        case "/api/account/introduction": return Response.json({ pcs: [] });
+        case "/api/account/introduction": introductions++; return Response.json({ pcs: [] });
         default: throw new TypeError("Unexpected PC request: " + path);
       }
     };
@@ -110,7 +113,7 @@ describe("account enrollment ownership", () => {
     }, { active: () => false, changed: async () => { viewChanged.resolve(); }, outdated: () => new Set() });
     return {
       controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service, linked: () => linked,
-      accountRequested, accountRelease, signOutAsked, viewChanged: viewChanged.promise,
+      accountRequested, accountRelease, signOutAsked, viewChanged: viewChanged.promise, introductions: () => introductions,
     };
   }
   type Run = Awaited<ReturnType<typeof fixture>>;
@@ -377,6 +380,76 @@ describe("account enrollment ownership", () => {
     const run = await fixture("unused", { admitted });
     const outcome = await run.controller.enroll(await run.open(), run.original.server_id, false);
     expect(outcome).toEqual({ state: "complete", admitted });
+  });
+
+  it("finishes a code pairing after one look for an introduction, with no wait", async () => {
+    jest.useFakeTimers();
+    const run = await fixture("unused");
+    // no clock moves here: an enrollment that waited would never settle
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true)).toEqual({ state: "complete", admitted: 2 });
+    expect(run.introductions()).toBe(1);
+    expect(enrollmentOf((await run.store.get(run.original.server_id))!)).toBe("complete");
+  });
+
+  it("waits a minute for an introduction after a pairing made without a code, which a member may have approved", async () => {
+    jest.useFakeTimers();
+    const run = await fixture("unused");
+    const began = Date.now();
+    let outcome: unknown;
+    const pending = run.controller.enroll(await run.open(), run.original.server_id, true, true).then((value) => { outcome = value; });
+    // the enrollment signs and reads between its waits, which no faked clock runs: each turn lets that work land
+    for (let turn = 0; outcome === undefined && turn < 5_000; turn++) {
+      if (jest.getTimerCount() > 0) jest.advanceTimersByTime(3_000);
+      await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+    }
+    await pending;
+    expect(outcome).toEqual({ state: "complete", admitted: 2 });
+    expect(Date.now() - began).toBe(60_000);
+    expect(run.introductions()).toBe(21);
+  });
+
+  it("adds nothing to the account of a sign-in other than the one the pairing was confirmed for", async () => {
+    const run = await fixture("unused");
+    const { first, later } = await laterSignIn(run);
+    await run.accountStore.set("session", later);
+    const signal = new AbortController().signal;
+    const { name: _name, ...offer } = offerOf(run.original);
+    // the confirm named the first sign-in's account: no account key goes to the PC under the one stored now
+    await expect(run.controller.prepare({ ...offer, code: "123456" }, signal, first)).rejects.toBeInstanceOf(ConsentChangedError);
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: first })).toBe("local");
+    // and a confirm that said "a key of its own" joins no account at all
+    expect(await run.controller.prepare({ ...offer, code: "123456" }, signal, null)).toEqual({});
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: null })).toBe("local");
+    expect(run.putPcs).toEqual([]);
+    expect(enrollmentOf((await run.store.get(run.original.server_id))!)).toBeUndefined();
+    // the sign-in the confirm named, still stored: the pairing goes on
+    expect((await run.controller.prepare({ ...offer, code: "123456" }, signal, later)).accountKey).toBeDefined();
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: later })).toEqual({ state: "complete", admitted: 2 });
+  });
+
+  it("says its session is settled only once the link and the renewal are done, and before the rest of the enrollment", async () => {
+    const run = await fixture("/api/account/enroll", { linking: true, holdRenewal: true });
+    let settled = 0;
+    const enrolling = run.controller.enroll(await run.open(), run.original.server_id, true, false, { settled: () => { settled++; } });
+    // linked, and the renewal that follows is out: the session is still to reconnect
+    await run.renewalRequested.promise;
+    expect(run.linked()).toBe(true);
+    expect(settled).toBe(0);
+    run.renewalResponse.resolve();
+    // the PC's enrollment is still unanswered: nothing after the renewal touches the session
+    await run.requested.promise;
+    expect(settled).toBe(1);
+    run.response.resolve(run.answer("/api/account/enroll"));
+    expect(await enrolling).toEqual({ state: "complete", admitted: 2 });
+    expect(settled).toBe(1);
+  });
+
+  it("says its session is settled when the enrollment ends before any link, as one that joins no account does", async () => {
+    const run = await fixture("unused");
+    let settled = 0;
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: null, settled: () => { settled++; } })).toBe("local");
+    await Promise.resolve();
+    expect(settled).toBe(1);
   });
 
   it("reports no admitted devices when directory peers cannot be read", async () => {

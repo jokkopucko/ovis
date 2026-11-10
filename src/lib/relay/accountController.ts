@@ -25,7 +25,25 @@ import { openRelayTransport, type RelayTransport } from "./transport.ts";
 const INTRODUCTION_WAIT_MS = 60_000;
 const INTRODUCTION_POLL_MS = 3_000;
 const DIRECTORY_REFRESH_MS = 60_000;
+/**
+ * `consent`: whose account the pairing was confirmed for. `settled`: told once, when nothing more of this enrollment
+ * ends or renews the session it was given (its link and renewal are done, or it stopped before them).
+ */
+interface EnrollOptions { readonly consent?: PairingConsent; readonly settled?: () => void }
 const wait = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+/**
+ * The sign-in a pairing's confirm was drawn for is no longer the one stored (another tab signed out, or in as someone
+ * else): the pairing is not made, and the person is asked again.
+ */
+export class ConsentChangedError extends Error {
+  constructor() { super("The sign-in changed since the pairing was confirmed"); this.name = "ConsentChangedError"; }
+}
+/**
+ * Whose account a pairing may touch: a sign-in, when its confirm named that account; `null`, when the confirm said the
+ * device gets a key of its own; `undefined` for an open that no confirm of this page preceded (a saved PC, the Add-a-PC
+ * sheet), which acts as whoever is signed in.
+ */
+export type PairingConsent = AccountSession | null | undefined;
 function signInFailure(error: unknown): string {
   if (error instanceof SignInError && error.code === "denied") return t("The sign-in was cancelled.");
   return t("The sign-in did not finish. Try again.");
@@ -56,8 +74,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let reading: { readonly epoch: number; readonly read: Promise<void> } | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   const changed = async (): Promise<void> => { await view.changed(); armRefresh(); };
-  const refresh = async (initial = false): Promise<void> => {
-    if (reading?.epoch === generation || leaving || accountService === null || (!initial && (!view.active() || accountView?.kind !== "signed-in"))) return;
+  const refresh = async (initial = false, forced = false): Promise<void> => {
+    if (reading?.epoch === generation || leaving || accountService === null || (!initial && !forced && (!view.active() || accountView?.kind !== "signed-in"))) return;
     const epoch = generation;
     let current = accountView;
     const live = (): boolean => epoch === generation;
@@ -76,13 +94,15 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const session = await account.session();
         if (!live()) return;
         if (session === undefined) { if (initial) { await changed(); return; } throw new SignedOutError(); }
-        if (initial) { accountView = { kind: "signed-in", provider: session.provider, pcs: null, error: null }; await changed(); }
+        // named before it is drawn: a confirm drawn from this view records whose account it speaks of
+        if (initial) { accountView = { kind: "signed-in", provider: session.provider, pcs: null, error: null }; shownFor = session; await changed(); }
         // the rows on screen are another sign-in's (another tab signed in since they were read): they go before this
         // read, so its failure cannot draw them again under this one
         else if (shownFor !== undefined && !sameSignIn(shownFor, session)) {
           directory = [];
           listedFor = undefined;
           current = accountView = { kind: "signed-in", provider: session.provider, pcs: null, error: null };
+          shownFor = session;
           await changed();
           if (!live()) return;
         }
@@ -124,7 +144,17 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     })().finally(() => { if (reading?.read === read) reading = undefined; });
     reading = { epoch, read };
     await read;
-    if (replaced) await refresh(initial);
+    // read whatever screen is up: a confirm drawn meanwhile waits for this sign-in's directory, and a Pair press that
+    // found another sign-in reads that one's before anything is paired
+    if (replaced) await refresh(initial, true);
+  };
+  /**
+   * The sign-in and its directory, read again now whatever screen is up: for a consent about to be acted on, which
+   * no timer keeps fresh (the confirm is not the front page). A sign-in still finishing is left to its own read.
+   */
+  const reread = async (): Promise<void> => {
+    while (reading !== undefined) await reading.read.catch(() => undefined);
+    if (accountView?.kind !== "signing-in") await refresh(accountView?.kind !== "signed-in", true);
   };
   // the read a person asked for (Check again, Try again) that waits for the one out to land: later asks join it
   let asked: Promise<void> | undefined;
@@ -213,8 +243,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     }
     await refresh(true);
   };
-  const prepare = async (offer: RelayOffer, signal: AbortSignal) => {
-    const session = accountService !== null ? await account.session() : undefined;
+  /**
+   * `consent` null: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it.
+   * A sign-in: the confirm named its account, and a pairing under any other sign-in, or none, is refused.
+   */
+  const prepare = async (offer: RelayOffer, signal: AbortSignal, consent?: PairingConsent) => {
+    const session = accountService !== null && consent !== null ? await account.session() : undefined;
+    if (consent != null && (session === undefined || !sameSignIn(consent, session))) throw new ConsentChangedError();
     const key = session !== undefined ? await accountStore.key() : undefined;
     signal.throwIfAborted();
     let intent: "pc" | "account" = "pc";
@@ -227,17 +262,27 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     signal.throwIfAborted();
     return key ? { accountKey: key, intent } : {};
   };
-  const enroll = (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | EnrollmentCompletion> => {
-    const done = enrollOwned(opened, serverId, fresh);
+  /**
+   * `introducible`: the pairing was just made without a code, so a member of the account may have approved it and
+   * hands an introduction over a moment later. A QR or code pairing gets none, and is not kept waiting for one.
+   */
+  const enroll = (opened: RelayTransport, serverId: string, fresh: boolean, introducible = false, options: EnrollOptions = {}): Promise<"local" | EnrollmentCompletion> => {
+    // told once: after the session's last renewal, or when the enrollment ends without reaching it
+    let told = false;
+    const settled = (): void => { if (told) return; told = true; options.settled?.(); };
+    const done = enrollOwned(opened, serverId, fresh, introducible, { ...options, settled });
+    void done.then(settled, settled);
     running.set(done, serverId);
     void done.then(() => running.delete(done), () => running.delete(done));
     return done;
   };
-  const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | EnrollmentCompletion> => {
+  const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, settled }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
     const epoch = forgotten.get(serverId);
-    if (leaving || accountService === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return "local";
+    if (leaving || accountService === null || consent === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return "local";
     const session = await account.session();
     if (session === undefined) return "local";
+    // the pairing was confirmed for another sign-in's account: this one's gets nothing from it
+    if (consent !== undefined && !sameSignIn(consent, session)) return "local";
     const saved = await store.get(serverId);
     if (saved === undefined || saved.device_id === null) return "local";
     let pairing = saved;
@@ -310,6 +355,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         // a Devices panel open since before the link reads the list again, over the session that proved the new key
         if (linking) window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT));
       }
+      // the link ended the PC's other sessions of this row, and the renewal reconnected this one: nothing below does either
+      settled?.();
       // a PC of another account is not this account's to list or introduce from
       if (device.public_spki !== key.public_spki || (!linking && status.account !== session.account)) throw new AccountPcError(409, "enrolling");
       // the account's removals this PC holds, checked and kept as signed, for a PC this client enrolls later (#2956)
@@ -366,7 +413,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         }
       }
       // the approver hands the introduction over once this device's row exists, which may be a moment after it
-      const deadline = Date.now() + (fresh ? INTRODUCTION_WAIT_MS : 0);
+      const deadline = Date.now() + (introducible ? INTRODUCTION_WAIT_MS : 0);
       for (;;) {
         if ((await takeIntroduction({ fetch, key, label, store: enrollmentStore, relay: device.relay })).length > 0 || Date.now() >= deadline) break;
         await wait(INTRODUCTION_POLL_MS);
@@ -382,5 +429,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     }
   };
 
-  return { get state() { return accountView; }, get directory() { return directory; }, enabled: accountService !== null, providers, load, refresh, refreshNow, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
+  return { get state() { return accountView; }, get directory() { return directory; },
+    /** the sign-in the signed-in view speaks of; none while signed out, or before a new sign-in's first read */
+    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, load, refresh, refreshNow, reread, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
 }

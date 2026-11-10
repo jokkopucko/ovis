@@ -277,6 +277,74 @@ describe("RelayShellScreens", () => {
     expect(html).toContain('data-action="pair-qr" disabled=""');
   });
 
+  describe("the confirm before a link's PC is paired with", () => {
+    const offer = { v: 1 as const, server_id: "0123456789abcdef0123456789abcdef", server_public_key: "key", relay: "wss://relay.ovis.sh", name: "Desk PC" };
+    const confirm = (account?: "checking" | "unlisted" | "listed", pressed?: "unlisted" | "listed" | "own"): string => render(createElement(RelayShellCardContent, {
+      props: baseProps({ kind: "confirm", offer, ...(account ? { account } : {}), ...(pressed ? { pressed } : {}) }),
+      view: null, signInFirst: false, saved: 0, addingPc: false, setSignedOutView: none, setAddingPc: none,
+    }));
+    const pcId = '<span class="key-id" role="group" aria-label="ID of the PC this link names"><span class="key-id-group">0123</span>';
+
+    it("signed out, pairs with a key of this device's own and says nothing of an account", () => {
+      const html = confirm();
+      expect(html).toContain("Pair with Desk PC?");
+      expect(html).toContain("This device gets a key of its own for Desk PC.");
+      expect(html).toContain('<button type="button" class="btn btn-primary">Pair</button>');
+      expect(html).not.toContain("account");
+      expect(html).not.toContain(pcId);
+    });
+
+    it("signed in with a PC the account does not list, says the pairing adds it to the account and shows the PC's ID", () => {
+      const html = confirm("unlisted");
+      expect(html).toContain("Add Desk PC to your account?");
+      expect(html).toContain("Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.");
+      expect(html).toContain(pcId);
+      expect(html).toContain('<button type="button" class="btn btn-primary">Add and pair</button>');
+      expect(html).toContain(">Not now</button>");
+      expect(html).not.toContain("Pair with Desk PC?");
+      expect(html).not.toContain("a key of its own");
+    });
+
+    it("signed in with a PC the account lists, says this device joins it with the account's key", () => {
+      const html = confirm("listed");
+      expect(html).toContain("Pair with Desk PC?");
+      expect(html).toContain("This device joins Desk PC with your account&#x27;s key. The PC lists it under Settings → Devices and PCs, where it can be removed.");
+      expect(html).toContain('<button type="button" class="btn btn-primary">Pair</button>');
+      expect(html).not.toContain("a key of its own");
+      expect(html).not.toContain("Add Desk PC to your account?");
+    });
+
+    it("until the sign-in is read, claims neither, says it is checking and takes no confirmation", () => {
+      const html = confirm("checking");
+      expect(html).toContain("Pair with Desk PC?");
+      expect(html).toContain('<button type="button" class="btn btn-primary" disabled="" aria-busy="true">Pair</button>');
+      expect(html).toContain('<p class="relay-shell-detail" role="status">Checking your account…</p>');
+      expect(html).not.toContain("a key of its own");
+      expect(html).not.toContain("your account&#x27;s key");
+      expect(html).not.toContain("to your account");
+    });
+
+    it("keeps the wording a press was made on while the press is checked, with its button held", () => {
+      const adds = confirm("checking", "unlisted");
+      expect(adds).toContain("Add Desk PC to your account?");
+      expect(adds).toContain("Pairing adds this PC to your Ovis account");
+      expect(adds).toContain(pcId);
+      expect(adds).toContain('<button type="button" class="btn btn-primary" disabled="" aria-busy="true">Add and pair</button>');
+      expect(adds).toContain('<p class="relay-shell-detail" role="status">Checking your account…</p>');
+      expect(adds).not.toContain("Pair with Desk PC?");
+      const joins = confirm("checking", "listed");
+      expect(joins).toContain("Pair with Desk PC?");
+      expect(joins).toContain("This device joins Desk PC with your account&#x27;s key.");
+      expect(joins).toContain('disabled="" aria-busy="true">Pair</button>');
+      expect(joins).toContain("Checking your account…");
+      // a device that is signed out is told of no account, pressed or not
+      const own = confirm("checking", "own");
+      expect(own).toContain("This device gets a key of its own for Desk PC.");
+      expect(own).toContain('disabled="" aria-busy="true">Pair</button>');
+      expect(own).not.toContain("account");
+    });
+  });
+
   it("clears the uncontrolled TypedDigits input when a fresh challenge number arrives", async () => {
     const fieldNode = { value: "123456" };
     let renderer: ReactTestRenderer | undefined;

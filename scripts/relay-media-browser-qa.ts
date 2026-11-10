@@ -260,14 +260,11 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     const offer = decodeOffer(p.service.offer().url);
     assert.ok(offer);
     await navigate(page, encodeOffer({ ...offer, name: p.name }, origin));
-    await page.getByRole("button", { name: "Pair", exact: true }).click({ force: true });
-    // a first pairing stops at Ready: nothing opens until Open PC (lib/relay/shell.tsx)
-    const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
-    await ready.waitFor();
-    assert.equal(await page.locator(".app").count(), 0, "Ready is shown before the app");
+    // an admitted pairing enters the app by itself, with no Ready checkpoint before it (lib/relay/shell.tsx)
     const paired = page.waitForEvent("framenavigated", { predicate: (frame) => frame === page.mainFrame() && !frame.url().includes("#offer=") });
-    await Promise.all([paired, ready.getByRole("button", { name: "Open PC" }).click()]);
+    await Promise.all([paired, page.getByRole("button", { name: "Pair", exact: true }).click({ force: true })]);
     await page.locator(".app").waitFor();
+    assert.equal(await page.locator('[role=dialog][data-add-pc-phase="ready"]').count(), 0, "no Ready checkpoint after a pairing");
     return page;
   }
   async function controlled(page: Page): Promise<void> {

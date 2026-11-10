@@ -217,12 +217,9 @@ async function main(): Promise<void> {
     await page.getByRole("heading", { name: `Pair with ${offer.name}?` }).waitFor();
     assert.ok(!page.url().includes("#offer"), "the offer left the address before the question");
     await page.getByRole("button", { name: "Pair", exact: true }).click();
-    // a first pairing stops at Ready: nothing opens until Open PC (lib/relay/shell.tsx)
-    const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
-    await ready.waitFor();
-    assert.equal(await page.locator(".app").count(), 0, "Ready is shown before the app");
-    await ready.getByRole("button", { name: "Open PC" }).click();
+    // an admitted pairing enters the app by itself, with no Ready checkpoint before it (lib/relay/shell.tsx)
     await inApp(page);
+    assert.equal(await page.locator('[role=dialog][data-add-pc-phase="ready"]').count(), 0, "no Ready checkpoint after a pairing");
   }
   /** The phone's saved record for a PC, or null. */
   const saved = (page: Page, serverId: string): Promise<{ device_id: string; extractable: boolean } | null> => page.evaluate(async (serverId) => {
