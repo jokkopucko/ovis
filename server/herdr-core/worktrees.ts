@@ -118,11 +118,15 @@ export async function git(cwd: string, args: string[]): Promise<{ ok: boolean; s
   }
 }
 
-/** `git worktree list --porcelain -z`: one block per checkout, the repository's own first; NUL-separated, so no path is quoted. */
-export function parseCheckouts(porcelain: string): Checkout[] {
+/**
+ * `git worktree list --porcelain`: one block per checkout, the repository's own first. Its lines
+ * end in NUL with `-z` and in a newline without it (`end`). Git writes a path as it is in both,
+ * quoting nothing, so only a path with a newline in it needs `-z`: by line it is cut there.
+ */
+export function parseCheckouts(porcelain: string, end: "\0" | "\n" = "\0"): Checkout[] {
   const checkouts: Checkout[] = [];
-  for (const block of porcelain.split(/\0\0+/u)) {
-    const lines = block.split("\0").filter((line) => line !== "");
+  for (const block of porcelain.split(end === "\0" ? /\0\0+/u : /\n\n+/u)) {
+    const lines = block.split(end).filter((line) => line !== "");
     const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
     if (!path) continue;
     const branch = lines.find((line) => line.startsWith("branch "))?.slice("branch ".length).replace(/^refs\/heads\//u, "") ?? null;
@@ -142,9 +146,15 @@ export async function repositoryOf(folder: string): Promise<Repository> {
   const where = await git(folder, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir"]);
   const [top, common, own] = where.stdout.split("\n");
   if (!where.ok || !top || !common || !own) throw new WorktreeError("not_git_worktree", `${folder} is not in a git worktree`);
-  const listed = await git(folder, ["worktree", "list", "--porcelain", "-z"]);
+  // git before 2.31 knows no --path-format and writes the switch back as its first line, so the three
+  // answers would be read one line off: refused, as its rejected -z refused the listing before
+  if (!isAbsolute(top) || !isAbsolute(common) || !isAbsolute(own)) throw new WorktreeError("worktree_list_failed", "git on this PC is older than 2.31, which worktrees here need");
+  let listed = await git(folder, ["worktree", "list", "--porcelain", "-z"]);
+  // git before 2.36 (Ubuntu 22.04 has 2.34) knows no -z and answers with its usage: it lists by line
+  const byLine = !listed.ok && /\bunknown switch\b/u.test(listed.stderr);
+  if (byLine) listed = await git(folder, ["worktree", "list", "--porcelain"]);
   if (!listed.ok) throw new WorktreeError("worktree_list_failed", listed.stderr || "git worktree list failed");
-  const checkouts = parseCheckouts(listed.stdout).map((checkout) => ({ ...checkout, path: realPath(checkout.path) }));
+  const checkouts = parseCheckouts(listed.stdout, byLine ? "\n" : "\0").map((checkout) => ({ ...checkout, path: realPath(checkout.path) }));
   const root = checkouts[0]?.path ?? realPath(top);
   return { repo_key: realPath(common), repo_name: basename(root), repo_root: root, checkout: realPath(top), git_dir: realPath(own), checkouts };
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError, herdrRpc, paneGet, paneProcessInfo, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveBeside, paneMoveToNewTab, tabClose, tabCreate, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "../herdr/client.ts";
@@ -9,6 +9,7 @@ import { SeenMarker } from "./seen-label.ts";
 import { encodeFrame, FRAME_CLOSE, FRAME_DATA, HcConnection, HcError, type HcTransport, makeFrameReader } from "./connection.ts";
 import { MachineScopedConnection } from "./machine-scope.ts";
 import { adapterAddress } from "./pipe.ts";
+import { parseCheckouts } from "./worktrees.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { ProcessRow } from "../windows-processes.ts";
 import type { HcTerminal } from "./snapshot.ts";
@@ -809,6 +810,46 @@ describe("herdr-core adapter, new and closed terminals", () => {
     expect(git("-C", repo, "commit", "-q", "-m", "fixture").exitCode).toBe(0);
     return { dir, repo, git };
   }
+  /**
+   * A git before 2.36 (2.34 on Ubuntu 22.04), first on the PATH until the test ends: its
+   * `worktree list` has no -z and answers one with its usage, leaving `git.rejected` beside itself
+   * each time. `before231`: nor does its `rev-parse` know --path-format, which it writes back as a
+   * line of its answer (2.25 on Ubuntu 20.04, 2.30 on Debian 11). Every other call is this PC's git.
+   */
+  function gitBefore236(dir: string, before231 = false) {
+    const real = Bun.which("git")!;
+    const bin = join(dir, "git-2.34");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "git"), [
+      "#!/bin/sh",
+      "list=0",
+      'for arg in "$@"; do',
+      '  [ "$arg" = list ] && list=1',
+      '  if [ "$list" = 1 ] && [ "$arg" = -z ]; then',
+      '    : > "$0.rejected"',
+      "    printf '%s\\n' \"error: unknown switch \\`z'\" 'usage: git worktree add [<options>] <path> [<commit-ish>]' '   or: git worktree list [<options>]' >&2",
+      "    exit 129",
+      "  fi",
+      "done",
+      ...(before231 ? [
+        'for arg in "$@"; do',
+        '  if [ "$arg" = --path-format=absolute ]; then',
+        "    echo --path-format=absolute",
+        '    for kept do shift; [ "$kept" = --path-format=absolute ] || set -- "$@" "$kept"; done',
+        "    break",
+        "  fi",
+        "done",
+      ] : []),
+      `exec '${real}' "$@"`,
+      "",
+    ].join("\n"), { mode: 0o755 });
+    const path = process.env["PATH"];
+    process.env["PATH"] = `${bin}:${path ?? ""}`;
+    cleanups.push(() => {
+      if (path === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = path;
+    });
+  }
   /** a core Ovis lays out whose terminals keep the labels it writes */
   async function labeling(start: HcTerminal[]) {
     const ready = await living(start, {
@@ -853,7 +894,7 @@ describe("herdr-core adapter, new and closed terminals", () => {
 
   it("keeps to what git and the layout say: nested repositories, moved checkouts, quoted paths and the app's cores", async () => {
     const { dir, git } = repository();
-    // a folder git quotes in its line output: the -z listing names it as it is
+    // a folder git quotes in other listings: its worktree listing names it as it is
     const repo = join(dir, "앱");
     expect(Bun.spawnSync(["mv", join(dir, "app"), repo]).exitCode).toBe(0);
     const nested = join(repo, "nested");
@@ -907,6 +948,59 @@ describe("herdr-core adapter, new and closed terminals", () => {
     await expect(worktreeCreate({ workspaceId: "E", branch: "first", path: join(dir, "first") }, empty.socket)).rejects.toMatchObject({ code: "worktree_create_failed", message: expect.stringMatching(/invalid reference: HEAD\b/u) });
     expect(existsSync(join(dir, "first"))).toBeFalse();
     expect([...runs, ...empty.runs]).toEqual([]);
+  });
+
+  it("lists, makes and removes a worktree with a git before 2.36, whose worktree list has no -z", async () => {
+    const { dir, git } = repository();
+    // quotes and letters outside ASCII, which git escapes in other listings: this one names them as they are, by line too
+    const repo = join(dir, '앱 "old" git');
+    expect(Bun.spawnSync(["mv", join(dir, "app"), repo]).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "--detach", join(dir, "detached")).exitCode).toBe(0);
+    gitBefore236(dir);
+    const { socket } = await labeling([terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+
+    const listed = await worktreeList("S", socket);
+    // the stand-in was the git asked, with -z first: a git that has it is never listed by line
+    expect(existsSync(join(dir, "git-2.34", "git.rejected"))).toBeTrue();
+    expect(listed.source).toMatchObject({ repo_root: repo, repo_name: '앱 "old" git', source_checkout_path: repo, source_workspace_id: "S" });
+    expect(listed.worktrees).toEqual([
+      expect.objectContaining({ path: repo, branch: "main", is_detached: false, is_linked_worktree: false, open_workspace_id: "S" }),
+      expect.objectContaining({ path: join(dir, "detached"), branch: null, is_detached: true, is_linked_worktree: true, open_workspace_id: null }),
+    ]);
+
+    const checkout = join(dir, "made here");
+    const created = await worktreeCreate({ workspaceId: "S", branch: "feature/x", path: checkout }, socket);
+    expect(created).toMatchObject({ type: "worktree_created", worktree: { path: checkout, branch: "feature/x", is_linked_worktree: true } });
+    expect((await worktreeList("S", socket)).worktrees.map((worktree) => [worktree.path, worktree.open_workspace_id])).toEqual([[repo, "S"], [join(dir, "detached"), null], [checkout, created.workspace.workspace_id]]);
+    expect(await worktreeRemove(created.workspace.workspace_id, false, socket)).toMatchObject({ type: "worktree_removed", path: checkout });
+    expect(existsSync(checkout)).toBeFalse();
+  });
+
+  it("refuses the listing of a git before 2.31, whose rev-parse answers are one line off", async () => {
+    const { dir, repo } = repository();
+    gitBefore236(dir, true);
+    const { socket } = await labeling([terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+    // not a listing read from the wrong lines (the switch as the checkout, the checkout as the repository)
+    await expect(worktreeList("S", socket)).rejects.toMatchObject({ code: "worktree_list_failed", message: expect.stringContaining("older than 2.31") });
+  });
+
+  it("reads git's line listing of checkouts as its -z one, each path as it is", () => {
+    const head = "HEAD 451973cecfbf57f3872e98c4314dffb0395fe352";
+    const blocks = [
+      ["worktree /srv/app.git", "bare"],
+      ['worktree /home/u/앱 "old" git', head, "branch refs/heads/feature/x"],
+      ["worktree /home/u/detached", head, "detached", "locked"],
+      ["worktree /home/u/gone", head, "branch refs/heads/gone", "prunable gitdir file points to non-existent location"],
+    ];
+    const listing = (end: string) => blocks.map((block) => `${block.join(end)}${end}${end}`).join("");
+    const checkouts = [
+      { path: "/srv/app.git", branch: null, is_bare: true, is_detached: false, is_prunable: false },
+      { path: '/home/u/앱 "old" git', branch: "feature/x", is_bare: false, is_detached: false, is_prunable: false },
+      { path: "/home/u/detached", branch: null, is_bare: false, is_detached: true, is_prunable: false },
+      { path: "/home/u/gone", branch: "gone", is_bare: false, is_detached: false, is_prunable: true },
+    ];
+    expect(parseCheckouts(listing("\0"))).toEqual(checkouts);
+    expect(parseCheckouts(listing("\n"), "\n")).toEqual(checkouts);
   });
 
   it("keeps a renamed workspace's name on a new tab, so it stays when the tab it was given in closes", async () => {
