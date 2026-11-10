@@ -139,7 +139,7 @@ jobs:
           exit 0
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
-      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts ./server/darwin-process.test.ts ./server/grok.test.ts ./server/omp-images.test.ts
+      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts ./server/darwin-process.test.ts ./server/grok.test.ts ./server/omp-images.test.ts ./scripts/install-herdr-core.test.ts
         if: needs.changes.outputs.draft != 'true'
   rust-pty-host:
     # The Rust PTY host (crates/pty-sidecar) is the default where it is installed or built, and its

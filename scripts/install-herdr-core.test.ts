@@ -283,7 +283,13 @@ describe("core_service", () => {
     expect(plist).toContain("<key>AbandonProcessGroup</key><true/>");
     expect(readFileSync(join(home, "calls"), "utf8")).toBe(`launchctl bootout gui/501/sh.ovis.server\nlaunchctl bootstrap gui/501 ${agent}\n`);
     expect(result.out).toContain("starts at login (launchd");
-    if (Bun.which("plutil")) expect(Bun.spawnSync(["plutil", "-lint", agent]).exitCode).toBe(0);
+    // GNUstep's plutil (Linux) fails every file with "non-NSData data argument passed to method",
+    // so elsewhere Python's plistlib parses the file instead:
+    // https://github.com/gnustep/libs-base/blob/6307e474dd39e36eb2c5f6ee15ade8b51e337970/Source/NSPropertyList.m#L2648-L2650
+    const lint = process.platform === "darwin"
+      ? ["plutil", "-lint", agent]
+      : ["python3", "-c", "import plistlib, sys; plistlib.load(open(sys.argv[1], 'rb'))", agent];
+    if (Bun.which(lint[0]!)) expect(Bun.spawnSync(lint).exitCode).toBe(0);
   });
 });
 
