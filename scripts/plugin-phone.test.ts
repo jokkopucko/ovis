@@ -3,6 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { quietPort } from "./quiet-port.ts";
+
 const ROOT = join(import.meta.dir, "..");
 const DNS = "pc.example.ts.net";
 /**
@@ -31,9 +33,7 @@ beforeEach(() => {
   chmodSync(join(fake, "bin", "tailscale"), 0o755);
   writeFileSync(join(fake, "status.json"), JSON.stringify({ BackendState: "Running", Self: { DNSName: `${DNS}.`, UserID: 1 }, User: { "1": { LoginName: "me@example.com" } } }));
   // a port nothing listens on: the app is "not running yet", which the phone step allows
-  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
-  port = probe.port!;
-  void probe.stop(true);
+  port = quietPort();
   mkdirSync(join(scratch, "config"));
 });
 afterEach(() => rmSync(scratch, { recursive: true, force: true }));

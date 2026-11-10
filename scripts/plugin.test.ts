@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { COMMAND_ALIASES } from "./plugin-link.ts";
 import { herdrStateDir } from "./plugin-state.ts";
+import { quietPort } from "./quiet-port.ts";
 import { readProcessBirth } from "../server/process-owner.ts";
 import { updateStateDir } from "../server/update-state.ts";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
@@ -128,10 +129,7 @@ describe("the herdr socket", () => {
     const root = join(scratch, "root");
     mkdirSync(join(root, "server"), { recursive: true });
     writeFileSync(join(root, "server", "managed.ts"), `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(join(scratch, "seen"))}, process.env.HERDR_SOCKET ?? "unset");\n`);
-    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
-    const port = probe.port;
-    await probe.stop(true);
-    await run("start", { HERDR_PLUGIN_ROOT: root, HERDR_SOCKET_PATH: "/herdr/own.sock", PORT: String(port) });
+    await run("start", { HERDR_PLUGIN_ROOT: root, HERDR_SOCKET_PATH: "/herdr/own.sock", PORT: String(quietPort()) });
     return readFileSync(join(scratch, "seen"), "utf8");
   };
 
@@ -151,10 +149,7 @@ describe("server.log", () => {
     const root = join(scratch, "root");
     mkdirSync(join(root, "server"), { recursive: true });
     writeFileSync(join(root, "server", "managed.ts"), `${body}\nprocess.exit(1);\n`);
-    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
-    const port = probe.port;
-    await probe.stop(true);
-    return run("start", { HERDR_PLUGIN_ROOT: root, PORT: String(port) });
+    return run("start", { HERDR_PLUGIN_ROOT: root, PORT: String(quietPort()) });
   };
   const state = (name: string) => join(scratch, "state", name);
 
@@ -237,9 +232,7 @@ describe("starts at the same moment", () => {
         process.exit(1);
       }
     `);
-    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
-    const port = String(probe.port);
-    await probe.stop(true);
+    const port = String(quietPort());
     async function within<T>(promise: Promise<T>, what: string): Promise<T> {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -300,12 +293,7 @@ describe("starts at the same moment", () => {
     writeFileSync(join(root, "server", "managed.ts"), `require("node:fs").writeFileSync(${JSON.stringify(join(scratch, "spawned"))}, ""); process.exit(1);\n`);
     return { server, root };
   };
-  const freePortNumber = async () => {
-    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) });
-    const port = String(probe.port);
-    await probe.stop(true);
-    return port;
-  };
+  const freePortNumber = async () => String(quietPort());
 
   it("leave a server an earlier start left running alone when it does not answer and its port is free", async () => {
     const { server, root } = recordedSleeper((pid) => { const reading = readProcessBirth(pid); return reading.state === "identified" ? reading.birth : null; });
