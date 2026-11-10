@@ -174,7 +174,9 @@ if [ -n "$BUILD_CACHE" ]; then
   esac
 fi
 
-# Set when each runner starts: its slot's outbox, emptied of what an earlier job left.
+# Set when each runner starts: its slot's outbox, emptied of what an earlier job left. Emptied
+# before the slot's next container exists: the promoter takes what is in the outbox while a
+# container is the slot's for that container's job's (build-cache-promote.sh).
 build_cache_args() {
   local outbox="$BUILD_CACHE_OUTBOXES/$1"
   BUILD_CACHE_ARGS=()
@@ -188,6 +190,13 @@ build_cache_args() {
     if [ -n "$(find "$outbox" -mindepth 1 -print -quit 2>/dev/null)" ]; then
       docker run ${CPUSET_ARGS[@]+"${CPUSET_ARGS[@]}"} --rm --network none --security-opt no-new-privileges --cap-drop ALL --user 1001:1001 \
         -v "$outbox:/outbox" --entrypoint sh "$IMAGE" -c 'chmod -R u+rwX /outbox 2>/dev/null; find /outbox -mindepth 1 -delete' </dev/null >/dev/null 2>&1 || true
+    fi
+    # A file that is still there would be read as this runner's own claim or build: the runner starts
+    # without the build cache, and its job builds. (A directory is no claim to the promoter, which
+    # also refuses a file older than the runner's container.)
+    if [ -n "$(find "$outbox" -mindepth 1 -maxdepth 1 ! -type d -print -quit 2>/dev/null)" ]; then
+      echo "[$1] its build cache outbox could not be emptied: starting it without the build cache" >&2
+      return 0
     fi
   fi
   mkdir -p "$outbox" && chmod 1777 "$outbox" || return 0

@@ -145,7 +145,23 @@ wait for it) and its slot's own outbox, on disk under `~/.local/state/ovis-ci-ru
 job that built a commit leaves `<key>.tar` and `<key>.claim` (its run) in that outbox, and the launcher
 (`build-cache-promote.sh`, every second) takes it in only when GitHub says that runner is running a
 job of that run and the run is trusted: a push to the default branch, or a pull request from this
-repository that `--build-cache-writer` opened and started. Without the flag only pushes write. The
+repository that `--build-cache-writer` opened and started. Without the flag only pushes write. A
+slot runs one job per container under the same runner name, and GitHub answers for the job the
+slot runs when it answers, so a claim is also tied to the container whose job wrote it. The build
+is taken in only while the container docker names for the slot is the one it named when the claim
+was taken, and only for a job that started once that container had (to the second, with nothing
+allowed for the two clocks: `run.sh` waits two seconds before a slot's next container, and a
+container's own job starts ten or more after it), on the runner registered under the slot's name
+now. GitHub goes on listing the job
+of a container that was killed as running, for minutes and sometimes for days, and the container
+after it registers over the dead one's runner and keeps its id, so the start time is what tells
+that job from the container's own. `run.sh` empties a slot's outbox before it starts the slot's next
+container, so a claim naming the run of the slot's next job, or of an earlier one, is refused. Were
+the outbox not emptied, what an earlier job left would be read as the next one's: a claim or a
+build last changed before the slot's container started is refused (the system's own time of the
+change, which a job cannot set back; removing another name of a file sets it to now, so the times
+are read before anything in the outbox is removed, and a file with a second name is not taken), and
+a runner whose outbox still holds a file starts without the build cache. The
 launcher unpacks only files and directories and writes the sha256 of each into the entry's
 `.manifest`; a restore refuses an entry with a link, a missing, changed or extra file. Every other
 outbox file is deleted. One claim per outbox is judged per pass, and a refusal is remembered (the
@@ -187,10 +203,13 @@ A job of a commit from before reads by the key alone, where the launcher no long
 a failure and neither wait runs out: the job that built gets its verdict as before, and the jobs of
 its run that waited for it build once it releases the lock, together, about one build later than
 without the cache (those of a commit from before one after another, as they always did when a build
-was not taken in). So copy this directory again and restart the unit when a change here moves where
-entries are filed; runs of commits that have the change restore again from then on. What the earlier
-launcher left as `entries/<key>` the new one removes in its first pass: a job of a commit from
-before would still read it there, whichever run had filed it.
+was not taken in). So copy this directory again when a change here moves where entries are filed
+(the copy alone switches the promoter, [below](#routing-jobs-to-it)); runs of commits that have the
+change restore again from then on. What the earlier launcher left as `entries/<key>` the new one
+moves out of the names a job reads and removes in its first pass: a job of a commit from before
+would still read it there, whichever run had filed it. One it cannot remove stays under a
+`.new-gone-` name, which no job reads, and is tried again by an eviction once it is over an hour
+old; one it cannot even move is emptied where it is, and logged once a day while it stays.
 
 ## Routing jobs to it
 
@@ -231,10 +250,13 @@ share `check.ts`'s slots (`CHECK_HOST_MAX_RUNS`) with theirs, so they can wait t
 On the maintainer PC the launcher runs as the systemd user unit `ovis-ci-runner.service`
 (`run.sh --repo devswha/ovis --count 4 --labels self-hosted-ovis` from a copy of this directory in
 `~/.local/share/ovis-ci-runner`): four slots let one CI run's four Linux jobs start together, and
-`check.ts`'s shared slots cap its herdr-backed lanes at `ci.yml`'s `CHECK_MAX_RUNS`. Copy the directory again and
-restart the unit after changing these files, on every host whose launcher runs with `--build-cache`.
-Replace the files by rename (`rsync -a` does), not in place: the promoter is started from that
-directory every second, and a pass under way keeps the script it started with. Jobs run the
+`check.ts`'s shared slots cap its herdr-backed lanes at `ci.yml`'s `CHECK_MAX_RUNS`. Copy the directory again
+after changing these files, on every host whose launcher runs with `--build-cache`. For a change to
+`build-cache-promote.sh` the copy is all it takes: the launcher starts the promoter from that
+directory every second, so the next pass is the new one. A change to `run.sh` takes a restart of
+the unit, and a restart stops every slot's container, which cancels the jobs in flight: restart
+when the slots are idle. Replace the files by rename (`rsync -a` does), not in place: a pass under
+way keeps the script it started with, as does the running `run.sh`. Jobs run the
 repository's `scripts/build-cache.ts` against the installed `build-cache-promote.sh`: after a change
 to where the build cache's entries are filed, no job restores a build until the copy is the new one
 ([Build cache](#build-cache)).

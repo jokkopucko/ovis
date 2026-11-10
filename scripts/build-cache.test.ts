@@ -457,15 +457,19 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
    * share, and a `gh` that answers for `runs` by their id. Each has a job running on its `slots`
    * and is a push to main, or with `pull` a pull request the writer ("w") opened and pushed, at its
    * head; the run "any" answers for every run GitHub is asked about and has no answer for.
-   * `pass` is one pass of the promoter, as the launcher makes one every second.
+   * Each slot has a container (docker names it) whose runner is the one registered under its name.
+   * `pass` is one pass of the promoter, as the launcher makes one every second; `bin` comes first
+   * on its PATH, for a test's stand-in of a tool.
    */
   function launcher(slots: string[], runs: Record<string, { slots: string[]; pull?: boolean }>, late = 0) {
     const base = temp("ovis-build-cache-launcher-");
     const [entries, outboxes, locks, bin, github] = ["entries", "outboxes", "locks", "bin", "github"].map((name) => join(base, name)) as [string, string, string, string, string];
     for (const dir of [entries, locks, bin, github, ...slots.map((slot) => join(outboxes, slot))]) mkdirSync(dir, { recursive: true });
     const sha = "5".repeat(40);
+    const runner = (slot: string): number => 100 + slots.indexOf(slot);
+    writeFileSync(join(github, "runners.json"), JSON.stringify({ runners: slots.map((slot) => ({ name: slot, id: runner(slot) })) }));
     for (const [id, run] of Object.entries(runs)) {
-      writeFileSync(join(github, `jobs-${id}.json`), JSON.stringify({ jobs: run.slots.map((slot) => ({ runner_name: slot, status: "in_progress" })) }));
+      writeFileSync(join(github, `jobs-${id}.json`), JSON.stringify({ jobs: run.slots.map((slot) => ({ runner_name: slot, status: "in_progress", runner_id: runner(slot), started_at: "2026-11-10T12:00:10Z" })) }));
       writeFileSync(join(github, `run-${id}.json`), JSON.stringify(run.pull
         ? { event: "pull_request", head_branch: "feature", head_sha: sha, head_repository: { full_name: "owner/repo" }, triggering_actor: { login: "w" }, pull_requests: [{ number: 5 }] }
         : { event: "push", head_branch: "main", head_repository: { full_name: "owner/repo" } }));
@@ -477,6 +481,7 @@ ${late > 0 ? `sleep ${late}` : ":"}
 echo "$2" >> "$github/asked"
 case "$2" in
   repos/owner/repo) echo main; exit 0 ;;
+  repos/owner/repo/actions/runners) cat "$github/runners.json"; exit 0 ;;
   repos/owner/repo/actions/runs/*/attempts/*/jobs*) kind=jobs; id="\${2#repos/owner/repo/actions/runs/}"; id="\${id%/attempts/*}" ;;
   repos/owner/repo/actions/runs/*) kind=run; id="\${2#repos/owner/repo/actions/runs/}" ;;
   repos/owner/repo/pulls/*) kind=pull; id="\${2#repos/owner/repo/pulls/}" ;;
@@ -489,8 +494,16 @@ file="$github/$kind-$id.json"
 cat "$file"
 `);
     chmodSync(join(bin, "gh"), 0o755);
+    // docker container inspect <slot>: every slot has its container, the same one throughout, started
+    // ten seconds before its job
+    writeFileSync(join(bin, "docker"), `#!/bin/sh
+[ "$1 $2" = "container inspect" ] || exit 1
+for slot; do :; done
+echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
+`);
+    chmodSync(join(bin, "docker"), 0o755);
     return {
-      base, entries, outboxes, locks,
+      base, entries, outboxes, locks, bin,
       pass: (maxMb = "2048") => spawnSync("bash", [promoter, "owner/repo", base, outboxes, "w", maxMb, ...slots], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(":") } }),
       /** What a job on `slot` gets from the runner, for a job of `run`. */
       job: (slot: string, run: string, extra: Record<string, string> = {}): Record<string, string> => ({ OVIS_BUILD_CACHE_OUTBOX: join(outboxes, slot), OVIS_BUILD_CACHE_LOCKS: locks, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: "1", ...extra }),
@@ -870,6 +883,56 @@ cat "$file"
     } finally {
       // were it still there, the test's own cleanup could not remove it either
       if (existsSync(join(runner.entries, left, "assets"))) chmodSync(join(runner.entries, left, "assets"), 0o755);
+    }
+  });
+
+  it("moves an old entry it cannot remove out of the names a job reads, and says so once", () => {
+    const runner = launcher(["s1"], {});
+    const left = "e".repeat(64);
+    store(runner.entries, left, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    // an rm that cannot remove it once it is moved away, as with a file of another user inside it
+    writeFileSync(join(runner.bin, "rm"), `#!/bin/sh\ncase "$*" in *.new-gone-*) exit 1 ;; esac\nexec /bin/rm "$@"\n`);
+    chmodSync(join(runner.bin, "rm"), 0o755);
+    const passes = [runner.pass(), runner.pass(), runner.pass()];
+    expect(passes.map((pass) => pass.status)).toEqual([0, 0, 0]);
+    // no job finds it under its key any more; the first pass says what it could not do, and the next ones neither walk it nor say it again
+    expect(runner.filed().map((name) => name.replace(/^\.new-gone-.*$/, ".new-gone-*"))).toEqual([".new-gone-*"]);
+    expect(passes.map((pass) => pass.stderr.split("\n").filter((line) => line.includes("could not")).length)).toEqual([1, 0, 0]);
+  });
+
+  it("says once that an old entry cannot be moved away, and ends no pass on it", () => {
+    const runner = launcher(["s1"], {});
+    const left = "e".repeat(64);
+    store(runner.entries, left, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    // entries/ itself gives this user no write: nothing in it can be renamed or removed
+    chmodSync(runner.entries, 0o555);
+    try {
+      const passes = [runner.pass(), runner.pass(), runner.pass()];
+      expect(passes.map((pass) => pass.status)).toEqual([0, 0, 0]);
+      expect(passes.map((pass) => pass.stderr.split("\n").filter((line) => line.includes("could not")).length)).toEqual([1, 0, 0]);
+      // its name stays, and nothing under it for a job to restore
+      expect(runner.filed()).toEqual([left]);
+      expect(readdirSync(join(runner.entries, left))).toEqual([]);
+    } finally {
+      chmodSync(runner.entries, 0o755);
+    }
+  });
+
+  it("clears what an admission cut short left behind, read-only directories included, when it next evicts", () => {
+    const runner = launcher(["s1"], { "9": { slots: ["s1"] } });
+    const key = "a".repeat(64);
+    const left = join(runner.entries, ".new-abc123");
+    mkdirSync(join(left, "assets"), { recursive: true });
+    writeFileSync(join(left, "assets", "app.js"), "export {};\n");
+    chmodSync(join(left, "assets"), 0o555);
+    const old = new Date(Date.now() - 2 * 3_600_000);
+    utimesSync(left, old, old);
+    deliver(join(runner.outboxes, "s1"), key, built({ "index.html": "built by run 9" }), "9", "1");
+    try {
+      expect(runner.pass().status).toBe(0);
+      expect(runner.filed()).toEqual(["9/", `9/${key}`]);
+    } finally {
+      if (existsSync(join(left, "assets"))) chmodSync(join(left, "assets"), 0o755);
     }
   });
 
