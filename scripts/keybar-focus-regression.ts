@@ -21,6 +21,10 @@ type InputWindow = Window & { typed_: { pane: string; text: string }[] };
 /** what each tapped key puts on the wire: a sticky modifier sends nothing by itself */
 const SENT: Record<string, string | null> = { Control: null, Enter: "\r", Escape: "\x1b" };
 
+/**
+ * Key-bar taps keep the terminal's focus and leave the soft keyboard as it was: with the keyboard
+ * down a touch tap holds it down (inputmode=none until the click), with it up inputmode is never touched.
+ */
 export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: string): Promise<void> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-keybar-focus-")));
   const created = await workspaceCreate({ cwd: root, label: "ovis-test-keybar-focus" });
@@ -105,6 +109,23 @@ export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: str
         await page.locator('.key-bar [data-key="more"]').tap();
         assert.deepEqual(await page.evaluate(() => (window as unknown as { atClick_: (string | null)[] }).atClick_), ["none", "none"], `${tag}: at More keys' click the focused field asks for no keyboard`);
         await page.waitForFunction(([field, before]) => document.querySelector(field)?.getAttribute("inputmode") === before, [field, modeBefore] as const, { timeout: 10_000 });
+        // with the keyboard UP (data-keyboard, which lib/viewport.ts sets), the hold must not touch the
+        // field at all: inputmode=none on a focused field makes Android's IME hide the keyboard that
+        // is showing. A MutationObserver records every inputmode the field takes during the taps
+        await page.locator(field).focus();
+        await page.evaluate((field) => {
+          const seen: (string | null)[] = [];
+          (window as unknown as { modes_: (string | null)[] }).modes_ = seen;
+          const target = document.querySelector(field)!;
+          new MutationObserver(() => seen.push(target.getAttribute("inputmode"))).observe(target, { attributes: true, attributeFilter: ["inputmode"] });
+          document.documentElement.setAttribute("data-keyboard", "");
+        }, field);
+        for (const key of ["Escape", "more"]) {
+          await page.evaluate(() => document.documentElement.setAttribute("data-keyboard", ""));
+          await page.locator(`.key-bar [data-key="${key}"]`).tap();
+          assert.equal(await page.evaluate((field) => document.activeElement?.matches(field) === true, field), true, `${tag}: with the keyboard up a ${key} tap keeps the focus`);
+        }
+        assert.deepEqual(await page.evaluate(() => (window as unknown as { modes_: (string | null)[] }).modes_), [], `${tag}: with the keyboard up a key tap never changes the field's inputmode`);
       } finally { await context.close(); }
     }
     console.log("PASS key-bar taps on a touch screen send their keys without taking the focus (the keyboard stays down), in Direct typing and Input line modes; a fine pointer's click still focuses the grid");

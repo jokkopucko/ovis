@@ -6,6 +6,7 @@ import "./KeyBar.css";
 import type { KeyBarKey, StickyModifiers } from "../lib/keys.ts";
 import { KEY_BAR_SECOND_ROW, keyBarItemId, keyBarItemLabel, keyBarRowItems, type KeyBarItem, type KeyBarKeyItem } from "../lib/keyBar.ts";
 import { createKeyRepeat, isRepeatableKeyBarItem, type KeyRepeat } from "../lib/keyRepeat.ts";
+import { keyboardUp } from "../lib/keyboard.ts";
 import { keyboardControl } from "../lib/keyboardControl.ts";
 import { useT } from "../lib/i18n.ts";
 
@@ -70,9 +71,11 @@ function keepFocus(event: PointerEvent<HTMLButtonElement> | MouseEvent<HTMLButto
 /**
  * Android's Back puts the soft keyboard away but leaves the field focused, and Chrome raises the
  * keyboard again on any tap while a text field has the focus, a key's tap too (#3274). For the touch
- * of a key that leaves the focus where it is (a key, a modifier, More keys), the focused field asks for no keyboard (inputmode=none), which also leaves a keyboard that
- * is up where it is; it gets its own inputmode back once the tap's click is handled, at the next
- * press anywhere, or when it loses the focus.
+ * of a key that leaves the focus where it is (a key, a modifier, More keys) while the keyboard is
+ * down, the focused field asks for no keyboard (inputmode=none); it gets its own inputmode back once
+ * the tap's click is handled, at the next press anywhere, or when it loses the focus. With the
+ * keyboard up nothing is touched: switching a focused field to inputmode=none makes Android's IME
+ * hide the keyboard that is showing.
  */
 let keyboardHold: (() => void) | null = null;
 function releaseKeyboardHold(): void {
@@ -80,8 +83,10 @@ function releaseKeyboardHold(): void {
   keyboardHold = null;
   release?.();
 }
+/** Holds the keyboard down for one key tap while it is down (see above); does nothing while it is up. */
 function holdKeyboardForTap(): void {
   releaseKeyboardHold();
+  if (keyboardUp()) return;
   const field = document.activeElement;
   if (!(field instanceof HTMLElement) || !(field.matches("textarea, input") || field.isContentEditable)) return;
   const previous = field.getAttribute("inputmode");
