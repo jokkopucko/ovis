@@ -36,6 +36,11 @@ turn. A new native turn or rewind recomputes the indicator from the retained his
 Unsupported completion patterns may have the same limitation. Unavailable native history
 gets an explicit notice; session identity and terminal fallback rules are unchanged.
 
+Herdr is asked for the pane's process twice, before and after its locks are read. The answer
+stands only when both name the same single Agy process and its birth identity did not change in
+between, so a process that took over an exited Agy's pid is never read for the pane. The greeting
+of an Agy that has begun no conversation is checked the same way, its arguments included.
+
 Linux process/lock discovery and native lifecycle behavior were tested with Agy 1.3.3.
 macOS uses `lsof` for the same held-file evidence but has not been tested natively.
 Its `ps` process-birth check has one-second resolution; same-second PID reuse is not distinguished.

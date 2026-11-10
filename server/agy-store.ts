@@ -308,19 +308,30 @@ export function isAgyProcessName(name: unknown): boolean {
   return process.platform === "win32" ? /(?:^|[\\/])agy(?:\.exe)?$/i.test(name) : name === "agy";
 }
 
+/** The pane's foreground Agy process as herdr names it now, or null unless it names exactly one. */
+async function agyPaneProcess(paneId: string): Promise<{ pid: number; argv?: string[] | null } | null> {
+  const info = await paneProcessInfo(paneId);
+  const owners = (info?.foreground_processes ?? []).filter((p) => isAgyProcessName(p.name) && Number.isSafeInteger(p.pid) && p.pid > 1);
+  return owners.length === 1 ? owners[0]! : null;
+}
+
 /** Resolve the Agy session store for the given pane by matching process identity and held locks. */
 export async function resolveAgyStore(pane: HerdrPane): Promise<AgyStore | null> {
   if (pane.agent !== "agy") return null;
   try {
-    const info = await paneProcessInfo(pane.pane_id);
-    const owners = (info?.foreground_processes ?? []).filter((p) => isAgyProcessName(p.name) && Number.isSafeInteger(p.pid) && p.pid > 1);
-    if (owners.length !== 1) return null;
-    const pid = owners[0]!.pid;
+    const owner = await agyPaneProcess(pane.pane_id);
+    if (!owner) return null;
+    const { pid } = owner;
     const before = await processIdentity(pid);
     const paths = await heldPaths(pid);
     const store = paths ? agyStoreFromLocks(paths) : null;
+    if (!before || !store) return null;
+    // herdr's first list may predate the process these locks were read from, when the Agy it named
+    // exited and its pid was reused. Ask again, and bracket that answer with the birth identity the
+    // locks were read under.
+    const current = await agyPaneProcess(pane.pane_id);
     const after = await processIdentity(pid);
-    return before && store && before.started === after?.started ? { ...store, pid, started: before.started } : null;
+    return current?.pid === pid && before.started === after?.started ? { ...store, pid, started: before.started } : null;
   } catch { return null; }
 }
 
@@ -335,6 +346,12 @@ function agyProcessArgv(owner: { pid: number; argv?: string[] | null }): string[
   } catch { return null; }
 }
 
+/** Whether this Agy was started without a resume, prompt or remote flag; false when its arguments are unknown. */
+function agyStartedOnNoSession(owner: { pid: number; argv?: string[] | null }): boolean {
+  const argv = agyProcessArgv(owner);
+  return argv !== null && !argv.slice(1).some((arg) => AGY_SESSION_FLAGS.has(arg) || /^--(?:conversation|remote-agent|prompt|prompt-interactive)=/.test(arg));
+}
+
 /**
  * The history id of the conversation an Agy started in a terminal has not begun, or null unless
  * its live screen shows the unused start screen, its single foreground Agy process was started
@@ -344,18 +361,18 @@ export async function agyFreshSession(pane: HerdrPane, screen: string): Promise<
   // Windows names held locks from a shared, cached scan: an empty answer there proves no absence
   if (process.platform === "win32" || pane.agent !== "agy" || !agyStartScreenUnused(screen)) return null;
   try {
-    const info = await paneProcessInfo(pane.pane_id);
-    const owners = (info?.foreground_processes ?? []).filter((p) => isAgyProcessName(p.name) && Number.isSafeInteger(p.pid) && p.pid > 1);
-    if (owners.length !== 1) return null;
-    const owner = owners[0]!;
-    const argv = agyProcessArgv(owner);
-    if (!argv || argv.slice(1).some((arg) => AGY_SESSION_FLAGS.has(arg) || /^--(?:conversation|remote-agent|prompt|prompt-interactive)=/.test(arg))) return null;
+    const owner = await agyPaneProcess(pane.pane_id);
+    if (!owner || !agyStartedOnNoSession(owner)) return null;
     const before = await processIdentity(owner.pid);
     const paths = await heldPaths(owner.pid);
-    const after = await processIdentity(owner.pid);
-    if (!before || paths === null || before.started !== after?.started) return null;
+    if (!before || paths === null) return null;
     if (paths.some((path) => basename(dirname(path)) === "presence" && LOCK.test(basename(path)))) return null;
-    return `unwritten:agy:${pane.pane_id}:${owner.pid}:${before.started}`;
+    // As in resolveAgyStore: the pane must still name this process, and its arguments are read
+    // again here, inside the same birth identity as the locks.
+    const current = await agyPaneProcess(pane.pane_id);
+    if (current?.pid !== owner.pid || !agyStartedOnNoSession(current)) return null;
+    const after = await processIdentity(owner.pid);
+    return before.started === after?.started ? `unwritten:agy:${pane.pane_id}:${owner.pid}:${before.started}` : null;
   } catch { return null; }
 }
 
