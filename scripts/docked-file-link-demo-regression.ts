@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium } from "playwright-core";
+import { chromium, type Locator } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
@@ -72,6 +72,8 @@ try {
         Object.assign(window, { pressClicks: clicks });
         window.addEventListener("click", (event) => { clicks.push({ event, reached: false }); }, true);
         document.addEventListener("click", (event) => { const seen = clicks.find((click) => click.event === event); if (seen) seen.reached = true; });
+        // what the last press landed on
+        window.addEventListener("pointerdown", (event) => { Object.assign(window, { pressedOn: event.target }); }, true);
       });
       // the web link's site, so a tab it opens has a page to show
       await context.route("https://datatracker.ietf.org/**", (route) => route.fulfill({ contentType: "text/html", body: "<title>draft</title>" }));
@@ -107,6 +109,30 @@ try {
       await page.evaluate(() => { (window as unknown as { pressClicks: unknown[] }).pressClicks.length = 0; });
     };
 
+    // The chat follows its end while its pane is laid out again beside the docked file, and a scroll
+    // that no reader's input made is the layout's to it: it goes back to its end, and the link with
+    // it. A press aimed at where the link was scrolled to then lands on another row, or outside the
+    // window, where it selects no pane. Jump to latest says the chat follows its end no more: from
+    // then on the link stays where it is scrolled to.
+    const inView = async ({ chatFrame }: Opened, link: Locator) => {
+      const away = chatFrame.locator(".chat-virtual-jump");
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        await link.scrollIntoViewIfNeeded();
+        await away.waitFor({ timeout: 250 }).catch(() => {});
+        const rests = (await away.isVisible()) && await link.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          return element.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+        });
+        if (rests) return;
+        if (Date.now() > deadline) throw new Error("the chat never left its end with the link in view");
+      }
+    };
+    const pressedOn = (control: Locator) => control.evaluate((element) => {
+      const pressed = (window as unknown as { pressedOn: EventTarget | null }).pressedOn;
+      return pressed instanceof Node && element.contains(pressed);
+    });
+
     // the clicks since the dock: the browser's own, and the ones handed on to `selector`
     const clicksOn = (page: Opened["page"], selector: string) => page.evaluate((selector) => {
       const pressed = document.querySelector(selector);
@@ -139,6 +165,7 @@ try {
       await dock(desktop);
 
       // a real press and release on the chat's file link, as a mouse makes them
+      await inView(desktop, link);
       await link.click();
       await selected(page, chatPane);
       await panel.getByText("Shown for src/lib/idempotency.ts", { exact: false }).waitFor({ timeout: 5_000 }).catch(() => {});
@@ -151,12 +178,13 @@ try {
 
       // a press on the link dragged off it before the release is no click, as on a link that stayed put
       await dock(desktop);
-      await link.scrollIntoViewIfNeeded();
+      await inView(desktop, link);
       const box = await link.boundingBox();
       const shellBox = await desktop.shellFrame.boundingBox();
       assert.ok(box && shellBox, "the link and the shell pane are laid out");
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       await page.mouse.down();
+      assert.equal(await pressedOn(link), true, "the press landed on the link");
       await selected(page, chatPane);
       await page.mouse.move(shellBox.x + shellBox.width / 2, shellBox.y + shellBox.height / 2, { steps: 4 });
       await page.mouse.up();
@@ -168,7 +196,7 @@ try {
       // click where the link was: the link is not clicked, whether the next press or a lost focus ends the watch
       for (const end of ["press", "blur"] as const) {
         await dock(desktop);
-        await link.scrollIntoViewIfNeeded();
+        await inView(desktop, link);
         const was = await link.boundingBox();
         assert.ok(was, "the link is laid out");
         const at = { x: was.x + was.width / 2, y: was.y + was.height / 2 };
@@ -189,7 +217,7 @@ try {
       // a web link in the same answer, pressed with Ctrl: its click keeps the key, so the browser opens a tab
       const webLink = 'a[href^="https://datatracker.ietf.org/"]';
       await dock(desktop);
-      await chatFrame.locator(webLink).scrollIntoViewIfNeeded();
+      await inView(desktop, chatFrame.locator(webLink));
       const tab = desktop.context.waitForEvent("page", { timeout: 5_000 }).catch(() => null);
       await chatFrame.locator(webLink).click({ modifiers: ["Control"] });
       await selected(page, chatPane);
@@ -207,7 +235,7 @@ try {
       const { page, chatFrame } = touch;
       const link = chatFrame.locator(fileLink, { hasText: "src/lib/idempotency.ts" });
       await dock(touch, true);
-      await link.scrollIntoViewIfNeeded();
+      await inView(touch, link);
       await link.tap();
       await selected(page, chatPane);
       await panelOf(page).getByText("Shown for src/lib/idempotency.ts", { exact: false }).waitFor();

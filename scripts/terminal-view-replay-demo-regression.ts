@@ -10,7 +10,6 @@ import { join } from "node:path";
 import { chromium, type Browser } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { shownRows } from "./shown-rows.ts";
 import { pickTab } from "./tab-pick.ts";
 
 interface Fixture {
@@ -51,9 +50,11 @@ function installViewFixture(): void {
 }
 
 const ESC = "\x1b", BEL = "\x07";
-const MARK = "VIEW-REPLAY-MARK";
-// a cursor-position query, a copy request ("history") and a line to see the view parsed by
-const VIEW = `${ESC}[6n${ESC}]52;c;aGlzdG9yeQ==${BEL}${MARK}\r\n`;
+// A cursor-position query, a copy request ("history") and mouse tracking to see the view parsed by.
+// Not a line of text: the attach's replay clears the screen 60 ms after the return, and the drawn
+// rows are painted a frame after a parse, so on a loaded runner the line was cleared before any
+// frame had drawn it. The mode is set as the view parses, and the replay's clear keeps it.
+const VIEW = `${ESC}[6n${ESC}]52;c;aGlzdG9yeQ==${BEL}${ESC}[?1000h`;
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const app = mkdtempSync(join(tmpdir(), "ovis-view-replay-demo-"));
 let server: ReturnType<typeof Bun.serve> | null = null;
@@ -100,6 +101,7 @@ try {
       await page.goto(`${url}?pane=${encodeURIComponent(a)}`);
       const frame = (id: string) => page.locator(`[data-layout-pane="${id}"]`);
       await frame(a).locator("[data-pane-content]").waitFor();
+      const mouseMode = () => frame(a).locator(".xterm").evaluate((element) => element.classList.contains("enable-mouse-events"));
       const sentSince = (start: number) => page.evaluate((start) => window.viewFixture.sent.slice(start), start);
       // left for the other tab, the first tab watches its pane
       await pickTab(page, tabB!);
@@ -108,11 +110,11 @@ try {
       await page.evaluate(({ pane, data }) => {
         for (const socket of window.viewFixture.sockets) socket.push({ type: "watch-data", pane_id: pane, data });
       }, { pane: a, data: VIEW });
-      assert.equal(await frame(a).locator(shownRows(), { hasText: MARK }).count(), 0, "a hidden tab keeps its view unparsed");
-      // back on the first tab: the view is drawn, its query unanswered and its copy request not run
+      assert.equal(await mouseMode(), false, "a hidden tab keeps its view unparsed");
+      // back on the first tab: the view is parsed, its query unanswered and its copy request not run
       const back = await page.evaluate(() => window.viewFixture.sent.length);
       await pickTab(page, tabA!);
-      await frame(a).locator(shownRows(), { hasText: MARK }).waitFor({ state: "attached" });
+      await page.waitForFunction((pane) => document.querySelector(`[data-layout-pane="${pane}"] .xterm`)?.classList.contains("enable-mouse-events"), a, { timeout: 10_000 });
       await page.waitForFunction(({ pane, start }) => window.viewFixture.sent.slice(start).some((sent) => sent.type === "attach" && sent.pane_id === pane), { pane: a, start: back }, { timeout: 10_000 });
       // the reply xterm would type is sent as the view parses: the attach's own output, parsed after it, settles that
       await frame(a).locator("[data-pane-content]").waitFor();
@@ -131,7 +133,6 @@ try {
       // A hidden page drops a recent tab's view, and the terminal reset it began with. Back on that
       // tab before its next view frame, the attach starts from a reset, as any tab's does: a mode the
       // old screen set (mouse tracking, which the replay's clear keeps) does not outlive it.
-      const mouseMode = () => frame(a).locator(".xterm").evaluate((element) => element.classList.contains("enable-mouse-events"));
       await page.evaluate((pane) => {
         for (const socket of window.viewFixture.sockets) socket.push({ type: "pty-data", pane_id: pane, data: "\x1b[?1000h" });
       }, a);
