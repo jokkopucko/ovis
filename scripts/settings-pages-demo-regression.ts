@@ -597,6 +597,12 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
       await typedSize.fill("16");
       await typedSize.press("Enter");
       await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 16);
+      // an IME's full-width digits are the number too, and the field shows it in plain digits once it is taken (#3487)
+      await typedSize.fill("１８");
+      assert.equal(await typedSize.inputValue(), "１８", `${width}px: the typed full-width digits stay as typed until they are taken`);
+      await typedSize.press("Enter");
+      await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 18);
+      assert.equal(await typedSize.inputValue(), "18", `${width}px: a full-width size is shown in plain digits`);
       await typedSize.fill("14");
       await typedSize.press("Enter");
       await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 14);

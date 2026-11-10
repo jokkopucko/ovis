@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
-import { Stepper } from "./SettingsControls.tsx";
+import { Stepper, typedStep } from "./SettingsControls.tsx";
 
 /** A key on the size field, as React hands it over: `composing` while an IME still holds the draft. */
 const key = (name: string, composing: boolean) => ({
@@ -85,5 +85,40 @@ describe("the typed font size (G-179)", () => {
     act(() => field().props.onKeyDown(key("Enter", false)));
     expect(changes).toEqual([]);
     expect(field().props.value).toBe("14");
+  });
+
+  it("takes the full-width digits an IME types as the number, and shows it in plain digits once committed", () => {
+    const { changes, field, range } = mount();
+    act(() => field().props.onChange({ target: { value: "１６" } }));
+    // the text is the IME's until the commit: it is not rewritten under the composition
+    expect(field().props.value).toBe("１６");
+    expect(field().props["aria-invalid"]).toBeUndefined();
+    act(() => field().props.onKeyDown(key("Enter", false)));
+    expect(changes).toEqual([16]);
+    expect(range().props.className).toBe("visually-hidden");
+    expect(field().props.value).toBe("14");
+    // the -/+ buttons step from a full-width size still in the field
+    act(() => field().props.onChange({ target: { value: "１８" } }));
+    act(() => renderer!.root.findByProps({ "aria-label": "Larger" }).props.onClick());
+    expect(changes).toEqual([16, 19]);
+  });
+});
+
+describe("typedStep", () => {
+  it("reads full-width digits as their plain ones, alone or mixed", () => {
+    expect(typedStep("１６", 10, 22)).toBe(16);
+    expect(typedStep("1６", 10, 22)).toBe(16);
+    expect(typedStep(" ２２ ", 10, 22)).toBe(22);
+  });
+
+  it("still refuses a full-width number out of range, and anything that is not a whole number", () => {
+    expect(typedStep("２３", 10, 22)).toBeNull();
+    expect(typedStep("９", 10, 22)).toBeNull();
+    expect(typedStep("２００", 10, 22)).toBeNull();
+    expect(typedStep("１６．５", 10, 22)).toBeNull();
+    expect(typedStep("16.5", 10, 22)).toBeNull();
+    expect(typedStep("１６px", 10, 22)).toBeNull();
+    expect(typedStep("١٦", 10, 22)).toBeNull();
+    expect(typedStep("", 10, 22)).toBeNull();
   });
 });

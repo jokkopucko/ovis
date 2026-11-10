@@ -3786,7 +3786,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   for five or more, a stepper (minus, value in `--font-mono`, plus, in one bordered well) and a
   text field; inside a card they sit on `--bg-input`. The terminal and chat font sizes' value can
   be typed in its place, and a number out of range is refused, never clamped (G-179, after Warp's
-  Appearance settings). Each page but About opens with one dim line saying what it holds
+  Appearance settings); full-width digits from an IME (１６) are read as the number. Each page but
+  About opens with one dim line saying what it holds
   (`.settings-page-note`, G-173, after Codex's settings panes); About stays sentence-free. On a phone a control that needs the line
   (three or more segments, a text field, or a long sentence above it) goes under its label at
   the card's width, its segments sharing it equally; the rest stay on the label's line. A

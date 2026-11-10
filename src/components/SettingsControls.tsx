@@ -197,10 +197,15 @@ export function ChipToggles({ label, chips }: { label: string; chips: readonly {
   );
 }
 
-/** The whole number `draft` holds when it lies within `min`..`max`; null for anything else, which is refused, never clamped (G-179). */
+/**
+ * The whole number `draft` holds when it lies within `min`..`max`; null for anything else, which is refused, never clamped (G-179).
+ * The full-width digits a Japanese, Korean or Chinese IME types (１６) count as their plain ones. Only here, where the draft is
+ * read: the field's own text is left alone while it is edited, so an IME's composition is never rewritten under it.
+ */
 export function typedStep(draft: string, min: number, max: number): number | null {
-  if (!/^\d+$/.test(draft.trim())) return null;
-  const value = Number(draft.trim());
+  const digits = draft.trim().replace(/[\uFF10-\uFF19]/g, (digit) => String(digit.charCodeAt(0) - 0xff10));
+  if (!/^\d+$/.test(digits)) return null;
+  const value = Number(digits);
   return value >= min && value <= max ? value : null;
 }
 
