@@ -282,6 +282,11 @@ it("marks a socket that only the open LAN let in, one relayed to another PC too,
     // another Ovis server reading this PC over the address it is bound to: its bridge token let it in, whatever the gate
     const bridged = await upgrade(lan, "/ws", { authorization: "Bearer bridge-token" });
     expect([bridged.open, bridged.bridge]).toEqual([undefined, true]);
+    // a socket the same holder opens to another PC through this one is the open LAN's: the bridge token opens this
+    // PC's bridge, and a new request for that route is refused once the gate closes
+    const bridgedRelay = await upgrade(lan, "/ws?machine_id=remote", { authorization: "Bearer bridge-token" });
+    expect([bridgedRelay.open, bridgedRelay.relay !== undefined]).toEqual([true, true]);
+    bridgedRelay.relay!.close();
     // this PC itself
     expect((await upgrade(from("127.0.0.1"), "/ws")).open).toBeUndefined();
   } finally {

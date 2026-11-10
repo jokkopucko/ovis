@@ -64,6 +64,36 @@ describe("the gate closing", () => {
   });
 });
 
+describe("a code started while the gate was open", () => {
+  it("ends when the first device's cookie closes the gate, and whoever shows it is told", () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "gate-voids-code-")));
+    // the owner's phone redeemed its code: an unconfirmed first pairing, the gate still open
+    const phone = store.pair(store.startPairing().code, "Phone", "drive")!;
+    // anyone on the open LAN may start a code then
+    const stranger = store.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, open: true }).code;
+    let told = 0;
+    const stop = store.onPairingStarted(() => { told++; });
+    store.match(phone.token);
+    expect([store.gated, told]).toEqual([true, 1]);
+    // that code admits whoever holds it: it does not outlive the gate it was started under
+    expect(store.pair(stranger, "Stranger", "drive")).toBeNull();
+    expect(store.list(null).map((device) => device.label)).toEqual(["Phone"]);
+    // a code started through the closed gate is another matter, and a later cookie ends none
+    const tablet = store.startPairing().code;
+    store.match(phone.token);
+    expect(store.pair(tablet, "Tablet", "drive")).not.toBeNull();
+    expect(told).toBe(2);
+    stop();
+    // one this PC itself started under the open gate stays: the request that brings the first cookie back may
+    // be the one that redeems it
+    const own = new DeviceStore(mkdtempSync(join(dir, "gate-keeps-own-code-")));
+    const first = own.pair(own.startPairing().code, "Phone", "drive")!;
+    const second = own.startPairing().code;
+    own.match(first.token);
+    expect([own.gated, own.pair(second, "Tablet", "drive") !== null]).toEqual([true, true]);
+  });
+});
+
 describe("ending a pairing", () => {
   it("leaves no six-digit code to redeem and ends a typed code bound to it", () => {
     const store = new DeviceStore(mkdtempSync(join(dir, "pair-end-")));

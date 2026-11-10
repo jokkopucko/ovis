@@ -1415,3 +1415,26 @@ it("ends a socket the open LAN let in once the first device is paired, and refus
     rmSync(stateDir, { recursive: true, force: true });
   }
 }, 15_000);
+
+it("a pairing code the open LAN started does not pair once the first device closed the gate", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-open-code-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, machines: false, sidecar: false });
+  const base = `http://127.0.0.1:${app.port}`;
+  const stranger = { ...guard, "x-forwarded-for": "192.168.0.20" };
+  try {
+    const store = app.context.services.devices;
+    // the owner's phone redeemed its code; until its cookie comes back the gate is open
+    const phone = store.pair(store.startPairing().code, "Phone", "drive")!;
+    const started = await fetch(`${base}/api/devices/pair/start`, { method: "POST", headers: stranger });
+    expect(started.status).toBe(200);
+    const { code } = await started.json() as { code: string };
+    store.match(phone.token);
+    expect(store.gated).toBe(true);
+    const redeemed = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: stranger, body: JSON.stringify({ code, label: "Stranger" }) });
+    expect([redeemed.ok, redeemed.headers.get("set-cookie")]).toEqual([false, null]);
+    expect(store.list(null).map((device) => device.label)).toEqual(["Phone"]);
+  } finally {
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
