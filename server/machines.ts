@@ -1538,7 +1538,10 @@ export class MachineManager {
     // Unasked, it is offered only in a setup the user started: a reconnect (or an update that asks nobody) of a PC saved
     // without an Ovis chosen connects as before, whatever runs beside it (its herdr may answer with no bridge in front yet)
     const asked = !!job && !job.auto;
-    if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || asked && candidates.length > 0 && !await servedAlready())) {
+    // A PC being added has no connection to keep: its setup offers the PC's own Ovis beside a herdr that already runs
+    // there too, so a PC that runs both is not taken for a herdr PC without a word. A saved PC connects as before
+    const adding = asked && !this.machines.has(runtime.machine.id);
+    if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || asked && candidates.length > 0 && (adding || !await servedAlready()))) {
       const found: FoundOvis[] = [];
       const sessions = new Map<string, FoundHerdrSession>();
       // answered: one of them proved itself through the tunnel; unlisted: one did not list the account's herdr sessions
@@ -1584,7 +1587,12 @@ export class MachineManager {
         if (!answered) throw !job || job.auto ? new Error(OWN_OVIS_UNANSWERED) : await offer(OWN_OVIS_UNANSWERED);
         expectedSocket = target.own_ovis;
       } else if (found.length) {
-        throw await offer(answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED);
+        // beside a herdr that already runs there, the choice is offered only with that herdr among its sessions: without
+        // it the card could not choose what the PC would connect to unasked, so it connects to it as before
+        if (adding && await servedAlready()) {
+          if (unlisted) { for (const row of await localSessions()) sessions.set(row.socket_path, row); unlisted = false; }
+          if (sessions.has(expectedSocket)) throw await offer(answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED);
+        } else throw await offer(answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED);
       }
     }
     // what the PC's own Ovis said is read anew on every try: it may have been updated or replaced since
