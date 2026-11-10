@@ -147,12 +147,13 @@ if [ "$CACHE" = 1 ]; then
     CACHE=0
   fi
 fi
-# The client build cache (README "Build cache"): the jobs of a commit after the first restore its
+# The client build cache (README "Build cache"): the jobs of a run after the first restore its
 # dist/ instead of building it (scripts/build-cache.ts). Runners read it only; a job's build goes to its
-# slot's own outbox, and this launcher moves it in (build-cache-promote.sh) only for a trusted run.
+# slot's own outbox, and this launcher moves it in (build-cache-promote.sh) only for a trusted run,
+# under that run (entries/<run id>/<key>), where only that run's jobs read.
 BUILD_CACHE_ROOT=""
 BUILD_CACHE_OUTBOXES=""
-# which job of a commit builds it: a volume of its own in RAM, capped, so a job filling it fills nothing else
+# which job of a run builds it: a volume of its own in RAM, capped, so a job filling it fills nothing else
 BUILD_CACHE_LOCKS="${PREFIX}build-cache-locks"
 if [ -n "$BUILD_CACHE" ]; then
   case "$REPO" in

@@ -6,8 +6,13 @@
 # running a job of that run and the run is trusted: a push to the default branch, or a pull request
 # from this repository that --writer opened and pushed. Every other outbox file is deleted.
 #
+# A build is filed under the run GitHub confirmed for its slot, entries/<run id>/<key>, and a job
+# reads only its own run's directory (scripts/build-cache.ts). The key is the job's word for what it
+# built, which nothing here can check: filed by the key alone, a trusted pull request's build under
+# the key of a commit of main would be the one main's own run restores and tests.
+#
 # Usage: build-cache-promote.sh REPO CACHE_ROOT OUTBOXES WRITER MAX_MB SLOT_NAME...
-#   CACHE_ROOT holds entries/ (the cache) and used/ (when each was last restored), both written only
+#   CACHE_ROOT holds entries/ (the cache) and used/ (when each key was last restored), both written only
 #   here; OUTBOXES holds a directory per runner, named after it; WRITER may be empty. A restore says it used an entry
 #   with an empty outbox file used-<key>, of which only the name is read.
 set -euo pipefail
@@ -16,6 +21,8 @@ REPO="$1" ROOT="$2" OUTBOXES="$3" WRITER="$4" MAX_MB="$5"
 shift 5
 ENTRIES="$ROOT/entries"
 USED="$ROOT/used"
+# a run id, as a claim may name one and as a run's directory under entries/ is named
+RUN_ID='^[0-9]{1,20}$'
 
 log() { echo "[build-cache] $*" >&2; }
 
@@ -62,10 +69,18 @@ trusted() {
   esac
 }
 
-# Unpacks $1 (a tar of regular files and directories only) as the entry $2, with the manifest
-# readers check every file against. Fails, leaving nothing, on anything else.
+# A run's directory under entries/, made when it is not there: this user's own directory, never a
+# link. Only this user writes entries/, so no job could have put one there; it is not followed all
+# the same, since what it points at would be written, and evicted, as the cache is.
+run_directory() {
+  mkdir -m 0755 "$1" 2>/dev/null || true
+  [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]
+}
+
+# Unpacks $1 (a tar of regular files and directories only) as the entry $2 of run $3, with the
+# manifest readers check every file against. Fails, leaving nothing, on anything else.
 admit() {
-  local tar="$1" key="$2" staging types
+  local tar="$1" key="$2" dir="$ENTRIES/$3" staging types
   types="$(timeout 60 tar -tvf "$tar" | cut -c1 | sort -u | tr -d '\n')" || return 1
   case "$types" in ''|*[!d-]*) log "refused $key: the build holds something other than files and directories"; return 1 ;; esac
   # its own file of that name would be taken for the manifest
@@ -73,31 +88,66 @@ admit() {
   staging="$(mktemp -d "$ENTRIES/.new-XXXXXX")" || return 1
   if timeout 60 tar -xf "$tar" -C "$staging" --no-same-owner --no-same-permissions &&
     [ -z "$(find "$staging" -mindepth 1 ! -type f ! -type d -print -quit)" ] &&
-    (cd "$staging" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) > "$ENTRIES/.manifest-$key" &&
-    [ ! -e "$staging/.manifest" ] && mv "$ENTRIES/.manifest-$key" "$staging/.manifest" &&
-    chmod -R a+rX,go-w "$staging" &&
-    mv -T "$staging" "$ENTRIES/$key" 2>/dev/null; then
+    (cd "$staging" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) > "$staging.manifest" &&
+    [ ! -e "$staging/.manifest" ] && mv "$staging.manifest" "$staging/.manifest" &&
+    chmod -R u+rwX,a+rX,go-w "$staging" &&
+    run_directory "$dir" &&
+    mv -T "$staging" "$dir/$key" 2>/dev/null; then
     return 0
   fi
-  rm -rf "$staging" "$ENTRIES/.manifest-$key"
+  rm -rf "$staging" "$staging.manifest"
   return 1
 }
 
-# Keeps the most recently used entries within MAX_MB.
+# Removes an entry or what is left of one. A build's directories keep the modes its job gave them,
+# so one without the owner's write bit is given it first; and a removal that fails says so and ends
+# no pass: every later slot's build is still judged.
+discard() {
+  chmod -R u+rwX "$1" 2>/dev/null || true
+  rm -rf "$1" 2>/dev/null || log "could not remove $1"
+}
+
+# Every entry's path, one a line: entries/<run id>/<key>.
+entries() {
+  local dir entry
+  for dir in "$ENTRIES"/*; do
+    if [ ! -d "$dir" ] || [ -L "$dir" ] || ! [[ "${dir##*/}" =~ $RUN_ID ]]; then continue; fi
+    for entry in "$dir"/*; do
+      if [ -d "$entry" ] && [ ! -L "$entry" ]; then echo "$entry"; fi
+    done
+  done
+}
+
+# Whether some run's directory holds an entry for the key $1.
+held() {
+  local dir
+  for dir in "$ENTRIES"/*; do
+    if [[ "${dir##*/}" =~ $RUN_ID ]] && [ ! -L "$dir" ] && [ -d "$dir/$1" ]; then return 0; fi
+  done
+  return 1
+}
+
+# Keeps the most recently used entries within MAX_MB, whichever run they belong to.
 evict() {
-  local total=0 limit=$(( 10#$MAX_MB * 1024 * 1024 )) line size path
+  local total=0 limit=$(( 10#$MAX_MB * 1024 * 1024 )) line size path used stamp dir
   find "$ENTRIES" -mindepth 1 -maxdepth 1 -name '.new-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
   while read -r line; do
     path="${line#* }"
     size="$(du -sb "$path" | cut -f1)" || continue
     total=$((total + size))
-    if [ "$total" -gt "$limit" ]; then rm -rf "$path"; rm -f "$USED/${path##*/}"; fi
-  done < <(for path in "$ENTRIES"/*; do
-    [ -d "$path" ] || continue
+    if [ "$total" -gt "$limit" ]; then discard "$path"; fi
+  done < <(entries | while read -r path; do
     used="$(stat -c %Y "$path")"
     if [ -f "$USED/${path##*/}" ]; then stamp="$(stat -c %Y "$USED/${path##*/}")"; [ "$stamp" -gt "$used" ] && used="$stamp"; fi
     echo "$used $path"
   done | sort -rn)
+  # a run whose entries are all gone leaves no directory behind, and a key no entry holds no stamp
+  for dir in "$ENTRIES"/*; do
+    if [[ "${dir##*/}" =~ $RUN_ID ]] && [ ! -L "$dir" ]; then rmdir "$dir" 2>/dev/null || true; fi
+  done
+  for stamp in "$USED"/*; do
+    if [ -f "$stamp" ] && ! held "${stamp##*/}"; then rm -f "$stamp"; fi
+  done
 }
 
 # The outboxes' files are moved into this host user's own directory before anything reads them, so
@@ -122,6 +172,13 @@ refused_before() {
   [ -e "$REFUSED/run-$2-$3" ] || [ -n "$(find "$REFUSED" -maxdepth 1 -type f -name "slot-$1" -mmin -10 -print -quit 2>/dev/null)" ]
 }
 
+# What a launcher from before entries were kept per run filed by the key alone, entries/<key>, goes
+# at once: a job of a commit from before still reads there, whichever run filed it, and would
+# restore another run's build. From this launcher's first pass on, no run restores across runs.
+for path in "$ENTRIES"/*; do
+  if [[ "${path##*/}" =~ ^[0-9a-f]{64}$ ]] && [ -d "$path" ] && [ ! -L "$path" ]; then discard "$path"; fi
+done
+
 promoted=0
 for name in "$@"; do
   outbox="$OUTBOXES/$name"
@@ -129,7 +186,10 @@ for name in "$@"; do
   for used in "$outbox"/used-*; do
     [ -e "$used" ] || [ -L "$used" ] || continue
     key="${used##*/used-}"
-    if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && [ -d "$ENTRIES/$key" ]; then mkdir -p "$USED" && touch "$USED/$key"; fi
+    # The marker names a key, not the run whose entry was restored, and GitHub is not asked about
+    # it: the key counts as used in every run that holds it. A stamp only moves eviction, so a job
+    # naming keys it never restored keeps their entries longer, as it always could, and no more.
+    if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && held "$key"; then mkdir -p "$USED" && touch "$USED/$key"; fi
     rm -rf "$used" 2>/dev/null || true
   done
   # One claim per outbox per pass (a job builds one commit): each costs GitHub calls on this user's
@@ -151,7 +211,7 @@ for name in "$@"; do
       [ "$(stat -c %s "$work/claim")" -le 64 ]; then
       read -r run attempt < "$work/claim" || true
     fi
-    if [[ "$run" =~ ^[0-9]{1,20}$ && "$attempt" =~ ^[0-9]{1,5}$ ]] && [ ! -e "$ENTRIES/$key" ] &&
+    if [[ "$run" =~ $RUN_ID && "$attempt" =~ ^[0-9]{1,5}$ ]] && [ ! -e "$ENTRIES/$run/$key" ] &&
       [ "$(stat -c %s "$work/build.tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ]; then
       if refused_before "$name" "$run" "$attempt"; then
         log "refused $key from $name: run $run or this slot was refused before"
@@ -159,7 +219,7 @@ for name in "$@"; do
         verdict=0
         trusted "$name" "$run" "$attempt" || verdict=$?
         case "$verdict" in
-          0) if admit "$work/build.tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi ;;
+          0) if admit "$work/build.tar" "$key" "$run"; then log "cached $key from $name (run $run)"; promoted=1; fi ;;
           1) touch "$REFUSED/run-$run-$attempt" "$REFUSED/slot-$name" 2>/dev/null || true ;;
           3) touch "$REFUSED/slot-$name" 2>/dev/null || true ;;
           4) touch "$REFUSED/run-$run-$attempt" 2>/dev/null || true ;;

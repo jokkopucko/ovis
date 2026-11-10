@@ -791,8 +791,9 @@ describe("ci.yml", () => {
   const EVENT_VARIABLE_READS = [
     // the client build: restored from the runner's cache for a pull request and a push to main,
     // built for every other event. A release that takes main's run takes that restored build for
-    // the Integration and Browser jobs (docs/development.md#releasing); an entry is named after the
-    // commit and everything else the build reads, and a restore checks every file's sha256
+    // the Integration and Browser jobs (docs/development.md#releasing); an entry is one a job of
+    // that same run built, named after the commit and everything else the build reads, and a
+    // restore checks every file's sha256
     "scripts/build-cache.ts",
     // the check report's revision fields: a pull request's head and base, the commit itself otherwise
     "scripts/check-report.ts", "scripts/check.ts",

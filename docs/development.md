@@ -855,8 +855,11 @@ A release validated by main's run (`main-run-<id>`) is made of these checks of i
 
 Main's Integration tests and Browser regression jobs did not each build the client they tested:
 on the self-hosted PC they restore `dist/` from the runners' build cache, from the entry of that
-commit, which the first job of the run to build it wrote (Fast checks, as a rule). An entry is named
-after the commit and everything else the build reads, and a restore checks every file's SHA-256
+commit, which the first job of the same run to build it wrote (Fast checks, as a rule). The cache
+keeps a build under the run whose job handed it in, and a job reads only its own run's entries, so
+the `dist/` they tested was built by main's run, never by another run (a pull request's, say). An
+entry is named after the commit and everything else the build reads, and a restore checks every
+file's SHA-256
 (`scripts/build-cache.ts`, [the runner's README](../scripts/self-hosted-runner/README.md#build-cache)).
 A release validated in its own run (`ci`) never reads that cache: every job of it builds.
 

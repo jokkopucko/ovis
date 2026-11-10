@@ -392,7 +392,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const mode = (path: string) => spawnSync("stat", ["-c", "%a", path], { encoding: "utf8" }).stdout.trim();
       const first = join(outboxes, `herdr-ci-${host}-1`);
       expect([mode(join(root, "entries")), mode(join(root, "used")), mode(first)]).toEqual(["755", "755", "1777"]);
-      expect(runRunner().calls).not.toContain("build-cache");
+      // what the launcher hands a runner for the cache, not the words: the temp directory's own name may hold them
+      expect(runRunner().calls).not.toMatch(/:\/build-cache|OVIS_BUILD_CACHE_|build-cache-locks/);
       // what an earlier job left in a directory of its outbox, the host user cannot delete: a container as the runners' user does
       mkdirSync(join(first, "junk"), { recursive: true });
       writeFileSync(join(first, "junk/blob"), "x");
@@ -914,9 +915,9 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
         chmodSync(join(junk, "x"), 0o000);
         writeFileSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), "7 1\n");
       }
-      // a restore's use of an entry another run left, and a used marker that is a link
+      // a restore's use of an entry in another run's directory, and a used marker that is a link
       if (used) {
-        mkdirSync(join(root, "entries", "c".repeat(64)));
+        mkdirSync(join(root, "entries", "3", "c".repeat(64)), { recursive: true });
         writeFileSync(join(outbox, `used-${"c".repeat(64)}`), "");
         symlinkSync("/etc/hostname", join(outbox, `used-${"d".repeat(64)}`));
       }
@@ -962,12 +963,17 @@ esac
         }
         pass();
       });
-      const entry = join(root, "entries", key);
+      // an entry is filed under the run GitHub confirmed for the claim: 7 in every claim taken in here
+      const entry = join(root, "entries", "7", key);
+      const runs = readdirSync(join(root, "entries"));
       return {
         status: result.status,
         stderr: result.stderr,
         outbox: readdirSync(outbox),
-        entries: readdirSync(join(root, "entries")),
+        /** what entries/ holds itself: a directory per run with an entry */
+        runs,
+        /** every entry, as `<run id>/<key>` */
+        entries: runs.flatMap((run) => readdirSync(join(root, "entries", run)).map((name) => `${run}/${name}`)),
         manifest: existsSync(join(entry, ".manifest")) ? readFileSync(join(entry, ".manifest"), "utf8") : null,
         used: existsSync(join(root, "used")) ? readdirSync(join(root, "used")) : [],
         ghCalls: existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean) : [],
@@ -984,7 +990,7 @@ esac
   it("takes in the build of a pull request the writer opened and pushed, with the manifest readers check", () => {
     const run = promote();
     expect(run.status).toBe(0);
-    expect(run.entries).toEqual([key]);
+    expect(run.entries).toEqual([`7/${key}`]);
     expect(run.manifest).toBe(`${sha("a")}  ./assets/a.js\n${sha("<p>")}  ./index.html\n`);
     expect(run.outbox).toEqual([`judged-${key}`]);
   });
@@ -992,13 +998,13 @@ esac
   it("goes on to the other slots past a slot whose outbox holds a directory named like a claim", () => {
     const run = promote({}, "files", "devswha", "claim");
     expect(run.status).toBe(0);
-    expect(run.entries).toEqual([key]);
+    expect(run.entries).toEqual([`7/${key}`]);
   });
 
   it("goes on taking in trusted builds past a tar this user cannot delete", () => {
     const run = promote({}, "files", "devswha", "tar");
     expect(run.status).toBe(0);
-    expect(run.entries).toEqual([key]);
+    expect(run.entries).toEqual([`7/${key}`]);
   });
 
   it("stamps an entry's use from a restore's marker in the host's own directory, and drops the marker", () => {
@@ -1017,7 +1023,7 @@ esac
 
   it("asks GitHub about a refused run once: its claims after that are refused without a call", () => {
     const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n", "7 1\n", "7 1\n"]);
-    expect(run.entries).toEqual([]);
+    expect(run.runs).toEqual([]);
     expect(run.callsBefore[0]).toBeGreaterThan(0);
     expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
     expect(run.outbox.filter((name) => !name.startsWith("judged-"))).toEqual([]);
@@ -1025,7 +1031,7 @@ esac
 
   it("holds off a slot whose claim was refused, whatever run its next claims name", () => {
     const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n", "9 1\n", "7 2\n"]);
-    expect(run.entries).toEqual([]);
+    expect(run.runs).toEqual([]);
     expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
   });
 
@@ -1067,11 +1073,11 @@ esac
   });
 
   it("refuses a build holding a file named like the manifest", () => {
-    expect(promote({}, "files", "devswha", false, false, "7 1\n", 0, true).entries).toEqual([]);
+    expect(promote({}, "files", "devswha", false, false, "7 1\n", 0, true).runs).toEqual([]);
   });
 
   it("takes in the build of a push to the default branch", () => {
-    expect(promote({ event: "push", branch: "main", actor: "someone" }).entries).toEqual([key]);
+    expect(promote({ event: "push", branch: "main", actor: "someone" }).entries).toEqual([`7/${key}`]);
   });
 
   it("never takes in a build from a job it cannot trust, and deletes it", () => {
@@ -1091,7 +1097,8 @@ esac
     ];
     for (const run of refused) {
       expect(run.status).toBe(0);
-      expect(run.entries).toEqual([]);
+      // no entry, and no directory left for the run either
+      expect(run.runs).toEqual([]);
       expect(run.outbox).toEqual([`judged-${key}`]);
     }
   });
