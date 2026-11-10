@@ -26,7 +26,7 @@ export interface AccountSession {
   readonly refresh_token: string;
   /** when the access token runs out, in ms since the epoch */
   readonly expires_at: number;
-  /** random, and kept by every refresh: a sign-out or a leave ends only the sign-in it was started for (one saved by an older build has none) */
+  /** which sign-in this is, kept by every refresh: random for one made by this build (sessionOf), a digest of the saved refresh token for one saved before sign-ins had an id (service.ts, session) */
   readonly sign_in_id?: string;
 }
 

@@ -333,11 +333,11 @@ describe("the hosted shell's front page", () => {
     await inner.set("session", sessionOf("acct-a", "github"));
     // another tab stores account B's sign-in right after the page read account A's
     let reads = 0;
-    const accountStore: typeof inner = { ...inner, get: (async (name: Parameters<typeof inner.get>[0]) => {
-      const value = await inner.get(name);
+    // (a session is read through the store's update: service.ts, session)
+    const accountStore: typeof inner = { ...inner, update: (async (name: Parameters<typeof inner.update>[0], change: Parameters<typeof inner.update>[1]) => {
+      await inner.update(name, change);
       if (name === "session" && ++reads === 1) await inner.set("session", sessionOf("acct-b", "google"));
-      return value;
-    }) as typeof inner.get };
+    }) as typeof inner.update };
 
     await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github", "google"], accountStore, accountFetch, store: deviceStore([]) }));
     await until(() => rendered.length > 0 && account().pcs !== null, "the first list drawn");
@@ -346,6 +346,65 @@ describe("the hosted shell's front page", () => {
     expect(account().provider).toBe("google");
     expect(rows()).toBe(1);
     expect(asked.every((bearer) => bearer.endsWith("acct-b"))).toBe(true);
+  });
+
+  it("drops a directory answer that lands after another tab stored another sign-in, and reads as that one", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const sessionOf = (account: string, provider: "github" | "google") => ({ service: SERVICE, account, provider, access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: now + 3_600_000, sign_in_id: `id-${account}` });
+    const row = (label: string) => ({ server_id: desk.server_id, label, added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: null, public_key: null, relay: AP });
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    let asked = 0;
+    const accountFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const forB = (new Headers(init?.headers).get("authorization") ?? "").endsWith("acct-b");
+      asked += 1;
+      if (!forB) await held;
+      return ({ status: 200, ok: true, json: async () => ({ pcs: [row(forB ? "B's PC" : "A's PC")] }) }) as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", sessionOf("acct-a", "github"));
+
+    const mounted = mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github", "google"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => asked === 1, "account A's directory asked");
+    // another tab signs in as B while A's answer is on its way
+    await accountStore.set("session", sessionOf("acct-b", "google"));
+    answer();
+    await mounted;
+    await until(() => rendered.length > 0 && account().pcs !== null, "a list drawn");
+    expect(account().provider).toBe("google");
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["B's PC"]);
+  });
+
+  it("keeps none of an account's rows once another sign-in took its place, even when that one's read fails", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const sessionOf = (account: string, provider: "github" | "google") => ({ service: SERVICE, account, provider, access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: now + 3_600_000, sign_in_id: `id-${account}` });
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    let asked = 0;
+    const accountFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      asked += 1;
+      // account B's directory cannot be read
+      if ((new Headers(init?.headers).get("authorization") ?? "").endsWith("acct-b")) return ({ status: 503, ok: false, json: async () => ({}) }) as unknown as Response;
+      if (asked === 2) await held;
+      return ({ status: 200, ok: true, json: async () => ({ pcs: [{ server_id: desk.server_id, label: "A's PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: null, public_key: null, relay: AP }] }) }) as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", sessionOf("acct-a", "github"));
+
+    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github", "google"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => rendered.length > 0 && account().pcs !== null, "account A's list drawn");
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["A's PC"]);
+
+    // a second read of A is on its way when another tab signs in as B
+    visible("visible");
+    await until(() => asked === 2, "the second read asked");
+    await accountStore.set("session", sessionOf("acct-b", "google"));
+    answer();
+    await until(() => asked >= 3 && account().provider === "google" && account().error !== null, "account B's failed read drawn");
+    // no skeleton under the error: the list is this device's own paired PCs, none here
+    expect(account().pcs).toEqual([]);
   });
 
   it("starts one read when two reasons to read again land in the same moment", async () => {

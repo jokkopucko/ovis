@@ -5,6 +5,8 @@
  */
 import { accountLabel, accountOsOf, type AccountAsker, type AccountOs } from "../../../shared/account-asker.ts";
 import type { AccountLimits } from "../../../shared/protocol.ts";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { newRecordId, type AccountRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
@@ -211,6 +213,11 @@ export function sessionOf(body: unknown, service: string, now: number): AccountS
   return { service, account, provider: provider as AccountProvider, access_token, refresh_token, expires_at: now + expires_in * 1000, sign_in_id: newRecordId() };
 }
 
+/** The id of a sign-in saved without one: a digest of the refresh token it was saved with, the same in every tab. */
+function legacySignInId(refreshToken: string): string {
+  return `saved-${bytesToHex(sha256(utf8ToBytes(refreshToken)).subarray(0, 16))}`;
+}
+
 /** Whether `a` is `b`'s sign-in, or one of its refreshes. */
 export function sameSignIn(a: AccountSession, b: AccountSession): boolean {
   return a.refresh_token === b.refresh_token || (a.sign_in_id !== undefined && a.sign_in_id === b.sign_in_id);
@@ -260,19 +267,25 @@ export class AccountService {
    * The stored sign-in. One saved before sign-ins had an id (`sign_in_id`) gets one here, in the store: without it
    * its first refresh, which changes the refresh token, would make every copy read before it another sign-in
    * (sameSignIn), and a call bound to such a copy (forSignIn) would then refuse its own sign-in.
+   *
+   * The id is worked out from the session itself, so tabs of this build give one sign-in the same id, and it is
+   * given in the same update of the store that reads the session: a copy from here always carries the id the
+   * store holds, whichever tab named it. A sign-in made meanwhile has an id of its own (sessionOf).
    */
   async session(): Promise<AccountSession | undefined> {
-    const stored = await this.options.store.get("session");
-    if (stored === undefined || stored.sign_in_id !== undefined) return stored;
-    // what was read stays the answer when another sign-in (or none) is stored meanwhile: that one is not named here
-    let named: AccountSession = stored;
-    // in the store's own update, so two tabs reading at once agree on one id
-    await this.options.store.update("session", (current) => {
-      if (current === undefined || current.refresh_token !== stored.refresh_token) return current;
-      named = current.sign_in_id !== undefined ? current : { ...current, sign_in_id: newRecordId() };
-      return named;
-    });
-    return named;
+    // read and named in one update of the store, with no read before it: no other tab's write (a refresh, another
+    // sign-in, a sign-out) falls between this tab seeing the session and naming it
+    let seen: AccountSession | undefined;
+    try {
+      await this.options.store.update("session", (current) => {
+        seen = current === undefined || current.sign_in_id !== undefined ? current : { ...current, sign_in_id: legacySignInId(current.refresh_token) };
+        return seen;
+      });
+    } catch {
+      // a store that takes no write (storage full) is still read, as before sign-ins were named
+      return this.options.store.get("session");
+    }
+    return seen;
   }
 
   /**

@@ -9,7 +9,7 @@ import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, finishSignIn, SignInError } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
-import type { AccountProvider } from "../account/store.ts";
+import type { AccountProvider, AccountSession } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
@@ -48,6 +48,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let directory: readonly DirectoryPc[] = [];
   // whom `directory` was last read for, so a failed read can age its rows again without reading it
   let listedFor: { readonly epoch: number; readonly accountKey: string; readonly account: string } | undefined;
+  // the sign-in the signed-in view was last read as
+  let shownFor: AccountSession | undefined;
   let generation = 0;
   let leaving = false;
   // the read out now and the sign-in it is for: a read of an earlier sign-in never holds back the next one's
@@ -57,20 +59,44 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const refresh = async (initial = false): Promise<void> => {
     if (reading?.epoch === generation || leaving || accountService === null || (!initial && (!view.active() || accountView?.kind !== "signed-in"))) return;
     const epoch = generation;
-    const current = accountView;
+    let current = accountView;
     const live = (): boolean => epoch === generation;
     let replaced = false;
+    // another sign-in took this read's place: the rows kept from the earlier one are not its to draw, not even
+    // when its own read then fails, so it starts from its heading alone and is read again
+    const replacedBy = (next: AccountSession): void => {
+      directory = [];
+      listedFor = undefined;
+      accountView = { kind: "signed-in", provider: next.provider, pcs: null, error: null };
+      shownFor = undefined;
+      replaced = true;
+    };
     const read = (async () => {
       try {
         const session = await account.session();
         if (!live()) return;
         if (session === undefined) { if (initial) { await changed(); return; } throw new SignedOutError(); }
         if (initial) { accountView = { kind: "signed-in", provider: session.provider, pcs: null, error: null }; await changed(); }
+        // the rows on screen are another sign-in's (another tab signed in since they were read): they go before this
+        // read, so its failure cannot draw them again under this one
+        else if (shownFor !== undefined && !sameSignIn(shownFor, session)) {
+          directory = [];
+          listedFor = undefined;
+          current = accountView = { kind: "signed-in", provider: session.provider, pcs: null, error: null };
+          await changed();
+          if (!live()) return;
+        }
+        shownFor = session;
         // the list of the sign-in read above: one stored meanwhile is not shown under this one's heading
         const listed = await account.forSignIn(session).listPcs();
         const devices = await store.list();
         const key = await accountStore.key();
         if (!live()) return;
+        // the answer was on its way while another tab stored another sign-in, or none: it is not drawn
+        const still = await account.session();
+        if (!live()) return;
+        if (still === undefined) throw new SignedOutError();
+        if (!sameSignIn(still, session)) { replacedBy(still); return; }
         directory = listed;
         listedFor = { epoch, accountKey: key.public_spki, account: session.account };
         accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(listed, devices, { now: Date.now(), accountKey: key.public_spki, account: session.account, outdated: view.outdated() }) };
@@ -78,7 +104,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       } catch (error) {
         if (!live()) return;
         // the sign-in this read began with is gone; another one stored meanwhile (another tab) is read in its place
-        if (error instanceof SignedOutError && await account.session().catch(() => undefined) !== undefined) { if (live()) replaced = true; return; }
+        const next = error instanceof SignedOutError ? await account.session().catch(() => undefined) : undefined;
+        if (next !== undefined) { if (live()) replacedBy(next); return; }
         if (!live()) return;
         if (error instanceof SignedOutError) { directory = []; accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") }; }
         else {
@@ -88,7 +115,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           // the rows kept from the last read, with their time-based states aged to now (a PC unseen for long goes Offline)
           const kept = current?.kind === "signed-in" && current.pcs !== null && listedFor?.epoch === epoch
             ? myPcs(directory, devices, { now: Date.now(), outdated: view.outdated(), accountKey: listedFor.accountKey, account: listedFor.account })
-            : current?.kind === "signed-in" ? current.pcs : myPcs([], devices, { now: Date.now(), outdated: view.outdated() });
+            // nothing kept (a first read, or rows dropped with the sign-in they were of): the PCs this device is paired with
+            : current?.kind === "signed-in" && current.pcs !== null ? current.pcs : myPcs([], devices, { now: Date.now(), outdated: view.outdated() });
           if (accountView?.kind === "signed-in") accountView = { ...accountView, pcs: kept, error: t("The account service could not be reached. The PCs this device is paired with still work.") };
         }
       }
