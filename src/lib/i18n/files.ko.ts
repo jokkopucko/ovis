@@ -1,6 +1,6 @@
 /**
  * Korean for the keys only the files files use:
- * components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
+ * components/Visualization.tsx, components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
  * components/TextFileView.tsx, components/TextFileEditor.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
  * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
@@ -14,6 +14,7 @@ export const FILES_KO: Record<string, string> = {
   "The PC could not read the file. Reopen it to try again.": "PC가 파일을 읽지 못했습니다. 다시 열어 보세요.",
   "The file request timed out. Reopen it to try again.": "파일 요청 시간이 초과됐습니다. 다시 열어 보세요.",
   "Too large to open on the phone - download on the PC": "휴대폰에서 열기에는 너무 큽니다. PC에서 다운로드하세요.",
+  "Open preview": "미리보기 열기",
   "Show source": "소스 보기",
   "Resize file panel": "파일 패널 너비 조절",
   "Show beside the pane": "창 옆에 표시",

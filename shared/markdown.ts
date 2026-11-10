@@ -1,5 +1,6 @@
 import { fileUriPath } from "./fileUri.ts";
 import { charBefore } from "./lookbehind.ts";
+import { visualizationReference, type VisualizationReference } from "./visualization.ts";
 import { parseHtmlBlock, startsHtml } from "./markdownHtml.ts";
 
 export type InlineNode =
@@ -31,6 +32,7 @@ export interface ListBlock {
 }
 
 export type MarkdownBlock =
+  | ({ type: "visualization" } & VisualizationReference)
   /** `dollar`: written between `$$` rather than `\[` and `\]`; `oneLine`: opened and closed on one line */
   | { type: "math"; value: string; dollar?: true; oneLine?: true }
   /** `align`: centered by the HTML a README wrote it in (markdownHtml.ts) */
@@ -365,9 +367,9 @@ function parseTable(lines: string[], start: number, within = 0): { block: Markdo
 }
 
 
-function startsBlock(lines: string[], index: number, html = false): boolean {
+function startsBlock(lines: string[], index: number, html = false, visualizations = false): boolean {
   const line = lines[index] ?? "";
-  return (html && startsHtml(line)) || /^\s*(?:\\\[|\$\$)/.test(line) || /^\s{0,3}```/.test(line) || /^#{1,6}\s+/.test(line) || /^\s*>/.test(line) || /^(?:\s*[-*_]){3,}\s*$/.test(line) || listLine.test(line)
+  return (visualizations && visualizationReference(line) !== null) || (html && startsHtml(line)) || /^\s*(?:\\\[|\$\$)/.test(line) || /^\s{0,3}```/.test(line) || /^#{1,6}\s+/.test(line) || /^\s*>/.test(line) || /^(?:\s*[-*_]){3,}\s*$/.test(line) || listLine.test(line)
     || startsTable(lines, index);
 }
 
@@ -378,7 +380,7 @@ function listItem(text: string): ListItem {
   return { content: parseInline(task[2] ?? ""), checked: task[1] !== " " };
 }
 
-function parseList(lines: string[], start: number): { block: ListBlock; next: number } {
+function parseList(lines: string[], start: number, visualizations = false): { block: ListBlock; next: number } {
   const first = listLine.exec(lineAt(lines, start));
   if (first === null) return { block: { type: "list", ordered: false, items: [] }, next: start + 1 };
   const baseIndent = (first[1] ?? "").length;
@@ -388,8 +390,8 @@ function parseList(lines: string[], start: number): { block: ListBlock; next: nu
   let index = start;
   while (index < lines.length) {
     // between items: blank lines (a loose list, as agents often write one) and an item's own
-    // indented lines, which read on as its text, or make a table in it; anything else ends
-    // the list, and so does an indented fence, which shows as its own block
+    // indented lines, which read on as its text, or make a table or a visualization in it; anything
+    // else ends the list, and so does an indented fence, which shows as its own block
     if (block.items.length > 0 && !listLine.test(lineAt(lines, index))) {
       let ahead = index;
       while (ahead < lines.length && lineAt(lines, ahead).trim() === "") ahead += 1;
@@ -406,6 +408,14 @@ function parseList(lines: string[], start: number): { block: ListBlock; next: nu
         index = table.next;
         continue;
       }
+      // a visualization reference indented under the item is drawn in it, as a table there is: the
+      // list goes on after it, with its numbering (ended by it, an ordered list would start again at 1)
+      const reference = visualizations && ahead < lines.length && sibling === null && indent >= baseIndent + 2 ? visualizationReference(line) : null;
+      if (reference !== null) {
+        (block.items.at(-1)!.blocks ??= []).push({ type: "visualization", ...reference });
+        index = ahead + 1;
+        continue;
+      }
       if (ahead < lines.length && sibling === null && indent >= baseIndent + 2 && !/^\s*```/.test(line)) {
         const item = block.items.at(-1)!;
         const last = item.blocks?.at(-1);
@@ -416,7 +426,7 @@ function parseList(lines: string[], start: number): { block: ListBlock; next: nu
         } else {
           // after a table or nested list the item's text goes on below it; a quote or rule
           // there ends the list and shows as its own block, as it did before tables nested
-          if (startsBlock(lines, ahead)) break;
+          if (startsBlock(lines, ahead, false, visualizations)) break;
           if (last.type === "paragraph" && ahead === index) last.lines.push(parseInline(line.trim()));
           else item.blocks!.push({ type: "paragraph", lines: [parseInline(line.trim())] });
         }
@@ -430,7 +440,7 @@ function parseList(lines: string[], start: number): { block: ListBlock; next: nu
     if ((match[1] ?? "").length >= baseIndent + 2) {
       const parent = block.items.at(-1);
       if (parent === undefined) break;
-      const nested = parseList(lines, index);
+      const nested = parseList(lines, index, visualizations);
       (parent.blocks ??= []).push(nested.block);
       index = nested.next;
       continue;
@@ -506,7 +516,9 @@ export function foldToolOutput(output: string): { head: string; lines: number | 
 const MAX_QUOTE_DEPTH = 32;
 
 /** `html`: a file's markdown, whose HTML blocks are read as markdown (markdownHtml.ts); an agent's text keeps them as text */
-export function parseMarkdown(source: string, depth = 0, html = false): MarkdownBlock[] {
+export function parseMarkdown(source: string, depth = 0, html = false, visualizations = false): MarkdownBlock[] {
+  // `visualizations`: a Codex visualization reference on its own line is a block (shared/visualization.ts). Only a
+  // chat answer asks for it; everywhere else the line stays the text it is
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: MarkdownBlock[] = [];
   let index = 0;
@@ -516,6 +528,13 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
   while (index < lines.length) {
     const line = lineAt(lines, index);
     if (line.trim() === "") { index += 1; continue; }
+
+    const visualization = visualizations ? visualizationReference(line) : null;
+    if (visualization !== null) {
+      blocks.push({ type: "visualization", ...visualization });
+      index += 1;
+      continue;
+    }
 
     // a fence may be indented (inside a list item, as agents write them): its lines lose that indent
     const fence = /^( {0,3})```\s*([^\s`]*)/.exec(line);
@@ -591,13 +610,13 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
       const quoted: string[] = [];
       while (index < lines.length && /^\s*>/.test(lineAt(lines, index))) quoted.push(lineAt(lines, index++).replace(/^\s*>\s?/, ""));
       // a line of thousands of ">" (text nobody wrote by hand) would otherwise overflow the stack
-      blocks.push({ type: "blockquote", blocks: depth < MAX_QUOTE_DEPTH ? parseMarkdown(quoted.join("\n"), depth + 1, html)
+      blocks.push({ type: "blockquote", blocks: depth < MAX_QUOTE_DEPTH ? parseMarkdown(quoted.join("\n"), depth + 1, html, visualizations)
         : [{ type: "paragraph", lines: quoted.map((quotedLine) => parseInline(quotedLine)) }] });
       continue;
     }
 
     if (listLine.test(line)) {
-      const parsed = parseList(lines, index);
+      const parsed = parseList(lines, index, visualizations);
       blocks.push(parsed.block);
       index = parsed.next;
       continue;
@@ -611,7 +630,7 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
     }
 
     const paragraph: InlineNode[][] = [];
-    while (index < lines.length && lineAt(lines, index).trim() !== "" && (paragraph.length === 0 || !startsBlock(lines, index, html))) {
+    while (index < lines.length && lineAt(lines, index).trim() !== "" && (paragraph.length === 0 || !startsBlock(lines, index, html, visualizations))) {
       paragraph.push(parseInline(lineAt(lines, index)));
       index += 1;
     }

@@ -1,6 +1,6 @@
 /**
  * Japanese for the keys only the files files use:
- * components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
+ * components/Visualization.tsx, components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
  * components/TextFileView.tsx, components/TextFileEditor.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
  * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
@@ -14,6 +14,7 @@ export const FILES_JA: Record<string, string> = {
   "The PC could not read the file. Reopen it to try again.": "PC がファイルを読み取れませんでした。開き直してください。",
   "The file request timed out. Reopen it to try again.": "ファイルへの要求がタイムアウトしました。開き直してください。",
   "Too large to open on the phone - download on the PC": "スマートフォンで開くには大きすぎます。PCでダウンロードしてください。",
+  "Open preview": "プレビューを開く",
   "Show source": "ソースを表示",
   "Resize file panel": "ファイルパネルの幅を変更",
   "Show beside the pane": "ペインの横に表示",

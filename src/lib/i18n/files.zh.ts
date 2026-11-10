@@ -1,6 +1,6 @@
 /**
  * Simplified Chinese for the keys only the files files use:
- * components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
+ * components/Visualization.tsx, components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
  * components/TextFileView.tsx, components/TextFileEditor.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
  * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
@@ -14,6 +14,7 @@ export const FILES_ZH: Record<string, string> = {
   "The PC could not read the file. Reopen it to try again.": "电脑无法读取文件。请重新打开以重试。",
   "The file request timed out. Reopen it to try again.": "文件请求超时。请重新打开以重试。",
   "Too large to open on the phone - download on the PC": "文件太大，无法在手机上打开。请在电脑上下载。",
+  "Open preview": "打开预览",
   "Show source": "显示源代码",
   "Resize file panel": "调整文件面板宽度",
   "Show beside the pane": "在窗格旁显示",

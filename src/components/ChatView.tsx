@@ -1372,7 +1372,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
     {head === undefined && live && answer.length === 0 && block(null)}
     {segments.map((segment) => segment.kind === "work" ? block(segment)
       : answerItems(segment.parts, requestDetails).map((item) => item.kind === "text"
-        ? <Markdown key={`answer:${work.at.get(item.part)}`} skills={skills}>{item.part.text}</Markdown>
+        ? <Markdown key={`answer:${work.at.get(item.part)}`} skills={skills} visualizations>{item.part.text}</Markdown>
         // a later part of the turn is a later request: what the record shows, not whether it was a retry
         : <FailedRequests key={`failed:${work.at.get(item.parts[0]!)}`} at={work.at.get(item.parts[0]!)!} parts={item.parts} followed={work.at.get(item.parts.at(-1)!)! < turn.parts.length - 1} />))}
     {answerText.length > 0 && <div className="chat-turn-meta chat-agent-meta">
