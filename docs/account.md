@@ -624,7 +624,14 @@ directory, so mailboxes are kept per PC **and account**: the PC asks only for it
 only in that account's directory. `ack` is the highest `seq` the PC processed, whatever the
 outcome, refused included (or `null`); the service deletes those records before answering, and
 deletes any record after 30 days. The PC pulls when it starts and every five minutes while it
-belongs to an account.
+belongs to an account. It also pulls when a sign-in fails, since a member may have added that
+device on another PC a moment ago, and then checks the sign-in once more. Such sign-ins start at
+most one pull a minute (a pull that could not read the mailbox lets the next start 10 seconds after
+it began), and each waits at most five seconds for it. A sign-in that still fails is refused with
+the same `auth_failed`, so a device whose add reached the mailbox after that pull, or after another
+failed sign-in spent it, is let in up to a minute later. An unknown id and a signature that does
+not hold take the same way, so the delay does not tell which ids have a row; it does tell a PC in
+an account (the refusal may wait for the pull) from one in none (it never does).
 
 The `account` role keeps the two proofs apart: the relay verifies `control` and `data` only, so an
 answer the PC gave the account service is no use to the relay, and a relay's challenge passed on by

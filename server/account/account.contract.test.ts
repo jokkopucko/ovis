@@ -8,9 +8,9 @@ import { ACCOUNT_FEATURE, FrameType } from "../../shared/relay-mux.ts";
 import { DeviceStore, mergeAccountTombstones, readDeviceRegistry } from "../devices.ts";
 import { mergeRegistries } from "../state-merge.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
-import { bounded, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayAccountFixture, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { AccountHolds } from "./holds.ts";
-import { AccountMailbox, PENDING_MAX } from "./mailbox.ts";
+import { AccountMailbox, PENDING_MAX, SIGN_IN_PULL_MS, SIGN_IN_PULL_RETRY_MS } from "./mailbox.ts";
 import { AccountIntroductions, INTRODUCTION_TTL_MS } from "./introductions.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -890,6 +890,173 @@ test("a device an add puts on this PC has the id both ends derive, and signs in 
   const id = accountDeviceId(SERVER_ID, joining.spki);
   expect(registryRow(f, id)?.relay_public_key).toBe(joining.spki);
   expect((await (await relayConnection(f)).auth({ keys: joining.keys, publicKey: joining.spki, id })).device_id).toBe(id);
+});
+
+// A device a member added on another PC a moment ago signs in before this PC's next mailbox pull.
+
+/** The fake account service with this PC in `ACCOUNT`'s directory, and a way to leave a record in the PC's mailbox. */
+async function mailboxService(f: Fixture) {
+  const service = new FakeAccountService();
+  const identity = rotateRelayIdentity(f.stateDir);
+  const token = service.issueToken(ACCOUNT);
+  await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
+  const leave = async (record: AccountRecord) => {
+    const response = await service.fetch(new Request("https://account.test/v1/records", { method: "POST", headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({ server_ids: [identity.server_id], record }) }));
+    expect(response.ok).toBe(true);
+  };
+  return { service, identity, leave };
+}
+
+/** A PC in the account with one member, whose server reads its mailbox at the fake account service. */
+async function accountPc() {
+  let fetch = (_request: Request): Promise<Response> => Promise.reject(new Error("no account service yet"));
+  const made = await relayAccountFixture("drive", ACCOUNT, { accountService: { url: "https://account.test", fetch: (request) => fetch(request) } });
+  fixtures.push(made.fixture);
+  const { service, identity, leave } = await mailboxService(made.fixture);
+  // the pull at start found no relay identity, so it asked nothing
+  await made.fixture.app.context.services.accountMailbox.pull();
+  fetch = service.fetch;
+  service.requests.length = 0;
+  const signer: AccountKey = { keys: made.member.keys, spki: made.member.publicKey };
+  return { f: made.fixture, service, identity, leave, signer, member: made.member };
+}
+
+/** The session error a sign-in as `key` ends in, or null when it was let in. */
+async function signInAs(f: Fixture, serverId: string, key: AccountKey): Promise<string | null> {
+  const link = await relayConnection(f, { serverId });
+  const entered = link.auth({ keys: key.keys, publicKey: key.spki, id: accountDeviceId(serverId, key.spki) }).then(() => null);
+  return await Promise.race([entered, bounded(link.serverError)]).catch(() => bounded(link.serverError));
+}
+
+const pulls = (service: FakeAccountService) => service.requests.filter((request) => request === "POST /v1/pc/mailbox").length;
+
+test("a device a member just added elsewhere signs in at once: the PC reads its mailbox for a device it does not know", async () => {
+  const { f, service, identity, leave, signer } = await accountPc();
+  const joining = await accountKey();
+  await leave(await add(signer, joining.spki));
+  expect(f.app.context.services.devices.hasKey(joining.spki)).toBe(false);
+  expect(await signInAs(f, identity.server_id, joining)).toBeNull();
+  expect(registryRow(f, accountDeviceId(identity.server_id, joining.spki))?.relay_public_key).toBe(joining.spki);
+  expect(pulls(service)).toBeGreaterThan(0);
+});
+
+test("unknown devices make the PC read its mailbox at most once a minute, and are refused alike with and without a pull", async () => {
+  const { f, service, identity, leave, signer } = await accountPc();
+  const first = await signInAs(f, identity.server_id, await accountKey());
+  expect(pulls(service)).toBeGreaterThan(0);
+  const asked = service.requests.length;
+  // an add that arrives now waits for the next pull: another unknown device within the minute asks the service nothing
+  const late = await accountKey();
+  await leave(await add(signer, late.spki));
+  service.requests.length = asked;
+  const second = await signInAs(f, identity.server_id, late);
+  expect(service.requests.length).toBe(asked);
+  expect(f.app.context.services.devices.hasKey(late.spki)).toBe(false);
+  expect([first, second]).toEqual(["auth_failed", "auth_failed"]);
+});
+
+test("a member's own sign-in reads no mailbox, and a signature that does not hold is treated as an unknown device is", async () => {
+  const { f, service, identity, member } = await accountPc();
+  await (await relayConnection(f, { serverId: identity.server_id })).auth(member);
+  expect(service.requests).toEqual([]);
+  // the same way for an id with a row here as for one without, so the refusal's delay does not tell them apart
+  const link = await relayConnection(f, { serverId: identity.server_id });
+  const other = await accountKey();
+  void link.auth({ keys: other.keys, publicKey: other.spki, id: member.id }).catch(() => {});
+  expect(await bounded(link.serverError)).toBe("auth_failed");
+  expect(pulls(service)).toBeGreaterThan(0);
+  const asked = service.requests.length;
+  // and on the same count: an unknown device within the minute asks the service nothing
+  expect(await signInAs(f, identity.server_id, await accountKey())).toBe("auth_failed");
+  expect(service.requests.length).toBe(asked);
+});
+
+test("a PC in no account reads no mailbox for an unknown device", async () => {
+  let fetch = (_request: Request): Promise<Response> => Promise.reject(new Error("no account service yet"));
+  const f = fixture({ accountService: { url: "https://account.test", fetch: (request) => fetch(request) } });
+  await relayDevice(f);
+  const { service, identity } = await mailboxService(f);
+  fetch = service.fetch;
+  service.requests.length = 0;
+  expect(await signInAs(f, identity.server_id, await accountKey())).toBe("auth_failed");
+  expect(service.requests).toEqual([]);
+});
+
+test("a key removed from the account stays out when its add waits in the mailbox an unknown device's sign-in reads", async () => {
+  const { f, service, identity, leave, signer, member } = await accountPc();
+  const removed = await accountKey();
+  const link = await relayConnection(f, { serverId: identity.server_id });
+  await link.auth(member);
+  expect((await post(link, "/api/account/records", { records: [await remove(signer, removed.spki)] })).body.results?.[0]?.outcome).toBe("applied");
+  await leave(await add(signer, removed.spki));
+  service.requests.length = 0;
+  expect(await signInAs(f, identity.server_id, removed)).toBe("auth_failed");
+  // the pull ran and took the add out of the mailbox: it was refused, not left unread
+  expect(pulls(service)).toBeGreaterThan(0);
+  expect(service.mailbox(identity.server_id, ACCOUNT)).toEqual([]);
+  expect(f.app.context.services.devices.hasKey(removed.spki)).toBe(false);
+});
+
+test("a refused sign-in waits for a slow account service only so long, and joins a pull under way", async () => {
+  const { f, identity } = await accountPc();
+  const answer = deferred<Response>();
+  let calls = 0;
+  const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => identity, service: "https://account.test",
+    fetch: () => { calls++; return answer.promise; } });
+  await mailbox.pullForRefusedSignIn(1);
+  expect(calls).toBe(1);
+  // the pull is still under way: a second device joins it rather than being turned away by the once-a-minute count
+  await mailbox.pullForRefusedSignIn(1);
+  expect(calls).toBe(1);
+  answer.resolve(new Response("{}", { status: 503 }));
+  await mailbox.pull();
+});
+
+test("a pull that could not read the mailbox does not spend the minute: the next refused sign-in may ask again 10 seconds on", async () => {
+  const { f, service, identity, leave, signer } = await accountPc();
+  const devices = f.app.context.services.devices;
+  let down = true;
+  let calls = 0;
+  const mailbox = new AccountMailbox({ devices, identity: () => identity, service: "https://account.test",
+    fetch: (request) => { calls++; return down ? Promise.resolve(new Response("{}", { status: 503 })) : service.fetch(request); } });
+  const joining = await accountKey();
+  await leave(await add(signer, joining.spki));
+  const start = 1_000_000;
+  await mailbox.pullForRefusedSignIn(1_000, start);
+  expect(calls).toBe(1);
+  expect(mailbox.error).not.toBeNull();
+  // the service is back, but a retry inside the short floor asks nothing
+  down = false;
+  await mailbox.pullForRefusedSignIn(1_000, start + SIGN_IN_PULL_RETRY_MS - 1);
+  expect(calls).toBe(1);
+  expect(devices.hasKey(joining.spki)).toBe(false);
+  // after it, the retry reads the mailbox and finds the add
+  await mailbox.pullForRefusedSignIn(1_000, start + SIGN_IN_PULL_RETRY_MS);
+  expect(mailbox.error).toBeNull();
+  expect(devices.hasKey(joining.spki)).toBe(true);
+  // that pull read the mailbox: now the minute holds
+  const read = calls;
+  const again = start + SIGN_IN_PULL_RETRY_MS;
+  await mailbox.pullForRefusedSignIn(1_000, again + SIGN_IN_PULL_MS - 1);
+  expect(calls).toBe(read);
+  await mailbox.pullForRefusedSignIn(1_000, again + SIGN_IN_PULL_MS);
+  expect(calls).toBeGreaterThan(read);
+});
+
+test("a pull that fails after the sign-in stopped waiting for it gives the minute back too", async () => {
+  const { f, identity } = await accountPc();
+  const answer = deferred<Response>();
+  let calls = 0;
+  const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => identity, service: "https://account.test",
+    fetch: () => { calls++; return calls === 1 ? answer.promise : Promise.resolve(new Response("{}", { status: 503 })); } });
+  const start = 1_000_000;
+  await mailbox.pullForRefusedSignIn(1, start);
+  answer.resolve(new Response("{}", { status: 503 }));
+  await mailbox.pull();
+  await mailbox.pullForRefusedSignIn(1, start + SIGN_IN_PULL_RETRY_MS);
+  expect(calls).toBe(2);
 });
 
 function introducedPc(name = "nuc") {

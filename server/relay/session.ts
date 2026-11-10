@@ -9,6 +9,7 @@ import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
 import type { PairingIntent } from "../../shared/machines.ts";
 import { PairingRateLimitedError, type DeviceMatch } from "../devices.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
+import { SIGN_IN_WAIT_MS } from "../account/mailbox.ts";
 import { handleRequest } from "../dispatch.ts";
 import type { RequestServices, ServerContext } from "../dispatch.ts";
 import type { EventStreamBudget } from "../machine-api.ts";
@@ -274,6 +275,7 @@ export class RelaySession {
         this.state = "verifying";
         const devices = this.options.services.devices;
         if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
+        if (frame.type === FrameType.AUTH && !await this.pullForRefusedSignIn(frame.payload.device_id, frame.payload.signature)) return;
         this.keyProven = frame.type === FrameType.AUTH;
         const device = frame.type === FrameType.AUTH
           ? await devices.matchRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId)
@@ -400,6 +402,24 @@ export class RelaySession {
     if (!await accountMailbox.admitted(key) || !allowed()) return false;
     // counted only once admitted, so refused strangers cannot spend the PC's joins
     return relay.approvals.takeAccountJoin();
+  }
+
+  /**
+   * A sign-in a PC in an account would refuse: a member may have added the device on another PC a
+   * moment ago, so the PC reads its mailbox first (at most once a minute and for at most 5 seconds,
+   * server/account/mailbox.ts); the caller then checks the sign-in as ever. Whatever fails, an id with
+   * no row here or a signature that does not hold, takes this same way, so how long the refusal takes
+   * does not tell which ids have a row. A sign-in that holds calls nothing. False when the session
+   * ended meanwhile.
+   */
+  private async pullForRefusedSignIn(deviceId: string, signature: string): Promise<boolean> {
+    const { devices, accountMailbox } = this.options.services;
+    if (devices.account() === null) return true;
+    if (await devices.matchRelay(deviceId, this.nonce, signature, this.options.serverId) !== null) return this.mux.active;
+    // the pull may take a while: the session's own deadline starts after it
+    this.mux.extendSetup(SIGN_IN_WAIT_MS + 10_000);
+    await accountMailbox.pullForRefusedSignIn();
+    return this.mux.active;
   }
 
   /** Which failure count this session's comparison spends (server/devices.ts PairingPath). */

@@ -21,6 +21,12 @@ export const MAILBOX_PULL_MS = 5 * 60_000;
 export const ADMISSION_TTL_MS = 10 * 60_000;
 /** The least time between two pulls a join that missed asks for. */
 const ASKED_PULL_MS = 10_000;
+/** The least time between two pulls that refused sign-ins ask for, once one of them read the mailbox. */
+export const SIGN_IN_PULL_MS = 60_000;
+/** The same after such a pull could not read the mailbox (the service was down, or did not answer): it found nothing out. */
+export const SIGN_IN_PULL_RETRY_MS = ASKED_PULL_MS;
+/** How long such a sign-in waits for the pull at most; the pull itself goes on. */
+export const SIGN_IN_WAIT_MS = 5_000;
 
 function scope(account: string, serverId: string, key: string): string {
   return `${account}\0${serverId}\0${key}`;
@@ -98,6 +104,8 @@ export class AccountMailbox {
   /** The admissions the last pull saw, by account, PC and waiting device's key (`scope`): when each was made. */
   private admissions = new Map<string, number>();
   private lastAskedPull = Number.NEGATIVE_INFINITY;
+  /** From when a refused sign-in may start a pull again. */
+  private nextSignInPull = Number.NEGATIVE_INFINITY;
   /** When a pull last read the mailbox to its end without an error, and for which account and relay identity (`scope`). */
   private drainedAt: number | null = null;
   private drainedScope: string | null = null;
@@ -182,6 +190,33 @@ export class AccountMailbox {
       await this.pull();
     }
     return fresh();
+  }
+
+  /**
+   * A sign-in this PC could not accept: a member may have added the device on another PC a moment ago,
+   * and its signed add then waits in the mailbox (docs/account.md, "Account service API"). On a PC in
+   * an account this joins the pull under way or starts one, and waits for it at most `waitMs`. Such
+   * sign-ins start at most one pull a minute, on a count of their own, so sign-ins nobody can check
+   * yet cannot make the PC call the service at will; a pull that could not read the mailbox found
+   * nothing out, so after it the next may start 10 seconds after it began. What the pull finds is
+   * checked and applied like any other record; the caller checks the sign-in again. Never throws.
+   */
+  async pullForRefusedSignIn(waitMs = SIGN_IN_WAIT_MS, now = Date.now()): Promise<void> {
+    if (this.options.devices.account() === null) return;
+    let pull = this.pulling;
+    if (!pull) {
+      if (now < this.nextSignInPull) return;
+      this.nextSignInPull = now + SIGN_IN_PULL_MS;
+      pull = this.pull();
+      // whenever it ends, also after this sign-in stopped waiting for it
+      void pull.then(() => {
+        if (this.error !== null) this.nextSignInPull = Math.min(this.nextSignInPull, now + SIGN_IN_PULL_RETRY_MS);
+      }, () => undefined);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); });
+    try { await Promise.race([pull.then(() => undefined, () => undefined), late]); }
+    finally { clearTimeout(timer); }
   }
 
   /**
