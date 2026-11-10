@@ -278,4 +278,38 @@ describe("the pairing window across a restart", () => {
     approvals.closeWindow();
     expect(approvals.closes).toBe(2);
   });
+
+  it("caps the expiry timer at one window when the clock was set far back", () => {
+    const f = fixture();
+    const timers: number[] = [];
+    const approvals = new RelayPairingApprovals({ path: f.path, now: () => f.clock.at, setTimer: (_run, ms) => { timers.push(ms); return () => {}; } });
+    approvals.openWindow(f.clock.at + 40 * 86_400_000);
+    expect(timers.at(-1)).toBe(PAIRING_WINDOW_MS);
+  });
+
+  it("the expiry write does not bring back a state directory that was removed", () => {
+    const f = fixture();
+    let fire = () => {};
+    const approvals = new RelayPairingApprovals({ path: f.path, now: () => f.clock.at, setTimer: (run) => { fire = run; return () => {}; } });
+    approvals.openWindow(f.clock.at);
+    rmSync(join(f.path, ".."), { recursive: true, force: true });
+    f.clock.at += PAIRING_WINDOW_MS;
+    fire();
+    expect(existsSync(f.path)).toBe(false);
+    expect(approvals.windowOpen()).toBe(false);
+  });
+
+  it("a close with nothing open answers closed on a disk that cannot be written, when the file already reads closed", () => {
+    const files = [{ v: 1, window_until: 0, local_only_until: 0 }, "", "{"].map((saved) => { const f = fixture(); f.write(saved); return f; });
+    const g = fixture();
+    g.write({ v: 1, window_until: g.clock.at + PAIRING_WINDOW_MS + 5, local_only_until: 0 });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const open = spyOn(privateStateFs, "openSync").mockImplementation(() => { throw new Error("read-only"); });
+    const rm = spyOn(pairingWindowFs, "rmSync").mockImplementation(() => { throw new Error("read-only"); });
+    const truncate = spyOn(pairingWindowFs, "truncateSync").mockImplementation(() => { throw new Error("read-only"); });
+    cleanup.push(() => { warn.mockRestore(); open.mockRestore(); rm.mockRestore(); truncate.mockRestore(); });
+    for (const f of files) expect(f.open().closeWindow()).toBe(true);
+    // one that a start could not clear either is still reported
+    expect(g.open().closeWindow()).toBe(false);
+  });
 });

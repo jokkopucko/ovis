@@ -93,8 +93,10 @@ export class RelayPairingApprovals {
       if (this.now() < Math.max(this.windowUntil, this.localOnlyUntil)) { this.watchExpiry(); return; }
       this.windowUntil = 0;
       this.localOnlyUntil = 0;
-      if (!this.save()) this.forget();
-    }, Math.max(0, until - this.now()));
+      // a file that is gone already reads as closed: nothing is written into a state directory that was removed
+      if (this.path && existsSync(this.path) && !this.save()) this.forget();
+      // never longer than a window: a clock set far back would overflow the timer and fire it at once, over and over
+    }, Math.min(PAIRING_WINDOW_MS, Math.max(0, until - this.now())));
   }
 
   /**
@@ -181,9 +183,24 @@ export class RelayPairingApprovals {
     this.cancelExpiry?.();
     this.cancelExpiry = undefined;
     for (const entry of [...this.waiting.values()]) if (!entry.membersOnly) entry.finish({ approved: false });
-    if (!this.path || (!open && !existsSync(this.path))) return true;
+    // nothing was open and what is saved already reads as closed: nothing to write, whatever the disk allows
+    if (!this.path || (!open && this.savedClosed())) return true;
     // a file that cannot be rewritten must not bring the window back at the next start: absent reads as closed
     return this.save() || this.forget();
+  }
+
+  /** Whether the file is absent or holds no window a start would open: closed deadlines, or nothing load() reads. */
+  private savedClosed(): boolean {
+    if (!this.path || !existsSync(this.path)) return true;
+    try {
+      const saved = JSON.parse(readFileSync(this.path, "utf8")) as unknown;
+      if (typeof saved !== "object" || saved === null) return true;
+      const { v, window_until: windowUntil, local_only_until: localOnlyUntil } = saved as Record<string, unknown>;
+      return v !== 1 || typeof windowUntil !== "number" || typeof localOnlyUntil !== "number" || (windowUntil === 0 && localOnlyUntil === 0);
+    } catch (error) {
+      // an empty or damaged file is what load() reads as closed; one that cannot be read at all is not known to be
+      return error instanceof SyntaxError;
+    }
   }
 
   /** Whether a comparison taken now is this PC's own to decide: asked while its add-me screen waited. */

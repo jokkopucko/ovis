@@ -383,6 +383,8 @@ export class RelaySession {
     if (!sas || !sas.phoneConfirmed || !sas.approved || this.state !== "pair-wait") return;
     // an answer that lands after the deadline, before its timer ran, makes no device either
     if (Date.now() > sas.expiresAt) { this.close("timeout"); return; }
+    // approved on this PC, then the window it was taken under was closed before the phone confirmed: no device after a close
+    if (!sas.membersOnly && this.options.services.relay.approvals.closes !== sas.closes) { this.close("auth_failed"); return; }
     this.state = "verifying";
     // a member's remote approval never lets in a key this PC holds back (removed elsewhere, or a remove for it waits here);
     // only a pairing approved on this PC itself does

@@ -345,7 +345,8 @@ messages):
    A close declines the comparisons the PC was showing and one whose digits arrive after it, and is
    written to disk (as is a window that ran out). A close does not reach an Add-this-PC screen that
    is still open on the PC: that screen asks for its window again at its next relist, which is an
-   act of the PC's own page, so **Stop waiting** on it is what ends the wait.
+   act of the PC's own page, so leaving that screen is what ends the wait. A comparison approved
+   before a close makes no device when the other side confirms after it.
 2. On any device already in the account, the dashboard lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the

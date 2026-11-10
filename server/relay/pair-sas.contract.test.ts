@@ -388,6 +388,20 @@ test("a comparison taken before the window was closed raises no prompt when its 
   expect(f.app.context.services.relay.approvals.list()).toEqual([]);
 });
 
+test("a comparison approved on the PC makes no device when the phone confirms after the window was closed", async () => {
+  const f = fixture();
+  const { p } = await direct(f);
+  await p.hello();
+  const shown = prompts(f, (list) => list.length === 1);
+  await compare(p);
+  const [prompt] = await shown;
+  expect(f.app.context.services.relay.approvals.decide(prompt!.id, true)).toBe(true);
+  f.app.context.services.relay.approvals.closeWindow();
+  await confirm(p);
+  expect(await sessionError(p)).toBe("auth_failed");
+  expect(f.app.context.services.devices.list(null).filter((device) => device.label === "New phone")).toEqual([]);
+});
+
 test("replayed or out-of-order pairing frames end the session", async () => {
   const f = fixture();
   for (const replay of ["request-twice", "confirm-early", "reveal-early", "confirm-twice"] as const) {
