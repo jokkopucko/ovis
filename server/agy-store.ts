@@ -323,15 +323,17 @@ export async function resolveAgyStore(pane: HerdrPane): Promise<AgyStore | null>
     if (!owner) return null;
     const { pid } = owner;
     const before = await processIdentity(pid);
+    if (!before) return null;
+    // herdr's first list may predate the process the locks are read from, when the Agy it named exited
+    // and its pid was reused. Ask again before reading them: the locks are then the last evidence
+    // gathered, and that answer and they both lie between two reads of one birth identity.
+    const current = await agyPaneProcess(pane.pane_id);
+    if (current?.pid !== pid) return null;
     const paths = await heldPaths(pid);
     const store = paths ? agyStoreFromLocks(paths) : null;
-    if (!before || !store) return null;
-    // herdr's first list may predate the process these locks were read from, when the Agy it named
-    // exited and its pid was reused. Ask again, and bracket that answer with the birth identity the
-    // locks were read under.
-    const current = await agyPaneProcess(pane.pane_id);
+    if (!store) return null;
     const after = await processIdentity(pid);
-    return current?.pid === pid && before.started === after?.started ? { ...store, pid, started: before.started } : null;
+    return before.started === after?.started ? { ...store, pid, started: before.started } : null;
   } catch { return null; }
 }
 
@@ -364,13 +366,14 @@ export async function agyFreshSession(pane: HerdrPane, screen: string): Promise<
     const owner = await agyPaneProcess(pane.pane_id);
     if (!owner || !agyStartedOnNoSession(owner)) return null;
     const before = await processIdentity(owner.pid);
-    const paths = await heldPaths(owner.pid);
-    if (!before || paths === null) return null;
-    if (paths.some((path) => basename(dirname(path)) === "presence" && LOCK.test(basename(path)))) return null;
-    // As in resolveAgyStore: the pane must still name this process, and its arguments are read
-    // again here, inside the same birth identity as the locks.
+    if (!before) return null;
+    // As in resolveAgyStore: the pane must still name this process, asked before its locks are read,
+    // and its arguments are read again here, inside the same birth identity as the locks.
     const current = await agyPaneProcess(pane.pane_id);
     if (current?.pid !== owner.pid || !agyStartedOnNoSession(current)) return null;
+    const paths = await heldPaths(owner.pid);
+    if (paths === null) return null;
+    if (paths.some((path) => basename(dirname(path)) === "presence" && LOCK.test(basename(path)))) return null;
     const after = await processIdentity(owner.pid);
     return before.started === after?.started ? `unwritten:agy:${pane.pane_id}:${owner.pid}:${before.started}` : null;
   } catch { return null; }

@@ -91,6 +91,17 @@ export function parseLettaTranscript(text: string): ConversationTurn[] {
   return turns;
 }
 
+const SCAN_CUT = "the transcript was not read to its end in time";
+/**
+ * A scan for one call's result that ran out of time with some of the transcript unread: the call may lie
+ * past where it stopped, so this is not "no such call" but worth another try.
+ */
+export class LettaScanCut extends Error {
+  constructor() { super(SCAN_CUT); this.name = "LettaScanCut"; }
+}
+/** What a file thread answers for such a scan (lettaToolOutputIn): an error crosses a thread as its message alone. */
+export interface LettaScanCutAnswer { cut: true }
+
 /** How far into a transcript a call's whole result is looked for: past this, it is not offered. */
 const TOOL_OUTPUT_SCAN_BYTES = 256 * 1024 * 1024;
 const TOOL_CALL = Buffer.from('"tool_call"');
@@ -106,12 +117,13 @@ function resultIn(line: Buffer, id: Buffer, ref: string): string | undefined {
 }
 
 /**
- * The whole result of one call, by the `source_line_id` of its entry. Synchronous, and one long line
- * is joined, decoded and parsed whole: a request runs it on a file thread (lettaToolOutputOffThread),
- * never on the server's. Past `until` it stops between two reads and answers null, as for a call it
- * did not find: a scan whose request was refused meanwhile must not keep its thread to the end of a
- * slow file. ponytail: reads the transcript from the start on each request; read backwards from the
- * end if they grow large.
+ * The whole result of one call, by the `source_line_id` of its entry; null when the transcript holds no
+ * such call. Synchronous, and one long line is joined, decoded and parsed whole: a request runs it on a
+ * file thread (lettaToolOutputOffThread), never on the server's. Past `until` it stops between two
+ * reads: a scan whose request was refused meanwhile must not keep its thread to the end of a slow
+ * file. One stopped with some of what the transcript held unread throws LettaScanCut, as it cannot say
+ * there is no such call. ponytail: reads the transcript from the start on each request; read backwards
+ * from the end if they grow large.
  */
 export function lettaToolOutput(path: string, ref: string, until = Number.POSITIVE_INFINITY): string | null {
   const id = Buffer.from(JSON.stringify(ref));
@@ -119,14 +131,19 @@ export function lettaToolOutput(path: string, ref: string, until = Number.POSITI
   // never through a link put where the transcript was, never waiting on a FIFO
   // nor another file than the one the lookup is bound to (openBound)
   try { fd = openBound(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)); } catch { return null; }
+  let cut = false;
   try {
-    if (!fstatSync(fd).isFile()) return null;
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return null;
     const chunk = Buffer.alloc(1024 * 1024);
     // the line still without its newline, as the pieces each read brought of it: they are joined once,
     // when the newline comes, as joining what was read so far at every read copied a long line over and
     // over (a 64 MiB one took about 3 s, #3326)
     let pieces: Buffer[] = [];
-    for (let position = 0, got = 0; position < TOOL_OUTPUT_SCAN_BYTES && Date.now() < until && (got = readSync(fd, chunk, 0, chunk.length, position)) > 0; position += got) {
+    for (let position = 0, got = 0; position < TOOL_OUTPUT_SCAN_BYTES; position += got) {
+      // out of time: cut, unless all the transcript held as the scan began is read
+      if (Date.now() >= until) { cut = position < stat.size; break; }
+      if ((got = readSync(fd, chunk, 0, chunk.length, position)) <= 0) break;
       const read = chunk.subarray(0, got);
       let start = 0;
       for (let end = read.indexOf(0x0a); end >= 0; end = read.indexOf(0x0a, start)) {
@@ -139,19 +156,23 @@ export function lettaToolOutput(path: string, ref: string, until = Number.POSITI
       // a copy: the next read overwrites `chunk`
       if (start < got) pieces.push(Buffer.from(read.subarray(start)));
     }
-    return null;
   } catch { return null; } finally { closeSync(fd); }
+  if (cut) throw new LettaScanCut();
+  return null;
 }
 
 /**
  * What a file thread runs for lettaToolOutputOffThread: the result lettaToolOutput finds in the file
  * `file` names at `path`, cut to `max` characters. An open that finds another file there answers
  * nothing (readBound, bound here: each thread has its own bindings), and the cut is made here, so no
- * more than a page of output is copied to the server's thread. It reads for `budgetMs` at most.
+ * more than a page of output is copied to the server's thread. It reads for `budgetMs` at most, and
+ * answers a scan that time cut short as such (LettaScanCutAnswer), apart from a call it did not find.
  */
-export function lettaToolOutputIn(path: string, ref: string, file: FileIdentity, max: number, budgetMs: number): string | null {
+export function lettaToolOutputIn(path: string, ref: string, file: FileIdentity, max: number, budgetMs: number): string | LettaScanCutAnswer | null {
   const until = Date.now() + budgetMs;
-  const output = readBound([[path, file]], () => lettaToolOutput(path, ref, until));
+  let output: string | null;
+  try { output = readBound([[path, file]], () => lettaToolOutput(path, ref, until)); }
+  catch (error) { if (error instanceof LettaScanCut) return { cut: true }; throw error; }
   return output !== null && output.length > max ? `${output.slice(0, max)}\n… trimmed` : output;
 }
 
@@ -159,10 +180,14 @@ export function lettaToolOutputIn(path: string, ref: string, file: FileIdentity,
  * lettaToolOutput on a file thread (`file-pool.ts`), read from the file `file` names at `path` and cut
  * to `max` characters there: on the server's thread one long line held every request and terminal for
  * as long as it took to join, decode and parse (#3326). One transcript is scanned at a time; rejects
- * with FileBusyError when no thread is free in time (http.ts answers 503), and answers null when the
- * thread failed, as for a transcript that cannot be read.
+ * with FileBusyError when no thread is free in time, and when the scan ran out of its own time before
+ * the end of the transcript, where the call may still lie (http.ts answers 503 for both: try again),
+ * and answers null when the thread failed, as for a transcript that cannot be read.
  */
 export async function lettaToolOutputOffThread(path: string, ref: string, file: FileIdentity, max: number): Promise<string | null> {
-  try { return await fileTask<string | null>({ op: "letta-output", path, ref, file: { dev: file.dev, ino: file.ino }, max }); }
+  let answer: string | LettaScanCutAnswer | null;
+  try { answer = await fileTask<string | LettaScanCutAnswer | null>({ op: "letta-output", path, ref, file: { dev: file.dev, ino: file.ino }, max }); }
   catch (error) { if (error instanceof FileBusyError) throw error; return null; }
+  if (answer !== null && typeof answer === "object") throw new FileBusyError(SCAN_CUT);
+  return answer;
 }

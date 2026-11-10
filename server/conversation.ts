@@ -3750,7 +3750,9 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
       let fresh: NativeTranscript;
       try { fresh = await paneTranscript(paneId, codexHome, undefined, undefined, opencodeDb, hermesHome, grokHome, museData); }
       catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
-      if (fresh.source !== transcript.source || fresh.path !== transcript.path) return null;
+      // nor one another read saw bound elsewhere while this resolution was under way: begun before the
+      // pane moved, it still names the session the output was read from
+      if (fresh.source !== transcript.source || fresh.path !== transcript.path || rebound(paneId, transcript)) return null;
     }
     output = settled.value;
   } else if (resolved.source === "pi-transcript" || resolved.source === "cmd-transcript" || resolved.source === "codex-transcript") {
@@ -3768,7 +3770,9 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
       let fresh: NativeTranscript;
       try { fresh = await paneTranscript(paneId, codexHome, undefined, undefined, opencodeDb, hermesHome, grokHome, museData); }
       catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
-      if (fresh.source !== transcript.source || fresh.path !== transcript.path) return null;
+      // nor one another read saw bound elsewhere while this resolution was under way: begun before the
+      // pane moved, it still names the conversation the output was read from
+      if (fresh.source !== transcript.source || fresh.path !== transcript.path || rebound(paneId, transcript)) return null;
     }
   } else output = resolved.source === "agy-transcript" ? await agyToolOutput(resolved.path, ref) : lookup();
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;

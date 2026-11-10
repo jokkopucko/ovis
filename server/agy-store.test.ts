@@ -1,4 +1,5 @@
 import { expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -418,43 +419,90 @@ const UNUSED_START_SCREEN = [
   " ? for shortcuts   Gemini 3.8 Flash · high",
 ].join("\n");
 
-it.skipIf(process.platform === "win32")("answers a store only while the pane still names the process whose locks it read", async () => {
+/**
+ * A stand-in Agy holding the one lock, which says so itself: before its exec, the pid still shows
+ * this runtime's descriptors. `first` null starts it with no lock, as an Agy that has begun no
+ * conversation. `take` has it leave that lock for `next`, as `/new` does, and answers once it holds it.
+ */
+function standInAgy(first: string | null, next: string) {
+  const script = `
+    const fs = require('node:fs');
+    let held = process.env.AGY_LOCK ? fs.openSync(process.env.AGY_LOCK, 'r') : null;
+    process.stdout.write('up\\n');
+    process.stdin.on('data', () => {
+      if (held !== null) fs.closeSync(held);
+      held = fs.openSync(process.env.AGY_NEXT_LOCK, 'r');
+      process.stdout.write('moved\\n');
+    });`;
+  const child = Bun.spawn([process.execPath, "-e", script], {
+    stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, AGY_LOCK: first ?? "", AGY_NEXT_LOCK: next },
+  });
+  const said = child.stdout.getReader();
+  const says = async (): Promise<string> => new TextDecoder().decode((await said.read()).value);
+  return {
+    child, says,
+    take: async (): Promise<string> => {
+      child.stdin.write("next\n");
+      await child.stdin.flush();
+      return says();
+    },
+  };
+}
+
+it.skipIf(process.platform === "win32")("answers a store only while the pane still names the process whose locks it reads", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-agy-recheck-")));
   const session = "00000000-0000-4000-8000-000000000001";
-  const lock = join(root, "presence", `${session}.lock`);
+  const next = "00000000-0000-4000-8000-000000000002";
+  const lock = (id: string) => join(root, "presence", `${id}.lock`);
+  const transcript = (id: string) => join(root, "brain", id, ".system_generated", "logs", "transcript_full.jsonl");
   mkdirSync(join(root, "presence"));
-  writeFileSync(lock, "");
-  // A stand-in Agy holding the one lock. It says so itself: before its exec, the pid still shows
-  // this runtime's descriptors.
-  const agy = Bun.spawn([process.execPath, "-e", "require('node:fs').openSync(process.env.AGY_LOCK, 'r'); process.stdout.write('held\\n'); process.stdin.resume()"], {
-    stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, AGY_LOCK: lock },
-  });
+  for (const id of [session, next]) writeFileSync(lock(id), "");
+  const { child: agy, says, take } = standInAgy(lock(session), lock(next));
   const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;
   const { names, answers, asked, restore } = processInfoAnswers();
   try {
-    expect(new TextDecoder().decode((await agy.stdout.getReader().read()).value)).toBe("held\n");
+    expect(await says()).toBe("up\n");
     answers(names([agy.pid]), names([agy.pid]));
-    expect(await resolveAgyStore(pane)).toMatchObject({
-      root, session, pid: agy.pid, path: join(root, "brain", session, ".system_generated", "logs", "transcript_full.jsonl"),
-    });
+    expect(await resolveAgyStore(pane)).toMatchObject({ root, session, pid: agy.pid, path: transcript(session) });
     expect(asked()).toBe(2);
-    // The pid herdr named first was another process's by the time its locks were read (an exited
+    // The pid herdr named first was another process's by the time its locks were to be read (an exited
     // Agy's pid, reused): asked again, the pane names a different process, or not this one alone.
     for (const now of [[process.pid], [agy.pid, process.pid], []]) {
       answers(names([agy.pid]), names(now));
       expect(await resolveAgyStore(pane)).toBeNull();
       expect(asked()).toBe(2);
     }
-    // A lookup the first answer settles asks herdr once: a process with no store (this test's own),
-    // and for the greeting, one that holds a lock.
-    answers(names([process.pid]));
-    expect(await resolveAgyStore(pane)).toBeNull();
-    expect(asked()).toBe(1);
-    answers(names([agy.pid]));
+    // A lookup the first answer settles asks herdr once: a pane with no Agy, or with more than one,
+    // and for the greeting, an Agy started on a conversation.
+    for (const first of [[], [agy.pid, process.pid]]) {
+      answers(names(first));
+      expect(await resolveAgyStore(pane)).toBeNull();
+      expect(asked()).toBe(1);
+    }
+    answers(names([agy.pid], ["agy", "--continue"]));
     expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toBeNull();
     expect(asked()).toBe(1);
-    // The process is gone by the time herdr answers again with its pid: the start identity is
-    // compared after that answer, not before it.
+    // herdr is asked again before the locks are read, so what they then show costs both asks: a
+    // process with no store (this test's own), and for the greeting, one that holds a lock.
+    answers(names([process.pid]), names([process.pid]));
+    expect(await resolveAgyStore(pane)).toBeNull();
+    expect(asked()).toBe(2);
+    answers(names([agy.pid]), names([agy.pid]));
+    expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toBeNull();
+    expect(asked()).toBe(2);
+    // The locks are the last thing read: an Agy that moved to another conversation while herdr
+    // answered the second time is answered with that one, not the one it left.
+    let moved = "";
+    answers(names([agy.pid]), async () => {
+      moved = await take();
+      return names([agy.pid])();
+    });
+    expect(await resolveAgyStore(pane)).toMatchObject({ root, session: next, pid: agy.pid, path: transcript(next) });
+    expect(moved).toBe("moved\n");
+    expect(asked()).toBe(2);
+    // The process is gone by the time herdr answers again with its pid: its locks cannot be read, and
+    // the lookup ends there. (A pid another process took by then has locks to read: only the start
+    // identity read after them refuses that one, which the order test below pins on Linux.)
     answers(names([agy.pid]), async () => {
       agy.kill();
       await agy.exited;
@@ -463,6 +511,10 @@ it.skipIf(process.platform === "win32")("answers a store only while the pane sti
     expect(await resolveAgyStore(pane)).toBeNull();
     expect(asked()).toBe(2);
     expect(agy.killed).toBe(true);
+    // And a process whose start identity cannot be read is not asked about again.
+    answers(names([agy.pid]));
+    expect(await resolveAgyStore(pane)).toBeNull();
+    expect(asked()).toBe(1);
   } finally {
     restore();
     agy.kill();
@@ -471,26 +523,42 @@ it.skipIf(process.platform === "win32")("answers a store only while the pane sti
   }
 });
 
-it.skipIf(process.platform === "win32")("greets a fresh Agy only while the pane still names the process that held no lock", async () => {
+it.skipIf(process.platform === "win32")("greets a fresh Agy only while the pane still names the process that holds no lock", async () => {
   const screen = UNUSED_START_SCREEN;
   const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;
-  // a stand-in Agy that holds no lock and can exit: it says once it runs its own code
-  const idle = Bun.spawn([process.execPath, "-e", "process.stdout.write('up\\n'); process.stdin.resume()"], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-agy-greeting-")));
+  const lock = join(root, "presence", "00000000-0000-4000-8000-000000000003.lock");
+  mkdirSync(join(root, "presence"));
+  writeFileSync(lock, "");
+  // a stand-in Agy that holds no lock yet, can take its first one, and can exit
+  const { child: idle, says, take } = standInAgy(null, lock);
   const { names, answers, asked, restore } = processInfoAnswers();
   try {
-    expect(new TextDecoder().decode((await idle.stdout.getReader().read()).value)).toBe("up\n");
+    expect(await says()).toBe("up\n");
     // this test process holds no presence lock, as an Agy that has begun no conversation
     answers(names([process.pid]), names([process.pid]));
     expect(await agyFreshSession(pane, screen)).toStartWith(`unwritten:agy:agy-pane:${process.pid}:`);
     expect(asked()).toBe(2);
+    answers(names([idle.pid]), names([idle.pid]));
+    expect(await agyFreshSession(pane, screen)).toStartWith(`unwritten:agy:agy-pane:${idle.pid}:`);
     // asked again, the pane names another process, or the same pid started on a conversation
     for (const now of [names([process.pid + 1]), names([process.pid], ["agy", "--continue"])]) {
       answers(names([process.pid]), now);
       expect(await agyFreshSession(pane, screen)).toBeNull();
       expect(asked()).toBe(2);
     }
-    // The process is gone by the time herdr answers again with its pid: here too the start
-    // identity is compared after that answer, not before it.
+    // The locks are the last thing read here too: an Agy that took its first lock while herdr answered
+    // the second time has begun a conversation, and is not greeted as one that has not.
+    let moved = "";
+    answers(names([idle.pid]), async () => {
+      moved = await take();
+      return names([idle.pid])();
+    });
+    expect(await agyFreshSession(pane, screen)).toBeNull();
+    expect(moved).toBe("moved\n");
+    expect(asked()).toBe(2);
+    // The process is gone by the time herdr answers again with its pid: here too its locks cannot be
+    // read, and the lookup ends there.
     answers(names([idle.pid]), async () => {
       idle.kill();
       await idle.exited;
@@ -499,9 +567,80 @@ it.skipIf(process.platform === "win32")("greets a fresh Agy only while the pane 
     expect(await agyFreshSession(pane, screen)).toBeNull();
     expect(asked()).toBe(2);
     expect(idle.killed).toBe(true);
+    // And a process whose start identity cannot be read is not asked about again, as in resolveAgyStore.
+    answers(names([idle.pid]));
+    expect(await agyFreshSession(pane, screen)).toBeNull();
+    expect(asked()).toBe(1);
   } finally {
     restore();
     idle.kill();
     await idle.exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform !== "linux")("reads a process's locks last, between two reads of its start identity that must agree, and after herdr's second answer", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-agy-order-")));
+  const session = "00000000-0000-4000-8000-000000000004";
+  const lock = join(root, "presence", `${session}.lock`);
+  mkdirSync(join(root, "presence"));
+  writeFileSync(lock, "");
+  const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;
+  // this test process stands in for the Agy: what a lookup reads of it, in the order it does. `reused`
+  // has the identity read after the locks tell another start, as a pid another process took by then
+  const order: string[] = [];
+  const steps = ["ask", "identity", "ask", "locks", "identity"];
+  let reused = false;
+  const { readFileSync, opendirSync } = fs;
+  const spies = [
+    spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+      const read = readFileSync(...args);
+      if (args[0] !== `/proc/${process.pid}/stat`) return read;
+      order.push("identity");
+      if (!reused || order.filter((step) => step === "identity").length < 2) return read;
+      // the start time is field 22 of the line, the 20th after the command's closing bracket
+      const stat = String(read);
+      const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
+      fields[19] = String(BigInt(fields[19]!) + 1n);
+      return `${stat.slice(0, stat.lastIndexOf(") ") + 2)}${fields.join(" ")}`;
+    }) as typeof fs.readFileSync),
+    spyOn(fs, "opendirSync").mockImplementation(((...args: Parameters<typeof fs.opendirSync>) => {
+      if (args[0] === `/proc/${process.pid}/fd`) order.push("locks");
+      return opendirSync(...args);
+    }) as typeof fs.opendirSync),
+  ];
+  const { names, answers, restore } = processInfoAnswers();
+  const ask = () => { order.push("ask"); return names([process.pid])(); };
+  let held: number | null = null;
+  try {
+    // it holds no lock yet, as an Agy that has begun no conversation
+    answers(ask, ask);
+    expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toStartWith(`unwritten:agy:agy-pane:${process.pid}:`);
+    expect(order).toEqual(steps);
+    // The identity read after the locks decides. A pid another process took between herdr's second
+    // answer and the lock read is told by nothing else: herdr named it and its locks were read, yet
+    // with another start there the greeting is refused, every step having been taken.
+    reused = true;
+    order.length = 0;
+    answers(ask, ask);
+    expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toBeNull();
+    expect(order).toEqual(steps);
+    reused = false;
+    held = fs.openSync(lock, "r");
+    order.length = 0;
+    answers(ask, ask);
+    expect(await resolveAgyStore(pane)).toMatchObject({ root, session, pid: process.pid });
+    expect(order).toEqual(steps);
+    // and so is the store, though the lock that was read names one conversation
+    reused = true;
+    order.length = 0;
+    answers(ask, ask);
+    expect(await resolveAgyStore(pane)).toBeNull();
+    expect(order).toEqual(steps);
+  } finally {
+    restore();
+    for (const spy of spies) spy.mockRestore();
+    if (held !== null) fs.closeSync(held);
+    rmSync(root, { recursive: true, force: true });
   }
 });

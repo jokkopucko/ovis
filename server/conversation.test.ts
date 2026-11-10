@@ -3555,6 +3555,36 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(await output).toBeNull();
   });
 
+  it("answers no tool output for an OmO pane another read saw bound to another session while it was resolved for the last time", async () => {
+    const omoPane = { pane_id: "omo-last", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old session" }] } }) + "\n");
+    writeFileSync(other, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "new session" }] } }) + "\n");
+    const session = spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null });
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      session,
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+    // the lookup's last resolution, begun before OmO started another session in the pane, is held: it
+    // will name the session the output was read from
+    const last = Promise.withResolvers<{ path: string; pending: null }>();
+    let resolving!: () => void;
+    const began = new Promise<void>((resolve) => { resolving = resolve; });
+    session.mockResolvedValueOnce({ path, pending: null }).mockImplementationOnce(() => { resolving(); return last.promise; });
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await began;
+    // meanwhile another read finds the pane on the new session
+    session.mockResolvedValue({ path: other, pending: null });
+    expect((await paneTranscript(omoPane.pane_id)).path).toBe(other);
+    last.resolve({ path, pending: null });
+    expect(await output).toBeNull();
+    // and with nothing seen in between, the same resolution answers
+    session.mockResolvedValue({ path, pending: null });
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+  });
+
   it("answers no tool output, not an error, for an OmO transcript replaced by rename while it settled", async () => {
     const omoPane = { pane_id: "omo-replaced", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
     writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old file" }] } }) + "\n");

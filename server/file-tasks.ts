@@ -8,7 +8,7 @@ import type { HistoryEvidence } from "./claude-command-history.ts";
 import { wholeClaudeSubagents } from "./claude-subagents.ts";
 import { paneCommands } from "./commands.ts";
 import type { FileIdentity } from "./conversation-shared.ts";
-import { lettaToolOutputIn } from "./letta.ts";
+import { type LettaScanCutAnswer, lettaToolOutputIn } from "./letta.ts";
 import type { ProcessRoots } from "./skills/index.ts";
 import { byteRange, describeWithin, fileInfo, openAuthorized, pageFileHooks, pageWithLocalFiles, pathsByName, release, STREAM_CHUNK_BYTES, type PageMedia, type PageMediaGrant } from "./file-view.ts";
 import { readMarkdownDocuments, walkFiles } from "./files.ts";
@@ -23,7 +23,8 @@ const CLAUDE_TASKS_READ_MS = 10_000;
 /**
  * How long a Letta transcript is scanned for one call's output: under the pool's long deadline, so a
  * scan on a slow disk gives its thread back about when its request is refused, not at the end of
- * the file. Scans run one at a time, and the next waits for this thread.
+ * the file. Scans run one at a time, and the next waits for this thread. A scan this cut short says
+ * so (`LettaScanCutAnswer`): its request is answered "try again", not "no such call".
  */
 const LETTA_OUTPUT_READ_MS = 10_000;
 
@@ -44,9 +45,10 @@ export type FileTask =
   | { op: "agy-catalog"; path: string }
   /**
    * The whole output of the call `ref` names in a Letta transcript (`lettaToolOutputOffThread`), read
-   * only from the file `file` names at `path` and cut to `max` characters before it is answered.
+   * only from the file `file` names at `path` and cut to `max` characters before it is answered;
+   * `budgetMs`: how long it reads (tests).
    */
-  | { op: "letta-output"; path: string; ref: string; file: FileIdentity; max: number }
+  | { op: "letta-output"; path: string; ref: string; file: FileIdentity; max: number; budgetMs?: number }
   /** A Claude agent session's background-task list, read whole with the thread's own parser caches (`wholeClaudeSubagents`). */
   | { op: "claude-tasks"; path: string; live: boolean; since: number | null; history?: HistoryEvidence | null }
   /**
@@ -96,7 +98,7 @@ export interface OpenedFile { size: number; range: [number, number] | "unsatisfi
 export const FAST_DISK_MS = 50;
 const PROBE_BYTES = 64 * 1024;
 
-export type FileTaskResult = FileInfo | FileInfo[] | { documents: MarkdownDocument[]; cut: boolean } | string[] | number[] | SlashCommand[] | OmoTask[] | boolean | string | RenderedPage | OpenedFile | { info: FileInfo; within: string } | TextTaskResult | null;
+export type FileTaskResult = FileInfo | FileInfo[] | { documents: MarkdownDocument[]; cut: boolean } | string[] | number[] | SlashCommand[] | OmoTask[] | boolean | string | LettaScanCutAnswer | RenderedPage | OpenedFile | { info: FileInfo; within: string } | TextTaskResult | null;
 
 export function runFileTask(task: FileTask): FileTaskResult {
   switch (task.op) {
@@ -107,7 +109,7 @@ export function runFileTask(task: FileTask): FileTaskResult {
     case "walk": return walkFiles(task.cwd);
     case "documents": return readMarkdownDocuments(task.cwd, task.paths, task.budgetMs);
     case "agy-catalog": return [...agyCatalog(task.path)];
-    case "letta-output": return lettaToolOutputIn(task.path, task.ref, task.file, task.max, LETTA_OUTPUT_READ_MS);
+    case "letta-output": return lettaToolOutputIn(task.path, task.ref, task.file, task.max, task.budgetMs ?? LETTA_OUTPUT_READ_MS);
     case "claude-tasks": return wholeClaudeSubagents(task.path, task.live, Date.now(), task.since, Date.now() + CLAUDE_TASKS_READ_MS, Date.now, task.history ?? null);
     case "commands": return paneCommands(task.agent, task.cwd, task.home, task.roots, task.version, task.serverEnv);
     case "render": return render(task.path, task.media, task.within ?? null);
