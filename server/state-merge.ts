@@ -143,7 +143,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
       // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
       // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
       ...(twin.account !== undefined && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""))
-        ? { relay_public_key: twin.relay_public_key, account: twin.account, ...(twin.added_by === undefined ? {} : { added_by: twin.added_by }), ...(twin.linked_at === undefined ? {} : { linked_at: twin.linked_at }) } : {}),
+        ? { relay_public_key: twin.relay_public_key, account: twin.account, ...(twin.added_by === undefined ? {} : { added_by: twin.added_by }), ...(twin.linked_at === undefined ? {} : { linked_at: twin.linked_at }), ...(twin.link_moved_key === undefined ? {} : { link_moved_key: twin.link_moved_key }) } : {}),
     });
   }
   for (const device of theirs) {

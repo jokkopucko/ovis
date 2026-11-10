@@ -64,6 +64,12 @@ export interface StoredDevice {
   added_by?: string;
   /** when a `link` last moved the row to its key: of two copies of a row (state-merge.ts), the later link wins */
   linked_at?: string;
+  /**
+   * whether a `link` gave the row a key other than the one it was paired with here; false when every link kept
+   * the paired key (the usual link, which only joins the account). Absent on a row never linked, and on one linked
+   * before this was recorded: that one counts as kept, as it did then.
+   */
+  link_moved_key?: boolean;
   /** the signed `add` that let this row in, as received: /api/account/status lists it for a client to hand on */
   account_add?: unknown;
 }
@@ -177,6 +183,7 @@ export function readDeviceRegistry(path: string): DeviceRegistry {
       && (d.account === undefined || typeof d.account === "string")
       && (d.added_by === undefined || typeof d.added_by === "string")
       && (d.linked_at === undefined || typeof d.linked_at === "string")
+      && (d.link_moved_key === undefined || typeof d.link_moved_key === "boolean")
       && (d.account_add === undefined || isJsonObject(d.account_add)))) return { kind: "bad" };
   return { kind: "ok", gateClosedAt: parsed.gate_closed_at, devices: parsed.devices as StoredDevice[], placeholder: parsed.placeholder === true && parsed.devices.length === 0 };
 }
@@ -247,6 +254,15 @@ export function mergeAccountTombstones(active: string, sibling: string): string 
     }
   }
   return null;
+}
+
+/**
+ * Whether the row is a pairing of its current key made on this PC (a code, or a comparison approved here): not a
+ * row an account record or a remote approval made (`added_by`), and not one a `link` moved onto the key from the
+ * key it was paired with, which never paired this key here. A link that kept the paired key changes nothing.
+ */
+function pairedHere(device: StoredDevice): boolean {
+  return device.added_by === undefined && device.link_moved_key !== true;
 }
 
 export class DeviceStore {
@@ -344,9 +360,9 @@ export class DeviceStore {
 
   /** A row whose key was removed at or after the row was made: revoked, whether or not its own write happened yet. */
   private stale(device: StoredDevice): boolean {
-    // a row an add or a remote approval made goes whatever its time, as removeAccountKey takes it
+    // a row that is no pairing of its key here goes whatever its time, as removeAccountKey takes it
     return device.relay_public_key !== undefined
-      && this.tombstones.some((t) => t.key === device.relay_public_key && (device.added_by !== undefined || t.removed_at >= device.created_at));
+      && this.tombstones.some((t) => t.key === device.relay_public_key && (!pairedHere(device) || t.removed_at >= device.created_at));
   }
 
   /**
@@ -883,9 +899,9 @@ export class DeviceStore {
    */
   removeAccountKey(key: string, account: string, record: { id: string; issuedAt: string; by?: { device_id: string; label: string }; signed?: RemoveRecord }, now = Date.now()): boolean {
     this.assertAccountWritable();
-    // a pairing made on this PC (no `added_by`) after the removal was signed wins: a replayed or late remove
-    // leaves it be. A row an account record or a remote approval made goes, however late the remove arrives.
-    if (this.devices.some((d) => d.relay_public_key === key && d.added_by === undefined && d.created_at > record.issuedAt)) return false;
+    // a pairing of this key made on this PC after the removal was signed wins: a replayed or late remove
+    // leaves it be. Any other row goes, however late the remove arrives (pairedHere).
+    if (this.devices.some((d) => d.relay_public_key === key && pairedHere(d) && d.created_at > record.issuedAt)) return false;
     const recordId = record.id;
     const fresh = !this.isTombstoned(key);
     const removal: AccountTombstone = { key, account, record_id: recordId, removed_at: new Date(now).toISOString(), ...(record.signed ? { records: [record.signed] } : {}) };
@@ -912,7 +928,9 @@ export class DeviceStore {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
     if (!device) return null;
-    const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString() };
+    // once moved, moved: a later link that keeps the key does not make it the key paired here
+    const moved = key !== oldKey || device.link_moved_key === true;
+    const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved };
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);
     this.devices = next;

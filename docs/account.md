@@ -396,7 +396,9 @@ is what authenticates the PC.
 - A `remove` writes its tombstone before it revokes the device; the device's relay connections
   close at once (`auth_revoked`). A `remove` signed before this PC itself paired the key again leaves
   that pairing be (`unchanged`), so a late or replayed one cannot undo it. A row an `add` or a remote
-  approval made goes, however late the `remove` arrives.
+  approval made goes, however late the `remove` arrives, and so does a row a `link` moved onto the
+  key from another one (`link_moved_key`): this PC paired its former key, never this one. A `link`
+  whose `old_key` is its `key` leaves the row a pairing of that key.
 - **Revoke** and **Revoke all** on the PC leave a tombstone too, so no record brings the key back,
   even after the PC joins an account. An account `remove` for a key the PC revoked first takes over
   its tombstone.
@@ -407,7 +409,9 @@ is what authenticates the PC.
   account removed), and clears its tombstone.
 - A stop between two such writes leaves a row and a tombstone for one key. On start the PC tells them
   apart by time: a row made before the key's removal is revoked, one made after it keeps its device
-  and the tombstone goes. Until then no such row signs in, signs or approves.
+  and the tombstone goes. A row that is no pairing of its key here (an `add`, a remote approval, a
+  `link` that moved it onto the key) is revoked whatever its time. Until then no such row signs in,
+  signs or approves.
 - Where two state dirs share one device list, their tombstones are merged too.
 - **Reset relay identity** removes every relay device, members included, so the PC leaves the
   account; a client adds it again by pairing with its new identity, after the client's usual "this

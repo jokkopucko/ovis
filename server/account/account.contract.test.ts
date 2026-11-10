@@ -694,6 +694,37 @@ test("a remove signed before this PC paired the key again leaves the new pairing
   expect(f.app.context.services.devices.hasKey(lost.spki)).toBe(true);
 });
 
+test("a remove signed before a row was paired here still takes the key a link later moved that row onto", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const stolen = await accountKey();
+  const removal = await sign({ v: 1, kind: "remove", account: ACCOUNT, key: stolen.spki, issued_at: new Date(Date.now() - 60_000).toISOString(), id: newRecordId(), signer: key.spki }, key);
+  // paired on this PC as another key after the removal was signed, then moved onto the removed key by a link
+  const legacy = await relayDevice(f);
+  expect((await post(await signedIn(f, legacy), "/api/account/link", { record: await linkRecord(legacy, stolen) })).status).toBe(200);
+  expect(f.app.context.services.devices.hasKey(stolen.spki)).toBe(true);
+  expect((await post(link, "/api/account/records", { records: [removal] })).body.results?.[0]?.outcome).toBe("applied");
+  expect(f.app.context.services.devices.hasKey(stolen.spki)).toBe(false);
+  expect(registryRow(f, legacy.id)).toBeUndefined();
+});
+
+test("a link that keeps the key a row was paired with here leaves it a pairing of that key: an older remove still leaves it be", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const store = f.app.context.services.devices;
+  const own = await accountKey();
+  const removal = await sign({ v: 1, kind: "remove", account: ACCOUNT, key: own.spki, issued_at: new Date(Date.now() - 60_000).toISOString(), id: newRecordId(), signer: key.spki }, key);
+  // paired on this PC with its account key after the removal was signed, then linked into the account with that same key
+  const paired = store.pairRelay(store.startPairing().code, "Paired here", own.spki)!.device;
+  const device = { id: paired.id, keys: own.keys, publicKey: own.spki };
+  expect((await post(await signedIn(f, device), "/api/account/link", { record: await linkRecord(device, own) })).status).toBe(200);
+  expect(registryRow(f, paired.id)).toMatchObject({ relay_public_key: own.spki, account: ACCOUNT, link_moved_key: false });
+  expect((await post(link, "/api/account/records", { records: [removal] })).body.results?.[0]?.outcome).toBe("unchanged");
+  expect(store.hasKey(own.spki)).toBe(true);
+  // and a restart does not take it for a row to sweep
+  expect(new DeviceStore(f.stateDir).hasKey(own.spki)).toBe(true);
+});
+
 /** A state dir as a stop between two writes leaves it: one relay row and a tombstone for its key. */
 async function interrupted(rowCreated: string, removed: string) {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-account-interrupted-"));
@@ -703,6 +734,23 @@ async function interrupted(rowCreated: string, removed: string) {
   writeFileSync(join(stateDir, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: [{ key, account: ACCOUNT, record_id: "r", removed_at: removed }] }), { mode: 0o600 });
   return { stateDir, key, store: () => new DeviceStore(stateDir) };
 }
+
+test("a tombstone older than a linked row takes it on start only when the link moved the row onto that key", async () => {
+  // as a sibling dir's older tombstone comes back after this PC paired the key again and the device linked into the account
+  for (const [moved, kept] of [[true, false], [false, true]] as const) {
+    const state = await interrupted("2026-11-02T00:00:00.000Z", "2026-11-01T00:00:00.000Z");
+    try {
+      const path = join(state.stateDir, "devices.json");
+      const registry = JSON.parse(readFileSync(path, "utf8")) as { devices: Record<string, unknown>[] };
+      registry.devices[0] = { ...registry.devices[0], linked_at: "2026-11-03T00:00:00.000Z", link_moved_key: moved };
+      writeFileSync(path, JSON.stringify(registry), { mode: 0o600 });
+      const store = state.store();
+      expect(store.error).toBeNull();
+      expect(store.hasKey(state.key)).toBe(kept);
+      expect(store.isTombstoned(state.key)).toBe(!kept);
+    } finally { rmSync(state.stateDir, { recursive: true, force: true }); }
+  }
+});
 
 test("a removal cut off between its two writes is finished when the PC starts", async () => {
   const state = await interrupted("2026-11-01T00:00:00.000Z", "2026-11-02T00:00:00.000Z");
