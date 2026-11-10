@@ -1,6 +1,6 @@
 id = "devswha.ovis"
 name = "Ovis"
-version = "0.5.1"
+version = "0.5.2"
 min_herdr_version = "0.9.0"
 description = "Ovis, the browser and phone client for herdr: chat and live terminal for every agent pane, remote PCs over SSH, web push alerts"
 platforms = ["linux", "macos", "windows"]

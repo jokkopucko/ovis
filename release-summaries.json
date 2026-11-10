@@ -1,4 +1,98 @@
 {
+  "0.5.2": {
+    "en": {
+      "new": [
+        "On a computer, Alt+Enter in Chat holds a message until you send it.",
+        "Hermes's dangerous-command approval is answered from a card in Chat.",
+        "Letta Code's /model opens as a card in Chat.",
+        "app.ovis.sh is now a console with an Overview of all your PCs.",
+        "Typing / in a Letta Code pane's Chat lists Letta's own commands."
+      ],
+      "improved": [
+        "The header and tab row are one compact line, with + for New workspace.",
+        "The sidebar is denser, with one-line workspace rows.",
+        "The Agents list puts the agents waiting for you first by default.",
+        "On a phone, the header counts working and finished sessions.",
+        "A long tool output in Chat shows its start, with Show all below."
+      ],
+      "fixed": [
+        "A Claude pane waiting on a long CI run no longer reads as done.",
+        "The update-available line no longer blinks and moves the terminal.",
+        "A terminal selection shows over text with a background colour.",
+        "Closing the full-screen macOS app no longer leaves a black screen.",
+        "On Windows, Settings → About switches to the Herdr app's terminals."
+      ]
+    },
+    "ko": {
+      "new": [
+        "컴퓨터에서는 채팅 입력창에서 Alt+Enter로 메시지를 잡아 두었다가 원할 때 보내요.",
+        "Hermes의 위험한 명령 승인을 채팅의 카드에서 답할 수 있어요.",
+        "Letta Code의 /model이 채팅에서 카드로 열려요.",
+        "app.ovis.sh가 모든 PC를 개요에서 한눈에 보는 콘솔로 바뀌었어요.",
+        "Letta Code 패널의 채팅에서 /를 입력하면 Letta의 명령 목록이 나와요."
+      ],
+      "improved": [
+        "헤더와 탭 줄이 한 줄로 합쳐지고, +로 새 워크스페이스를 만들어요.",
+        "사이드바가 더 촘촘해져 워크스페이스가 한 줄씩 보여요.",
+        "에이전트 목록이 기본으로 응답이 필요한 에이전트를 맨 위에 보여 줘요.",
+        "휴대폰 헤더에 작업 중인 세션과 끝난 세션 수가 보여요.",
+        "채팅의 긴 도구 출력은 앞부분만 보이고, 모두 보기로 펼쳐요."
+      ],
+      "fixed": [
+        "오래 걸리는 CI를 기다리는 Claude 패널이 더는 완료로 표시되지 않아요.",
+        "업데이트 안내 줄이 깜빡이며 터미널을 밀어내지 않아요.",
+        "배경색이 있는 글자 위에서도 터미널 선택 영역이 보여요.",
+        "macOS 앱을 전체 화면에서 닫아도 검은 화면이 남지 않아요.",
+        "Windows에서도 설정 → 정보에서 Herdr 앱의 터미널로 바꿀 수 있어요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "パソコンでは、チャットの入力欄で Alt+Enter を押すと、送るまでメッセージを保留します。",
+        "Hermes の危険なコマンドの承認に、チャットのカードで答えられます。",
+        "Letta Code の /model がチャットでカードとして開きます。",
+        "app.ovis.sh が、すべての PC を概要で見渡せるコンソールになりました。",
+        "Letta Code のペインのチャットで / を入力すると、Letta のコマンド一覧が出ます。"
+      ],
+      "improved": [
+        "ヘッダーとタブの行が 1 行にまとまり、+ で新しいワークスペースを作れます。",
+        "サイドバーが詰まり、ワークスペースが 1 行ずつ並びます。",
+        "エージェント一覧は、既定で応答待ちのエージェントを先頭に並べます。",
+        "スマホのヘッダーに、作業中と完了したセッションの数が出ます。",
+        "チャットの長いツール出力は冒頭だけ表示し、すべて表示で開けます。"
+      ],
+      "fixed": [
+        "長い CI を待つ Claude ペインが完了と表示されなくなりました。",
+        "更新の案内行が点滅してターミナルを動かすことがなくなりました。",
+        "背景色のある文字の上でも、ターミナルの選択範囲が表示されます。",
+        "macOS アプリを全画面のまま閉じても、黒い画面が残りません。",
+        "Windows でも 設定 → 情報 から Herdr アプリのターミナルに切り替えられます。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "在电脑上，在聊天输入框按 Alt+Enter 可暂存消息，等你点发送时再发出。",
+        "Hermes 的危险命令审批可在聊天中的卡片上回答。",
+        "Letta Code 的 /model 在聊天中以卡片形式打开。",
+        "app.ovis.sh 改为控制台，可在概览中查看你的所有电脑。",
+        "在 Letta Code 窗格的聊天中输入 /，会列出 Letta 自己的命令。"
+      ],
+      "improved": [
+        "标题栏和标签栏合并为紧凑的一行，点 + 新建工作区。",
+        "侧边栏更紧凑，每个工作区只占一行。",
+        "代理列表默认把等待你回应的代理排在最前。",
+        "在手机上，标题栏会显示工作中和已完成的会话数。",
+        "聊天中很长的工具输出只显示开头，可点“显示全部”展开。"
+      ],
+      "fixed": [
+        "等待长时间 CI 的 Claude 窗格不再显示为已完成。",
+        "更新提示行不再闪烁并推动终端。",
+        "带背景色的文字上也能显示终端的选中区域。",
+        "在全屏状态下关闭 macOS 应用不再留下黑屏。",
+        "在 Windows 上也可从设置 → 关于切换到 Herdr 应用的终端。"
+      ]
+    }
+  },
   "0.5.1": {
     "en": {
       "new": [
