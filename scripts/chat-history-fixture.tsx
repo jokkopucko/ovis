@@ -2,6 +2,7 @@
 import React, { Profiler, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { HISTORY_PROMPTS, SettingsProvider } from "../src/lib/settings.ts";
+import { terminalColors } from "../src/lib/themes.ts";
 import { PaneTerminal } from "../src/components/PaneTerminal.tsx";
 import { ChatView } from "../src/components/ChatView.tsx";
 import { useWholeOutput } from "../src/lib/useWholeOutput.ts";
@@ -67,7 +68,7 @@ function Product({ pane, machine, agent }: { pane: string; machine: string; agen
   window.qa.press = (pressed) => prefetchPaneConversation(pressed, "local", HISTORY_PROMPTS);
   return <div style={{ position: "relative", height: 600 }}><MachineContext.Provider value={machine}><Profiler id="product-pane" onRender={() => {
     window.qa.commits.push(Array.from(document.querySelectorAll(".chat-turn"), (turn) => turn.textContent ?? ""));
-  }}><PaneTerminal key={machine} paneId={pane} agent={agent} agentSession={rosterSessions.get(pane) ?? null} view="chat" terminalFontSize={14} terminalWheelSpeed={1} terminalFontFamily="" theme="dark" palette="amber" /></Profiler></MachineContext.Provider></div>;
+  }}><PaneTerminal key={machine} paneId={pane} agent={agent} agentSession={rosterSessions.get(pane) ?? null} view="chat" terminalFontSize={14} terminalWheelSpeed={1} terminalFontFamily="" colors={terminalColors("amber", "dark")} /></Profiler></MachineContext.Provider></div>;
 }
 function Root() {
   const [selected, setSelected] = useState<{ pane: string; machine: string; agent: string } | null>(null);

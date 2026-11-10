@@ -14,6 +14,21 @@ export type ThemeEntry = (typeof SUPPORTED_ENTRIES)[number];
 export type TerminalColors = { readonly background: string; readonly foreground: string; readonly cursor: string; readonly selectionBackground: string }
   & Readonly<Partial<Record<keyof typeof LIGHT_ANSI_ROLES, string>>>;
 
+/**
+ * What a row gives the page: a built-in theme's entry, or the row derived from an imported theme
+ * (customThemes.ts), which carries its colours itself.
+ */
+export interface DrawnTheme {
+  readonly id: string;
+  readonly mode: Mode;
+  readonly terminal: TerminalColors;
+  readonly bgPanel: string;
+  readonly bg: string;
+  readonly preview: { readonly elevated: string; readonly border: string; readonly text: string; readonly textDim: string; readonly accent: string; readonly primary: string };
+  /** an imported theme's colours by role name, set on the document as custom properties; a built-in row's are in src/styles.css */
+  readonly vars?: Readonly<Record<string, string>>;
+}
+
 export function isThemeId(value: unknown): value is ThemeId {
   return typeof value === "string" && (THEME_IDS as readonly string[]).includes(value);
 }

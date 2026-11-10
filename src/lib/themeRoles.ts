@@ -68,6 +68,12 @@ export const LIGHT_ANSI_ROLES = {
   brightWhite: "term-bright-white",
 } as const;
 
+/**
+ * herdr's TUI state colours (the sidebar's and the tabs' classic status glyphs). The base blocks of
+ * src/styles.css set them once for every built-in theme; an imported theme sets its own (themeDerive.ts).
+ */
+export const INDICATOR_ROLES = ["indicator-working", "indicator-blocked", "indicator-done", "indicator-idle", "indicator-unknown"] as const;
+
 export const SHADOW_GEOMETRY = {
   dark: {
     "shadow-drawer": ["0 0 40px"],

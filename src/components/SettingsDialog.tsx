@@ -19,7 +19,8 @@ import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "..
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
-import { isThemeId, pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
+import { isThemeId, pickTheme, rowFor, THEME_IDS, type DrawnTheme, type Mode, type ThemeId } from "../lib/themes.ts";
+import { chosenTheme, customRow, customRowId, type CustomTheme } from "../lib/customThemes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT, type Translate } from "../lib/i18n.ts";
 import { focusInOtherModal, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { awaitRestart, restartState, subscribeRestart } from "../lib/runtimeSwitch.ts";
@@ -29,6 +30,7 @@ import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
+import { ThemeFiles } from "./ThemeFiles.tsx";
 import { ChipToggles, SettingsBare, Segmented, SettingsFold, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle, settingsQueryWords } from "./SettingsControls.tsx";
 import { PcLoadSetting } from "./MachineStats.tsx";
 import { FONT_FAMILY_MAX_CHARS, sanitizeFontFamily } from "../lib/fontFamily.ts";
@@ -350,16 +352,18 @@ const THEME_NAMES: Record<ThemeId, string> = {
   vesper: "Vesper",
 };
 
-/** One theme as a small picture of the app in its own colours, a sidebar beside a pane, its name under it (the cards T3 Code and herdr-app show). */
-function ThemeCard({ id, side, checked, onPick }: { id: ThemeId; side: Mode; checked: boolean; onPick: () => void }) {
+/**
+ * One theme as a small picture of the app in its own colours, a sidebar beside a pane, its name under it (the cards T3 Code
+ * and herdr-app show). `row` is what the theme draws on `side`: a built-in theme's row, or an imported theme's (lib/customThemes.ts).
+ */
+function ThemeCard({ card, name, row, side, checked, onPick }: { card: string; name: string; row: DrawnTheme; side: Mode; checked: boolean; onPick: () => void }) {
   const t = useT();
-  const row = rowFor(id, side);
   const c = row.preview;
   // a theme of the other kind says so: it draws that way on this side; every card's tooltip carries its
   // whole name, as the name under the picture may be cut (G-204)
-  const kind = row.mode === side ? undefined : `${t(THEME_NAMES[id])} · ${t(row.mode === "dark" ? "Dark" : "Light")}`;
+  const kind = row.mode === side ? undefined : `${name} · ${t(row.mode === "dark" ? "Dark" : "Light")}`;
   return (
-    <button type="button" role="radio" aria-checked={checked} aria-label={kind} title={kind ?? t(THEME_NAMES[id])} tabIndex={checked ? 0 : -1} className="theme-card" data-theme-card={id} onClick={onPick}>
+    <button type="button" role="radio" aria-checked={checked} aria-label={kind} title={kind ?? name} tabIndex={checked ? 0 : -1} className="theme-card" data-theme-card={card} onClick={onPick}>
       <span className="theme-card-art" aria-hidden="true" style={{ background: row.bg, borderColor: c.border }}>
         <span className="theme-card-side" style={{ background: row.bgPanel, borderColor: c.border }}>
           <i style={{ background: c.accent }} /><i style={{ background: c.textDim }} /><i style={{ background: c.textDim }} />
@@ -368,7 +372,7 @@ function ThemeCard({ id, side, checked, onPick }: { id: ThemeId; side: Mode; che
           <i style={{ background: c.text }} /><i style={{ background: c.textDim }} /><b style={{ background: c.primary }} />
         </span>
       </span>
-      <span className="theme-card-name">{t(THEME_NAMES[id])}</span>
+      <span className="theme-card-name">{name}</span>
     </button>
   );
 }
@@ -387,7 +391,9 @@ function SidebarRowsPreview({ rows }: { rows: "one" | "two" }) {
  * swipe, or the arrows at its ends), the chosen one brought into view: the row stays one card tall
  * however many themes there are. The side drawn now opens first; Dark and Light switch it. The side's
  * own kind comes first, then after a rule the other kind, which that side draws as it is (a dark theme
- * chosen for light mode draws dark, as in herdr). Arrow keys, Home and End pick along the row, as a radio group's do.
+ * chosen for light mode draws dark, as in herdr). The themes imported from a file come before both, and one
+ * of them chosen for a side is drawn in place of that side's built-in theme, which stays as it was under it.
+ * Arrow keys, Home and End pick along the row, as a radio group's do.
  */
 function ThemePicker() {
   const { settings, update } = useSettings();
@@ -399,7 +405,10 @@ function ThemePicker() {
   const side = picked ?? drawn;
   const strip = useRef<HTMLDivElement>(null);
   const [ends, setEnds] = useState({ start: true, end: true });
-  const current = side === "dark" ? settings.darkTheme : settings.lightTheme;
+  const custom = settings.customThemes;
+  const imported = chosenTheme(custom, side);
+  // the card that is checked: the imported theme drawn on this side, else the side's built-in theme
+  const current = imported ? customRowId(imported.id) : side === "dark" ? settings.darkTheme : settings.lightTheme;
   const other: Mode = side === "dark" ? "light" : "dark";
   const own = THEME_IDS.filter((id) => rowFor(id, side).mode === side);
   const others = THEME_IDS.filter((id) => rowFor(id, side).mode === other);
@@ -424,7 +433,11 @@ function ThemePicker() {
     observer.observe(el);
     return () => observer.disconnect();
   }, [measure]);
-  const card = (id: ThemeId) => <ThemeCard key={id} id={id} side={side} checked={current === id} onPick={() => update(pickTheme(settings, side, id))} />;
+  // onto the settings as they are now: another tab may have imported or removed a theme since this was drawn
+  const pick = (id: ThemeId): void => update((latest) => ({ ...pickTheme(latest, side, id), customThemes: { ...latest.customThemes, [side]: null } }));
+  const pickImported = (id: string): void => update((latest) => latest.customThemes.themes.some((entry) => entry.id === id) ? { customThemes: { ...latest.customThemes, [side]: id } } : {});
+  const card = (id: ThemeId) => <ThemeCard key={id} card={id} name={t(THEME_NAMES[id])} row={rowFor(id, side)} side={side} checked={current === id} onPick={() => pick(id)} />;
+  const importedCard = (theme: CustomTheme) => <ThemeCard key={theme.id} card={customRowId(theme.id)} name={theme.name} row={customRow(theme, side)} side={side} checked={current === customRowId(theme.id)} onPick={() => pickImported(theme.id)} />;
   const step = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
     const cards = [...(strip.current?.querySelectorAll<HTMLElement>("[data-theme-card]") ?? [])];
@@ -433,19 +446,24 @@ function ThemePicker() {
     event.preventDefault();
     // a radio group's arrows pick as they move
     const id = cards[next]?.dataset["themeCard"];
-    if (id && isThemeId(id)) update(pickTheme(settings, side, id));
+    const theme = custom.themes.find((entry) => customRowId(entry.id) === id);
+    if (theme) pickImported(theme.id);
+    else if (id && isThemeId(id)) pick(id);
     cards[next]?.focus();
     cards[next]?.scrollIntoView({ block: "nearest", inline: "nearest" });
   };
   const scroll = (direction: 1 | -1): void => strip.current?.scrollBy({ left: direction * strip.current.clientWidth * 0.8, behavior: "smooth" });
   return (
     <>
-      <SettingsRow icon={Palette} label={label} keywords={`${t("Dark theme")} ${t("Light theme")} ${t("Shown in dark mode")} ${t("Shown in light mode")}`} reset={[side === "dark" ? "darkTheme" : "lightTheme"]}>
+      <SettingsRow icon={Palette} label={label} keywords={`${t("Dark theme")} ${t("Light theme")} ${t("Shown in dark mode")} ${t("Shown in light mode")}`} reset={[side === "dark" ? "darkTheme" : "lightTheme"]}
+        resetAlso={{ changed: custom[side] !== null, restore: () => update((latest) => ({ customThemes: { ...latest.customThemes, [side]: null } })) }}>
         <Segmented label={`${t("Dark theme")} · ${t("Light theme")}`} value={side} onChange={setPicked} options={[{ value: "dark", label: t("Dark"), name: t("Show dark themes") }, { value: "light", label: t("Light"), name: t("Show light themes") }]} />
       </SettingsRow>
       <div className="settings-item theme-strip">
         <div className="theme-strip-frame">
           <div ref={strip} className="theme-cards" role="radiogroup" aria-label={label} onScroll={measure} onKeyDown={step}>
+            {custom.themes.map(importedCard)}
+            {custom.themes.length > 0 && <span className="theme-cards-rule" aria-hidden="true" />}
             {own.map(card)}
             {others.length > 0 && <span className="theme-cards-rule" aria-hidden="true" />}
             {others.map(card)}
@@ -454,6 +472,8 @@ function ThemePicker() {
           {!ends.end && <button type="button" className="icon-button theme-strip-arrow is-end" aria-label={t("Later themes")} title={t("Later themes")} tabIndex={-1} onClick={() => scroll(1)}><ChevronRight aria-hidden="true" /></button>}
         </div>
       </div>
+      {/* the side drawn now when the theme has it, so the change shows; its only side otherwise */}
+      <ThemeFiles onImported={(sides) => setPicked(sides.includes(drawn) ? drawn : sides[0]!)} />
     </>
   );
 }

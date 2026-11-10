@@ -54,6 +54,7 @@
   "scripts/replay-clipboard-demo-regression.ts": 42,
   "scripts/hide-pc-demo-regression.ts": 42,
   "scripts/terminal-switch-regression.ts": 40,
+  "scripts/theme-file-demo-regression.ts": 40,
   "scripts/sidebar-selection-contrast-demo-regression.ts": 40,
   "scripts/files-documents-demo-regression.ts": 39,
   "scripts/chat-select-quote-demo-regression.ts": 37,

@@ -8,7 +8,7 @@
  * which the server lays over what it holds, so a setting nobody changed stays each device's own.
  */
 export const SHARED_SETTING_KEYS = [
-  "theme", "palette", "darkTheme", "lightTheme", "language", "sidebarRows", "agentOrder", "agentMarks", "agentLocks", "lockedAgents", "opencodeParentEnds", "ompHeldFiles", "restoreReplacedServer", "agentNamedGroups", "agentGroupNames", "agentGroupOf", "autoSendQueued", "autoTabNames",
+  "theme", "palette", "darkTheme", "lightTheme", "customThemes", "language", "sidebarRows", "agentOrder", "agentMarks", "agentLocks", "lockedAgents", "opencodeParentEnds", "ompHeldFiles", "restoreReplacedServer", "agentNamedGroups", "agentGroupNames", "agentGroupOf", "autoSendQueued", "autoTabNames",
   "showThinking", "quickReplies", "showQuickReplies", "showUsage", "usageCount",
   "usageGlance", "usageOrder", "usageHidden", "claudeLaunchMode", "codexLaunchMode",
   "claudeLaunchModel", "claudeLaunchEffort", "codexLaunchModel", "codexLaunchEffort",

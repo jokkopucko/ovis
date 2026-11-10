@@ -1,0 +1,38 @@
+/* Settings → Appearance → Theme file: the link to the format and Import on one line, at the row's end */
+.theme-file-actions {
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* Settings → Appearance: the themes imported from a file, a name and its sides on a line with its Remove */
+.theme-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.theme-files li {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+}
+
+.theme-file-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-file-kinds {
+  flex: 1 1 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
