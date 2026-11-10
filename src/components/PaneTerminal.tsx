@@ -1117,7 +1117,7 @@ export function PaneTerminal({
   }, [controls, active, paneId]);
 
   const secretInput = presented && paneId !== null && secretActive && !observing && !ended && connected && outputReady ? <SecretInput
-    key={`${paneId}:${secret.prompt}`} prompt={secret.prompt} active={active}
+    key={`${paneId}:${secret.prompt}`} prompt={secret.prompt} active={active} unchecked={socketRef.current?.typesSecret(secret.prompt) === true}
     onSend={(value) => socketRef.current?.sendSecret(paneId, secret.prompt, value, () => secretRef.current === secret.prompt) ?? null}
     onCancel={() => { if (socketRef.current?.connected) { cancelTouchRef.current(); socketRef.current.sendInput(paneId, "\u0003"); } }}
   /> : null;

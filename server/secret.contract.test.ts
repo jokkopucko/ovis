@@ -205,15 +205,16 @@ it("a secret herdr refused on a mirrored pane is answered as failed, with no Ent
 }, 15_000);
 
 it("a secret is taken at a prompt of the wider set, which the snapshot says the server takes", async () => {
-  for (const prompt of ["Password for 'https://alice@github.com':", "Enter passphrase for /home/alice/.ssh/id:work:"]) {
+  for (const prompt of ["Password for 'https://alice@github.com':", "Enter passphrase for /home/alice/.ssh/id:work:", "(alice@mac.local) Password:", "[sudo] alice의 암호:"]) {
     const { result, received, sends, frames } = await mirroredSecret(false, { visible: prompt, detection: prompt }, prompt);
     expect(result.ok).toBe(true);
     expect(sends.map((entry) => entry.method)).toEqual(["pane.send_text", "pane.send_keys"]);
     const expected = "fixture-value\r";
     expect(received).toEqual({ hash: createHash("sha256").update(expected).digest("hex"), length: expected.length });
-    expect((JSON.parse(frames) as { type: string; features?: string[] }[]).find((frame) => frame.type === "snapshot")?.features).toContain("secret-prompts-2");
+    const features = (JSON.parse(frames) as { type: string; features?: string[] }[]).find((frame) => frame.type === "snapshot")?.features;
+    expect(features).toEqual(expect.arrayContaining(["secret-prompts-2", "secret-prompts-3"]));
   }
-}, 30_000);
+}, 60_000);
 
 it("no passphrase is entered with the Enter key alone where ssh-keygen offers it", async () => {
   const prompt = "Enter new passphrase (empty for no passphrase):";

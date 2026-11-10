@@ -18,6 +18,7 @@ export const COMPOSER_KO: Record<string, string> = {
   "Update this PC to use masked input.": "비밀번호 입력창을 사용하려면 이 PC의 앱을 업데이트하세요.",
   "Check the terminal before entering the secret again.": "다시 입력하기 전에 터미널의 상태를 확인하세요.",
   "Sent directly to this terminal. Never saved as a draft or queued.": "이 터미널로 바로 보냅니다. 초안이나 전송 대기열에 저장하지 않습니다.",
+  "This PC is not updated: what you type goes to the terminal without checking that the prompt is still there.": "이 PC의 앱이 업데이트되지 않았습니다. 입력한 내용은 프롬프트가 아직 있는지 확인하지 않고 터미널로 보냅니다.",
   "Only the first {count} of {total} files were taken.": "파일 {total}개 중 앞의 {count}개만 가져왔습니다.",
   "Not sent: the page that started this agent left before it was ready. Send it now or discard it.": "보내지 않음: 이 에이전트를 시작한 페이지가 준비되기 전에 떠났습니다. 지금 보내거나 버리세요.",
   "Not sent: the agent started for this message has ended. Review the message before sending it.": "보내지 않음: 이 메시지를 위해 시작한 에이전트가 종료되었습니다. 보내기 전에 메시지를 확인하세요.",

@@ -14,10 +14,15 @@ export function displayWidth(text: string): number {
   return width;
 }
 
-/** The line a program prints before it reads a secret, up to its colon, as each of these writes it. */
-const SECRET_PROMPT = new RegExp(`^(?:${[
-  // sudo
-  /\[sudo\] password for [^:]+/,
+/**
+ * The line a program prints before it reads a secret, up to its colon, as each of these writes it. An ssh server
+ * that asks interactively (a Mac, PAM) and doas put `(user@host) ` before theirs. A colon of either width ends a
+ * prompt: sudo's in Chinese is full-width.
+ */
+const SECRET_PROMPT = new RegExp(`^(?:(?:doas )?\\([^\\s()]+@[^\\s()]+\\) )?(?:${[
+  // sudo names the user in the session's language (`[sudo] alice의 암호:`), so anything it asks after `[sudo] `;
+  // sudo-rs asks `[sudo: authenticate] Password:`, and what it asks in the clear is `[sudo: input needed] …`
+  /\[sudo(?:: authenticate)?\] [^:：]+/,
   // ssh: user@host, and an IPv6 host is written with colons
   /[^\s@]+@\S+['’]s password/,
   // su and login; git over HTTPS names the remote in quotes, its scheme's and port's colons and all
@@ -30,32 +35,64 @@ const SECRET_PROMPT = new RegExp(`^(?:${[
   /enter (?:old |new |same )?passphrase(?: again)?(?: \(empty for no passphrase\))?/,
   /enter pin(?: for [^:]+)?/,
   /(?:repeat|verify|confirm) password/,
-].map((prompt) => prompt.source).join("|")}):$`, "i");
+  // passwd
+  /(?:current|new|retype new) password/,
+  // mysql and mariadb; restic and pass say what the password is for
+  /enter password(?: for [^:]+)?/,
+  // gpg's pinentry on a terminal
+  /passphrase/,
+  // openssl, which asks again for a new key
+  /(?:verifying - )?enter (?:pem )?pass phrase(?: for [^:]+)?/,
+].map((prompt) => prompt.source).join("|")})[:：]$`, "i");
 
-// a yes/no choice is no secret: `y/n` in brackets, with more options or not (`[Y/n]`, `(y/n/q)`), or as the last
-// thing before a space, the colon or the line's end, after a space or a mark (` y/n:`, `,y/n:`, `-y/n:`). Not inside
-// a name: the letters around a path's slash (`/home/andy/notes/key`), two of its folders (`/home/y/n/key`), a
-// repository (`team-y/n-tools.git`), or the start of a wrapped row, which is tested before the rows above it are
-// joined (`…/compan` then `y/n-prod:`)
-const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|[^a-z0-9/]y\s*\/\s*n(?=\s|:|$)/i;
+// a yes/no choice is no secret: `y/n` in brackets, or after a space or a mark and before anything that does not
+// go on as a name (` y/n:`, `,y/n:`, `-y/n:`, ` y/n/a:`, `'y/n'`). Not inside a name: the letters around a path's
+// slash (`/home/andy/notes/key`), two of its folders (`/home/y/n/key`), a repository (`team-y/n-tools.git`), a
+// path that goes on (`team-y/n/repo.git`: more than one letter after the next slash is no third option), or the
+// start of a wrapped row, which is tested before the rows above it are joined (`…/compan` then `y/n-prod:`)
+const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|[^a-z0-9/]y\s*\/\s*n(?![a-z0-9_.-]|\/[a-z0-9_.-]{2})/i;
 
-// Both as a server without the `secret-prompts-2` feature has them: it answers `invalid_secret` to a
-// masked input for any other prompt, so a page sends such a server one only for these (ws.ts sendSecret).
-const EARLIER_PROMPT = /^(?:\[sudo\] password for [^:]+|[^\s@]+@[^\s:]+['’]s password|password(?: for [^:]+)?|enter passphrase(?: for key ['’][^\r\n]+['’])?|enter pin(?: for [^:]+)?|(?:repeat|verify|confirm) password):$/i;
-const EARLIER_CHOICE = /\?|y\s*\/\s*n/i;
+/** Whose reading of a prompt: 3 this one's, 2 a server's that lists `secret-prompts-2` and no more, 1 any server's before that. */
+export type PromptSet = 1 | 2 | 3;
+
+// The prompts and the yes/no test of servers already released, each as it shipped and not to be changed. Such a
+// server answers `invalid_secret` to a `secret` at a prompt its own copy does not read, so a page sends it one only
+// for a prompt of its set, and types what it reads beyond that (ws.ts sendSecret).
+const SHIPPED: Record<1 | 2, { prompt: RegExp; choice: RegExp }> = {
+  // every server with `secret-input`
+  1: {
+    prompt: /^(?:\[sudo\] password for [^:]+|[^\s@]+@[^\s:]+['’]s password|password(?: for [^:]+)?|enter passphrase(?: for key ['’][^\r\n]+['’])?|enter pin(?: for [^:]+)?|(?:repeat|verify|confirm) password):$/i,
+    choice: /\?|y\s*\/\s*n/i,
+  },
+  // one that lists `secret-prompts-2` (#3566, in 0.5.3's betas): git over HTTPS, ssh-add, ssh-keygen, an IPv6 host
+  2: {
+    prompt: new RegExp(`^(?:${[
+      /\[sudo\] password for [^:]+/,
+      /[^\s@]+@\S+['’]s password/,
+      /password(?: for (?:['’][^'’\r\n]+['’]|[^:]+))?/,
+      /enter passphrase(?: for [^\r\n]+)?/,
+      /bad passphrase, try again for [^\r\n]+/,
+      /enter (?:old |new |same )?passphrase(?: again)?(?: \(empty for no passphrase\))?/,
+      /enter pin(?: for [^:]+)?/,
+      /(?:repeat|verify|confirm) password/,
+    ].map((prompt) => prompt.source).join("|")}):$`, "i"),
+    choice: /\?|[([]\s*y\s*\/\s*n|[^a-z0-9/]y\s*\/\s*n(?=\s|:|$)/i,
+  },
+};
 
 /**
- * Deliberately narrow: prose mentioning passwords must not become an input prompt. `earlier`: only
- * the prompts a server without `secret-prompts-2` takes too, each of them a prompt without it as well.
+ * Deliberately narrow: prose mentioning passwords must not become an input prompt. `set`: as a server already
+ * released reads it (SHIPPED), for what a page may send that server.
  */
-export function secretPrompt(screen: string, columns = Infinity, earlier = false): string | null {
+export function secretPrompt(screen: string, columns = Infinity, set: PromptSet = 3): string | null {
+  const { prompt: asks, choice } = set === 3 ? { prompt: SECRET_PROMPT, choice: ASKS_CHOICE } : SHIPPED[set];
   const lines = screen.split(/\r?\n/);
   while (lines.length && !lines.at(-1)?.trim()) lines.pop();
   let line = lines.pop()?.trimEnd() ?? "";
   for (;;) {
     const candidate = line.trimStart();
-    if (!candidate || candidate.length > 120 || (earlier ? EARLIER_CHOICE : ASKS_CHOICE).test(candidate)) return null;
-    if ((earlier ? EARLIER_PROMPT : SECRET_PROMPT).test(candidate)) return candidate;
+    if (!candidate || candidate.length > 120 || choice.test(candidate)) return null;
+    if (asks.test(candidate)) return candidate;
     // herdr's screen-diff stream does not preserve xterm's soft-wrap flags. Only
     // continue a row that reached the right edge (a final space can be trimmed).
     const previous = lines.pop()?.trimEnd();
@@ -93,6 +130,49 @@ export function looksLikeKey(text: string): boolean {
   if (KEY_SHAPES.some((shape) => shape.test(text))) return true;
   return (text.match(/[A-Za-z0-9/+_]{24,}/g) ?? []).some((run) => /[a-z]/.test(run) && /[A-Z]/.test(run) && !/[a-z]{8}/.test(run)
     && (!run.includes("/") || run.length === 40) && (/\d/.test(run) || run.length >= 40));
+}
+
+/** The first set that reads `prompt` as a prompt: what a server must read for a `secret` sent at it to be taken. */
+export function promptSet(prompt: string): PromptSet {
+  return secretPrompt(prompt, Infinity, 1) === prompt ? 1 : secretPrompt(prompt, Infinity, 2) === prompt ? 2 : 3;
+}
+
+/**
+ * Whether the cursor is on the last line of the screen that holds text, which is where a prompt asks. `lines` are
+ * the screen's lines, a wrapped row joined to the line above it, and `starts` each line's first screen row. A
+ * program that has read its answer prints a line break and works on (git signing in, ssh-add reading its key,
+ * sudo running a quiet command) with its prompt still the last text: it asks no more then, and an answer sent
+ * again would wait in the terminal for whatever reads next, a shell for instance.
+ *
+ * Nearly every prompt ends in a space after its colon. When the colon fills the row's last column that space
+ * wraps, and the cursor is past it on the next row. herdr's attach stream draws each row at its own place, so the
+ * page has no wrapped row to join there: the space's row is a line of its own, blank. That is still the prompt
+ * asking: the cursor on the row right below, past its start (`cursorX`), on a blank row, under a prompt whose last
+ * row reaches the right edge (`columns`). After an answer the line break leaves the cursor at a row's start.
+ * herdr writes every cell of a row, so the page's lines are all as wide as the pane: the prompt's row is measured
+ * without its trailing spaces, to the edge or one column short of it (a colon there with its space in the last
+ * column, or a wide character that did not fit: secretPrompt joins rows by the same measure).
+ */
+export function promptHasCursor(lines: readonly string[], starts: readonly number[], cursorRow: number, cursorX: number, columns: number): boolean {
+  let last = lines.length - 1;
+  while (last >= 0 && !lines[last]!.trim()) last--;
+  if (last < 0) return false;
+  const below = last + 1 < starts.length ? starts[last + 1]! : Infinity;
+  if (cursorRow >= starts[last]! && cursorRow < below) return true;
+  return cursorRow === below && cursorX > 0 && displayWidth(lines[last]!.trimEnd()) >= columns - 1;
+}
+
+/**
+ * Whether a prompt on the screen still asks, for a pane whose cursor is known. `onLine`: promptHasCursor. `seen` is
+ * the prompt last seen with the cursor on it, which the caller keeps and passes back. A prompt whose cursor was on
+ * its line and has left was answered: the program printed its line break. One whose cursor was never seen on it asks
+ * for as long as it is the last text: a script that prints the prompt and a line break and reads below it
+ * (`echo "Password:"; read -s`), or a screen first seen after the answer, which reads as it always did.
+ */
+export function promptAsks(prompt: string | null, onLine: boolean, seen: string | null): { asks: boolean; seen: string | null } {
+  if (prompt === null) return { asks: false, seen: null };
+  if (onLine) return { asks: true, seen: prompt };
+  return { asks: seen !== prompt, seen };
 }
 
 // where no passphrase is an answer: ssh-keygen says so when it asks for a new one, and asks for the same again

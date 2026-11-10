@@ -1,7 +1,7 @@
 import type { ClientMessage, ClientRole, PendingMessage, ServerFeature, ServerMessage } from "../../shared/protocol.ts";
 import { receiptResumeId } from "./receiptResume.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
-import { secretPrompt } from "../../shared/secret-prompt.ts";
+import { promptSet } from "../../shared/secret-prompt.ts";
 import { ConnectionTrace } from "./connectionTrace.ts";
 import { abandonNativeReads, getTransport, type WebSocketLike } from "./transport.ts";
 
@@ -1221,8 +1221,26 @@ export class HerdrSocket {
   }
 
   /**
-   * Send once on this connection. Only a result callback is retained, never the value. A prompt that only a bridge
-   * with `secret-prompts-2` takes (shared/secret-prompt.ts) goes to any other bridge as typing at a masked prompt does:
+   * Whether a secret for `prompt` is typed to this bridge instead of sent as a `secret` (sendSecret): the bridge has
+   * said what it takes, and it does not take that prompt. Nothing on such a bridge checks that the prompt is still there.
+   */
+  typesSecret(prompt: string): boolean {
+    // not a bridge from before `submit`, which is told to update instead (sendSecret)
+    return this.featuresKnown && this.features.has("submit") && !this.takesPrompt(prompt);
+  }
+
+  /**
+   * Whether this bridge takes a `secret` at `prompt`: one every bridge with masked input reads, or one of a set of
+   * prompts it lists. `secret-prompts-2` is #3566's set, `secret-prompts-3` everything shared/secret-prompt.ts reads now.
+   */
+  private takesPrompt(prompt: string): boolean {
+    const set = promptSet(prompt);
+    return set === 1 || this.features.has("secret-prompts-3") || (set === 2 && this.features.has("secret-prompts-2"));
+  }
+
+  /**
+   * Send once on this connection. Only a result callback is retained, never the value. A prompt this bridge does
+   * not take a `secret` at (takesPrompt) goes to it as typing at a masked prompt does:
    * the value, then Enter, as `input`, never kept. That bridge would answer `invalid_secret`, and the masked field has
    * taken the input line's place, so nothing else could answer the prompt. No bridge checks its screen for typing, so
    * it goes only into the attachment the field was sent for, behind no send of this connection that the pane has yet to
@@ -1240,11 +1258,14 @@ export class HerdrSocket {
       // whether the server takes masked input: wait for it, as a submit does
       await Promise.race([this.featuresSeen, new Promise((resolve) => window.setTimeout(resolve, FEATURES_WAIT_MS))]);
       if (!(await this.probeSettled(socket))) { secret = ""; return DISCONNECTED; }
-      if (secretPrompt(prompt, Infinity, true) !== prompt) {
+      if (promptSet(prompt) !== 1) {
         // the wait ended before the bridge said what it takes: one that takes the prompt checks its own screen, so
         // nothing is typed past it
         if (!this.featuresKnown) { secret = ""; return CAPABILITIES_UNKNOWN; }
-        if (!this.features.has("secret-prompts-2")) {
+        if (!this.takesPrompt(prompt)) {
+          // a bridge from before `submit`: a message sent to it leaves no request here (submit answers unconfirmed), so
+          // the check below would not see one still on its way to the pane
+          if (!this.features.has("submit")) { secret = ""; return { ok: false, code: "unsupported", message: "Update this PC to use masked input." }; }
           if ([...this.requests.values()].some((request) => request.paneId === paneId)) { secret = ""; return { ok: false, code: "pane_busy", message: "Check the terminal before trying again." }; }
           if (this.inputLease(paneId) !== lease || !shown()) { secret = ""; return { ok: false, code: "prompt_changed", message: "Check the terminal before trying again." }; }
           // Enter in a frame of its own, as the input line's Enter is sent: a mirrored pane's shell may not take a `\r`

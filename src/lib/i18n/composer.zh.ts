@@ -18,6 +18,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Update this PC to use masked input.": "请更新此电脑上的应用以使用密码输入框。",
   "Check the terminal before entering the secret again.": "重新输入前，请先检查终端状态。",
   "Sent directly to this terminal. Never saved as a draft or queued.": "直接发送到此终端，不会存为草稿或加入待发队列。",
+  "This PC is not updated: what you type goes to the terminal without checking that the prompt is still there.": "此电脑上的应用尚未更新：你输入的内容会直接发送到终端，不会确认提示是否还在。",
   "Only the first {count} of {total} files were taken.": "{total} 个文件中只取了前 {count} 个。",
   "Not sent: the page that started this agent left before it was ready. Send it now or discard it.": "未发送：启动此代理的页面在其就绪前已离开。请立即发送或丢弃。",
   "Not sent: the agent started for this message has ended. Review the message before sending it.": "未发送：为这条消息启动的代理已结束。发送前请先检查消息。",

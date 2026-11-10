@@ -18,6 +18,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "Update this PC to use masked input.": "伏せ字の入力欄を使うには、この PC のアプリを更新してください。",
   "Check the terminal before entering the secret again.": "再入力する前にターミナルの状態を確認してください。",
   "Sent directly to this terminal. Never saved as a draft or queued.": "このターミナルに直接送信します。下書きや送信待ちには保存しません。",
+  "This PC is not updated: what you type goes to the terminal without checking that the prompt is still there.": "この PC のアプリは更新されていません。入力した内容は、プロンプトがまだあるか確認せずにターミナルへ送ります。",
   "Only the first {count} of {total} files were taken.": "{total} 個のファイルのうち先頭の {count} 個だけを受け取りました。",
   "Not sent: the page that started this agent left before it was ready. Send it now or discard it.": "未送信: このエージェントを起動したページが準備完了前に閉じられました。今すぐ送信するか破棄してください。",
   "Not sent: the agent started for this message has ended. Review the message before sending it.": "未送信: このメッセージのために起動したエージェントは終了しました。送信する前にメッセージを確認してください。",

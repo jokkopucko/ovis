@@ -13,7 +13,7 @@ import { type Client, connectionOf, presenceOf, relayClient, send, setMachineEve
 import { type AttachmentView, validGeometry } from "./terminals.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
-const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "take-over", "watch", "conversation-watch", "ping", "terminal-insert", "agent-only", "input-receipt", "conversation-search", "conversation-watch-detached", "prompt-watch", "secret-prompts-2"];
+const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "take-over", "watch", "conversation-watch", "ping", "terminal-insert", "agent-only", "input-receipt", "conversation-search", "conversation-watch-detached", "prompt-watch", "secret-prompts-2", "secret-prompts-3"];
 
 type Frame<K extends ClientMessage["type"]> = Extract<ClientMessage, { type: K }>;
 

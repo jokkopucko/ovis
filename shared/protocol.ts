@@ -1314,11 +1314,13 @@ export interface ClientConnectionTrace {
  * `conversation-search`: GET /api/pane/conversation/search answers; without it the browser offers no conversation search.
  * `conversation-watch-detached` and `prompt-watch`: a client may follow a pane's conversation and prompt without
  * attaching it (the `conversation-watch` and `prompt-watch` frames).
- * `secret-prompts-2`: a `secret` is taken at every prompt shared/secret-prompt.ts reads (git over HTTPS, ssh-add,
- * ssh-keygen, an IPv6 host's password too). A bridge without it answers `invalid_secret` at those, so the browser
- * types that secret as direct input instead (`input`, never kept), while its own screen still shows the prompt.
+ * `secret-prompts-2`: a `secret` is taken at the prompts #3566 added (git over HTTPS, ssh-add, ssh-keygen, an IPv6
+ * host's password). `secret-prompts-3`: at every prompt shared/secret-prompt.ts reads now (an interactive ssh
+ * sign-in, sudo in any language, passwd, mysql, gpg, openssl too). A bridge answers `invalid_secret` at a prompt
+ * outside what it lists, so the browser types that secret as direct input instead (`input`, never kept), while
+ * its own screen still shows the prompt.
  */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "secret-prompts-2";
+export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "secret-prompts-2" | "secret-prompts-3";
 
 export type ServerMessage =
   | { type: "machine-event"; event: MachineEvent }
