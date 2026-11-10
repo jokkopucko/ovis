@@ -270,8 +270,16 @@
   white-space: nowrap;
 }
 
+/* the query is read at the body size too. On iOS a pressed or focused field is armed to at least
+   --fs-input (lib/viewport.ts, styles.css .input[data-armed]) so Safari does not zoom the page into it:
+   this size leaves an armed field alone, and --field-fs hands the armed rule the body size to keep
+   when it is the larger one */
 @media (min-width: 641px) {
   .repo-diff-find .input {
+    --field-fs: var(--fs-md);
+  }
+
+  .repo-diff-find .input:not([data-armed]) {
     font-size: var(--fs-md);
   }
 }
