@@ -8,8 +8,9 @@
  * BROWSER_SCRIPTS: comma-separated list of scripts to run (default: all from ci-browser.sh)
  * BROWSER_EXCLUDE: comma-separated list of scripts to leave out of that list
  * BROWSER_RETRY: 0 runs a failed script once only (default: a failed script runs a second time)
- * BROWSER_ORDER: listed starts the scripts in ci-browser.sh's order (default: longest first, by
- *   scripts/ci-browser-timings.json, so a slow script never starts last and runs on alone)
+ * BROWSER_ORDER: listed starts the scripts in ci-browser.sh's order (default: the scripts that
+ *   scripts/ci-browser-timings.json does not time yet, then the others longest first, so a slow
+ *   script never starts last and runs on alone)
  * BROWSER_SHARD: "k/n" runs only shard k of n of the selected scripts, so n jobs split one lane
  *   (default: every selected script)
  * BROWSER_SCRIPT_TIMEOUT_SECONDS: how long one run of a script may take (default 600), so a hung
@@ -63,16 +64,22 @@ export function selectBrowserScripts(all: string[], include?: string, exclude?: 
   return [...new Set(included)].filter((script) => !excluded.includes(script));
 }
 
+/** The scripts by `seconds`, most first; the same seconds keep the listed order. */
+function mostFirst(scripts: string[], seconds: (script: string) => number): string[] {
+  return scripts.map((script, index) => ({ script, index, seconds: seconds(script) }))
+    .sort((a, b) => (a.seconds === b.seconds ? 0 : b.seconds - a.seconds) || a.index - b.index)
+    .map(({ script }) => script);
+}
+
 /**
- * The order the workers take the scripts in: longest first by `timings` (seconds a script took on
- * CI), so the slow ones start while every worker is still busy and the lane ends with short ones.
- * A script the table does not hold yet counts as its median; ties keep the listed order.
+ * The order the workers take the scripts in. A script `timings` does not hold starts first, in the
+ * listed order: nobody has measured it, so it may be the longest, and counted as a typical script
+ * it would start late and run on alone after every other worker is done. The scripts the table
+ * holds follow, longest first (seconds a script took on CI), so the slow ones start while every
+ * worker is still busy and the lane ends with short ones; ties keep the listed order.
  */
 export function longestFirst(scripts: string[], timings: Record<string, number>): string[] {
-  const estimate = timingEstimate(timings);
-  return scripts.map((script, index) => ({ script, index, seconds: estimate(script) }))
-    .sort((a, b) => b.seconds - a.seconds || a.index - b.index)
-    .map(({ script }) => script);
+  return mostFirst(scripts, (script) => Number.isFinite(timings[script]) ? timings[script]! : Infinity);
 }
 
 /** A script's seconds by `timings`; one the table does not hold counts as the table's median. */
@@ -87,7 +94,9 @@ function timingEstimate(timings: Record<string, number>): (script: string) => nu
  * BROWSER_SHARD "k/n": the scripts shard k of n runs, in their listed order. Longest first by
  * `timings`, each script goes to the shard with the least estimated time so far (at least a second
  * a script, so an empty table still deals them out in turn), so the shards end near the same time.
- * Every job computes the same split from the same table and list. Unset or empty keeps every script.
+ * A script the table does not hold counts here as the table's median, the best guess at its share
+ * of a shard's load (within its shard it still starts first). Every job computes the same split
+ * from the same table and list. Unset or empty keeps every script.
  */
 export function shardScripts(scripts: string[], timings: Record<string, number>, shard: string | undefined): string[] {
   if (shard === undefined || shard.trim() === "") return scripts;
@@ -98,7 +107,7 @@ export function shardScripts(scripts: string[], timings: Record<string, number>,
   const estimate = timingEstimate(timings);
   const loads = new Array<number>(total).fill(0);
   const mine = new Set<string>();
-  for (const script of longestFirst(scripts, timings)) {
+  for (const script of mostFirst(scripts, estimate)) {
     const target = loads.indexOf(Math.min(...loads));
     loads[target]! += Math.max(estimate(script), 1);
     if (target === index - 1) mine.add(script);
@@ -342,6 +351,11 @@ async function main(): Promise<void> {
   const retry = process.env.BROWSER_RETRY !== "0";
   const timeoutSeconds = scriptTimeoutSeconds(process.env.BROWSER_SCRIPT_TIMEOUT_SECONDS);
   const queue = process.env.BROWSER_ORDER === "listed" ? [...scripts] : longestFirst(scripts, timings);
+  const untimed = scripts.filter((script) => !Number.isFinite(timings[script]));
+  // Said in every job's log, so a table that has fallen behind the list is seen and refreshed.
+  if (process.env.BROWSER_ORDER !== "listed" && Object.keys(timings).length > 0 && untimed.length > 0) {
+    console.log(`[setup] Not in scripts/ci-browser-timings.json yet, so started first: ${untimed.join(", ")}`);
+  }
   const results: ScriptResult[] = [];
   const lock = { active: 0 };
 

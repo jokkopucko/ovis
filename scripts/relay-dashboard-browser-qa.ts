@@ -10,8 +10,9 @@
  *   bun scripts/relay-dashboard-browser-qa.ts                     # builds the shell itself
  *   ONLY='^(table|overview)' UI_EVIDENCE_DIR=<dir> bun scripts/relay-dashboard-browser-qa.ts
  *
- * relay-shell-browser-qa.ts calls `relayDashboardQa` with its own browser and shell host. Each check prints PASS or
- * FAIL with what it measured; any FAIL fails the run after every selected check ran.
+ * The browser lane (scripts/ci-browser.sh) runs it as an entry of its own, on a shell build, a shell host and a
+ * browser it makes itself. Each check prints PASS or FAIL with what it measured; any FAIL fails the run after every
+ * selected check ran, and a run with none ends by saying how many checks passed.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1314,7 +1315,9 @@ if (import.meta.main) {
   const site = servePagesSite(shellDir, 0, "127.0.0.1");
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   try {
-    await relayDashboardQa({ browser, origin: `http://127.0.0.1:${site.port}`, evidence: process.env["UI_EVIDENCE_DIR"] || null });
+    if (!browser) throw new Error("no browser");
+    const matrix = await relayDashboardQa({ browser, origin: `http://127.0.0.1:${site.port}`, evidence: process.env["UI_EVIDENCE_DIR"] || null });
+    console.log(`dashboard matrix: ${matrix.length} checks passed`);
   } finally {
     await closeMarked(browser);
     await site.stop(true);

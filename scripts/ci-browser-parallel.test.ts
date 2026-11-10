@@ -90,12 +90,22 @@ describe("parallel browser script deadline", () => {
 });
 
 describe("parallel browser script order", () => {
-  it("starts the longest scripts first, counts an unlisted one as the median, and keeps the listed order on a tie", () => {
-    const timings = { "a.ts": 10, "b.ts": 300, "c.ts": 50, "d.ts": 50 };
-    expect(longestFirst(["a.ts", "new.ts", "c.ts", "b.ts", "d.ts"], timings)).toEqual(["b.ts", "new.ts", "c.ts", "d.ts", "a.ts"]);
+  it("starts the longest scripts first and keeps the listed order on a tie", () => {
+    const timings = { "a.ts": 10, "b.ts": 300, "c.ts": 50, "d.ts": 50, "e.ts": 0 };
+    expect(longestFirst(["e.ts", "a.ts", "d.ts", "b.ts", "c.ts"], timings)).toEqual(["b.ts", "d.ts", "c.ts", "a.ts", "e.ts"]);
     expect(longestFirst(["a.ts", "b.ts"], {})).toEqual(["a.ts", "b.ts"]);
-    // an even-sized table's median is the mean of its two middle values: 155 s here, below b.ts
-    expect(longestFirst(["new.ts", "b.ts", "a.ts"], { "a.ts": 10, "b.ts": 300 })).toEqual(["b.ts", "new.ts", "a.ts"]);
+  });
+
+  // Nobody has measured it: counted as a typical script, relay-e2e (300 s) started 124th of 184
+  // and ran on alone for four minutes after every other script had ended.
+  it("starts a script the table does not hold before the longest one it does", () => {
+    const timings = { "a.ts": 10, "b.ts": 300, "c.ts": 50 };
+    expect(longestFirst(["a.ts", "new.ts", "c.ts", "b.ts"], timings)).toEqual(["new.ts", "b.ts", "c.ts", "a.ts"]);
+    // several of them keep the listed order among themselves, wherever the list holds them
+    expect(longestFirst(["a.ts", "new-1.ts", "b.ts", "new-2.ts", "c.ts", "new-3.ts"], timings))
+      .toEqual(["new-1.ts", "new-2.ts", "new-3.ts", "b.ts", "c.ts", "a.ts"]);
+    // seconds that are not a number time nothing
+    expect(longestFirst(["a.ts", "odd.ts", "b.ts"], { ...timings, "odd.ts": Number.NaN })).toEqual(["odd.ts", "b.ts", "a.ts"]);
   });
 
   it("times only scripts the serial lane runs", () => {
@@ -118,6 +128,31 @@ describe("parallel browser shards", () => {
     const table = JSON.parse(readFileSync(join(import.meta.dir, "ci-browser-timings.json"), "utf8")) as Record<string, number>;
     const shards = [1, 2, 3, 4].map((k) => shardScripts(listed, table, `${k}/4`));
     expect(shards.flat().sort()).toEqual([...listed].sort());
+  });
+
+  it("counts a script the table does not hold as the median in a shard's load, and deals it out in that place", () => {
+    // median 100. Longest first: a -> 1; new (100, listed before b) -> 2; b -> 2 (100 < 300); c -> 2.
+    // Dealt out first, as the workers start it, new would take shard 1 and a shard 2.
+    const timings = { "a.ts": 300, "b.ts": 100, "c.ts": 20 };
+    expect(shardScripts(["new.ts", "a.ts", "b.ts", "c.ts"], timings, "1/2")).toEqual(["a.ts"]);
+    expect(shardScripts(["new.ts", "a.ts", "b.ts", "c.ts"], timings, "2/2")).toEqual(["new.ts", "b.ts", "c.ts"]);
+    // every script 100: new-1 -> 1; new-2 -> 2; a -> 1. Counted as nothing, a would go first and both of them to shard 2.
+    const even = { "a.ts": 100, "b.ts": 100, "c.ts": 100 };
+    expect(shardScripts(["new-1.ts", "new-2.ts", "a.ts"], even, "1/2")).toEqual(["new-1.ts", "a.ts"]);
+    expect(shardScripts(["new-1.ts", "new-2.ts", "a.ts"], even, "2/2")).toEqual(["new-2.ts"]);
+  });
+
+  it("still deals every script to one shard, in the listed order, when the table holds only some of them", () => {
+    const listed = serialBrowserScripts();
+    const table = JSON.parse(readFileSync(join(import.meta.dir, "ci-browser-timings.json"), "utf8")) as Record<string, number>;
+    const half = Object.fromEntries(Object.entries(table).filter((_, index) => index % 2 === 0));
+    for (const total of [1, 2, 3, 4, 7]) {
+      const shards = Array.from({ length: total }, (_, k) => shardScripts(listed, half, `${k + 1}/${total}`));
+      expect(shards.flat().sort()).toEqual([...listed].sort());
+      for (const shard of shards) expect(shard).toEqual(listed.filter((script) => shard.includes(script)));
+      // the same split every time it is computed, as each job computes it for itself
+      expect(shards).toEqual(Array.from({ length: total }, (_, k) => shardScripts(listed, half, `${k + 1}/${total}`)));
+    }
   });
 
   it("deals the scripts out in turn without timings, and keeps every script without a shard", () => {

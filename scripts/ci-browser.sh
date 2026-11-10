@@ -77,6 +77,7 @@ run_script scripts/pane-lifetime-regression.ts
 run_script scripts/terminal-arrows-clicks-regression.ts
 run_script scripts/terminal-viewport-regression.ts
 run_script scripts/terminal-touch-burst-regression.ts
+run_script scripts/terminal-touch-burst-history-regression.ts
 run_script scripts/omo-question-wheel-regression.ts
 run_script scripts/mirror-scroll-demo-regression.ts
 run_script scripts/core-history-scroll-demo-regression.ts
@@ -99,6 +100,8 @@ run_script scripts/external-link-tab-regression.ts
 run_script scripts/key-bar-customization-demo-regression.ts
 run_script scripts/key-bar-hold-repeat-regression.ts
 run_script scripts/settings-pages-demo-regression.ts
+run_script scripts/settings-palette-search-demo-regression.ts
+run_script scripts/settings-rows-demo-regression.ts
 run_script scripts/ideal-state-idle-regression.ts
 run_script scripts/agent-entry-points-demo-regression.ts
 run_script scripts/agents-sign-in-demo-regression.ts
@@ -111,6 +114,8 @@ run_script scripts/theme-first-paint-demo-regression.ts
 run_script scripts/boot-loading-demo-regression.ts
 run_script scripts/old-safari-demo-regression.ts
 run_script scripts/security-summary-demo-regression.ts
+run_script scripts/security-summary-captures-light-demo-regression.ts
+run_script scripts/security-summary-captures-dark-demo-regression.ts
 run_script scripts/push-health-demo-regression.ts
 run_script scripts/alert-webhook-demo-regression.ts
 run_script scripts/relay-direct-demo-regression.ts
@@ -190,7 +195,10 @@ run_script scripts/chat-request-details-demo-regression.ts
 run_script scripts/chat-svg-figures-demo-regression.ts
 run_script scripts/chat-math-demo-regression.ts
 run_script scripts/terminal-paste-insert-demo-regression.ts
+run_script scripts/terminal-paste-insert-variants-demo-regression.ts
 run_script scripts/composer-fit-demo-regression.ts
+run_script scripts/composer-send-demo-regression.ts
+run_script scripts/composer-draft-demo-regression.ts
 run_script scripts/held-rows-demo-regression.ts
 run_script scripts/chat-working-line-demo-regression.ts
 run_script scripts/replay-clipboard-demo-regression.ts
@@ -221,6 +229,7 @@ run_script scripts/sidebar-agent-tree-demo-regression.ts
 run_script scripts/agent-lock-demo-regression.ts
 run_script scripts/agent-groups-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts
+run_script scripts/pane-mute-captures-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
 run_script scripts/prompt-dock-demo-regression.ts
 run_script scripts/prompt-card-timing-demo-regression.ts
@@ -229,6 +238,9 @@ run_script scripts/pi-questionnaire-browser-regression.ts
 run_script scripts/files-prompt-regression.ts
 run_script scripts/plugin-actions-demo-regression.ts
 run_script scripts/background-agent-detail-demo-regression.ts
+run_script scripts/background-agent-states-desktop-demo-regression.ts
+run_script scripts/background-agent-states-phone-demo-regression.ts
+run_script scripts/background-agent-states-korean-demo-regression.ts
 run_script scripts/artifacts-browser-regression.ts
 run_script scripts/palette-machines-demo-regression.ts
 run_script scripts/health-flap-demo-regression.ts
@@ -244,5 +256,7 @@ run_script scripts/machine-dialog-regression.ts
 run_script scripts/machine-conflict-regression.ts
 run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts
-# runs relay-shell-browser-qa.ts and relay-media-browser-qa.ts too
 run_script scripts/relay-e2e-regression.ts
+run_script scripts/relay-shell-browser-qa.ts
+run_script scripts/relay-dashboard-browser-qa.ts
+run_script scripts/relay-media-browser-qa.ts

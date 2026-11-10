@@ -253,6 +253,8 @@ bun scripts/sticky-modifiers-regression.ts # mobile held keys through real legac
 bun scripts/key-bar-customization-demo-regression.ts # mobile key layout, handle drag/edge scrolling, cancellation, saved combinations and migration on demo fixtures
 bun scripts/key-bar-hold-repeat-regression.ts # phone touch key-bar taps, holds (arrows and editing keys), swipes and sticky Ctrl on demo fixtures
 bun scripts/settings-pages-demo-regression.ts # every Settings page on a 390px and a 320px phone, and Back stepping out of the dialog
+bun scripts/settings-palette-search-demo-regression.ts # Settings found through the command palette: 46 searches in English, Korean, Japanese and Chinese open their page and group at 1440 and 390, and no earlier search steers a later opening
+bun scripts/settings-rows-demo-regression.ts # what Settings' pages hold: the dialog's own search, folded groups, merged rows and ↺, the account's PCs and sign-in, the welcome's sign-in, About and the Alerts chips; the OpenAI key's group on React's development build too
 bun scripts/agent-entry-points-demo-regression.ts # Add another agent… in New workspace and New worktree, Settings' agent list (installed, the tiles to install) and Open setup guide, and none of it on a watching device, at 1280 and 390
 bun scripts/terminal-served-font-regression.ts # a Terminal or Chat font only the PC has, served from the state folder's fonts/, at 1280 and 390, light and dark: the terminal is measured from it and attached once; no font named asks nothing
 bun scripts/interface-font-demo-regression.ts # Interface font at 390 and 1440: System and a typed list lead --font-ui, a reload keeps it, Default restores it; the message box takes the Chat font
@@ -320,7 +322,9 @@ bun scripts/chat-select-quote-demo-regression.ts # Quote on a chat selection: Qu
 bun scripts/chat-selection-turn-end-demo-regression.ts # a selection in progress while the agent's turn ends under it (#2650): a bare press and a drag at 1280 and a standing touch selection at 390, in a later reply and in the ending turn below its folding work, keep the words still in every painted frame and take exactly them; the chat is back at its end once the selection goes
 bun scripts/chat-quote-selection-end-regression.ts # Quote and Comment on a triple-click and a drag past a reply's last word (Claude and Codex), quoting the words alone; a selection from a user message or another reply still offers nothing; 1280 and 390
 bun scripts/diff-line-notes-demo-regression.ts # a note on a diff line (#1603): hover +, arrow keys and Enter, a tap and a 44px Add a note; it waits with the reply comments and goes first in the next message for an agent alone; too long is refused; no agent says why; 1280 and 390, Korean, Codex palette in UI_EVIDENCE_DIR
-bun scripts/composer-fit-demo-regression.ts   # one Send/Stop control, pending Send now actions, context/label fit and Chat font sizing
+bun scripts/composer-fit-demo-regression.ts   # the message box's status row: one Send/Stop control, pending Send now actions, context/label fit and the quota
+bun scripts/composer-send-demo-regression.ts  # sending from the message box: the send key, an immediate message's paste framing, held Send receipts, and Send or a drop while the keyboard composes a word
+bun scripts/composer-draft-demo-regression.ts # the draft in the message box: upload failure alerts, the agent's suggestion, skill completion, Chat font sizing, and its height, wrapping, zoom and scrolling
 bun scripts/plan-chip-demo-regression.ts      # the plan chip's step in progress: one row at 390 and 1440, cut when long, with tasks, the list's read states, offline and in a split, Korean too
 bun scripts/held-rows-demo-regression.ts      # held messages: the fold under an approval card, its button, a row's error
 bun scripts/chat-working-line-demo-regression.ts # the Working head: none before a working pane's first read, none under an answer drawn 300 ms or 1.5 s before the pane rests or read in with the last answer's start time or drawn while blocked, a finished turn not reopened when the agent begins another by itself, a turn kept at work until its answer is read after herdr rests, and an empty chat's greeting kept through a /clear's short working status
@@ -341,14 +345,17 @@ bun scripts/sidebar-background-workspaces-demo-regression.ts # Settings → Back
 bun scripts/agent-helpers-fold-demo-regression.ts # Settings → Fold helpers under their agent (#772): off by default; on, an agent's helpers fold under a counted line that keeps a blocked helper in sight, opens and stays open on this device, and gives way to the filter; 390 and 1280, light and dark
 bun scripts/sidebar-selection-contrast-demo-regression.ts # the selected workspace and agent rows in every theme entry, selected, hovered and focused: the fill alone with no leading stroke (its contrast recorded), every text at 4.5:1, a Highlight bar at 3:1 in forced colors; the table and the Codex shots at 1280 and 390 in UI_EVIDENCE_DIR
 bun scripts/pane-mute-demo-regression.ts    # Mute alerts from an agent's row menu: one shared list for push, droplet, chime and tab notification, two tabs of one server, a second PC's same-named pane, an older server and a watching device
+bun scripts/pane-mute-captures-demo-regression.ts # with UI_EVIDENCE_DIR, every state of Mute alerts at 1440 and 390, dark and light, and Korean on a phone; with none it says so and runs nothing
 bun scripts/prompt-dock-demo-regression.ts    # the prompt card docked over the input card: its place, its height on a short phone, the grip, a typed pick
 bun scripts/plugin-actions-demo-regression.ts # a plugin action that ends after the server stopped waiting: the late failure said, a traceback's height on a phone with its keyboard up
-bun scripts/background-agent-detail-demo-regression.ts # a running Claude subagent's detail sheet from the background-task list on demo fixtures: open, Refresh, Escape, a phone's Back, focus return, late answers dropped, and the unsupported and older-bridge notes
+bun scripts/background-agent-detail-demo-regression.ts # a running Claude subagent's detail sheet from the background-task list on demo fixtures: open, Refresh, Escape, a phone's Back, focus return, late answers dropped, and the unsupported note; 1440 and 390, dark and light
+bun scripts/background-agent-states-desktop-demo-regression.ts # the states a read of that detail can end in (loading, empty, cut, gone, moved, offline, an older bridge, a failed Refresh): what each says and what to do next; 1440 dark here, 390 light in -states-phone- and the same in Korean in -states-korean-
 bun scripts/font-swap-demo-regression.ts      # the app's faces arriving late on a slow link: a reader at the end of a chat stays there, a tab strip the user scrolled stays put
 bun scripts/narrow-pane-demo-regression.ts    # a split pane under 80 columns: the smaller font, a zoom, and a pane no font can bring to 80
 bun scripts/agent-skill-menu-demo-regression.ts [agent …] # each agent's `/` (and `$`) skill menu, its origin groups and its skill chips at 1280 and 390px, one case file per agent in scripts/skill-menu-cases/, screenshots in evidence/agent-skill-menu/<agent>/
 bun scripts/install-state-demo-regression.ts  # Install app against a real CDP install on a throwaway profile and HOME: never in the sidebar; Settings > Install shows the help or the prompt before, Installed in the app window and a tab of its origin, the help again after uninstall
-bun scripts/terminal-paste-insert-demo-regression.ts # a phone's Paste key into the terminal's input line and Insert without Enter on the demo shell: the caret, a held or refused clipboard read, the acknowledged clear, an older bridge; with UI_EVIDENCE_DIR, every state at 390 and 1440, light and dark, and Korean
+bun scripts/terminal-paste-insert-demo-regression.ts # a phone's Paste key into the terminal's input line and Insert without Enter on the demo shell: the caret, a held or refused clipboard read, the acknowledged clear, an older bridge; with UI_EVIDENCE_DIR, every state on a light phone and a light desktop
+bun scripts/terminal-paste-insert-variants-demo-regression.ts # with UI_EVIDENCE_DIR, every state of the same on a dark phone, a Korean phone and a dark desktop; with none it says so and runs nothing
 bun scripts/link-menu-demo-regression.ts       # a long press on a chat link in the Android app: Copy link, Open link and, where the WebView shares, Share link; a tap, other words, a mouse's menu, a swipe and a browser keep their own; with UI_EVIDENCE_DIR, the sheet at 390 in English and Korean
 bun scripts/external-link-tab-regression.ts  # the app's link opener in Chromium on loopback pages: with Reuse tab for external links on, a second link replaces the first one's tab; off, each gets its own tab with no opener; no referrer either way
 ```
@@ -1152,13 +1159,22 @@ build, then a summary on success or failure. The first failing script stops it.
 The parallel runner builds the demo once, prints a line when each script starts and ends (and
 every minute a script is still running), and keeps running the other scripts after one fails.
 It starts the longest scripts first, by `scripts/ci-browser-timings.json` (each script's median
-seconds on CI; one it does not list counts as the median), so the lane does not end with one slow
-script running alone while the other workers wait; `BROWSER_ORDER=listed` keeps
-`scripts/ci-browser.sh`'s order. The table only orders the scripts: a stale one costs time, not
-coverage, and a new script needs no entry. A script removed from or renamed in `ci-browser.sh`
-leaves the table too (`scripts/ci-browser-parallel.test.ts` fails on a name the lane does not
-run). When scripts get much slower, refresh it with each script's median over several recent
-runs' `[worker-N] PASS <script> (<seconds>s)` lines.
+seconds on CI), so the lane does not end with one slow script running alone while the other
+workers wait; `BROWSER_ORDER=listed` keeps `scripts/ci-browser.sh`'s order. A script the table
+does not hold starts before all of those, because nobody has measured how long it runs, and a
+`[setup]` line of the job's log names it; only for the balance of the hosted shards does it count
+as the table's median. The table only orders the scripts: a stale one costs time, not coverage,
+and a new script needs no entry. A script removed from or renamed in `ci-browser.sh` leaves the
+table too (`scripts/ci-browser-parallel.test.ts` fails on a name the lane does not run).
+`bun scripts/ci-browser-timings.ts --runs 5` refreshes it: it reads the lane's `summary.json`
+from the newest five green runs of `ci.yml` on main through `gh` and writes each listed script's
+median over them, counting only a pass on the first run; a listed script none of them holds
+keeps its seconds. It also takes `summary.json` files already on disk as arguments, and with
+neither it only sorts the table and drops what the lane no longer runs, which an entry edited by
+hand needs (`scripts/ci-browser-timings.test.ts` fails on a table the tool would write
+otherwise). Refresh it when that `[setup]` line names scripts, when scripts got much slower, and
+after a script was split, once the runs it reads are newer than the split (an older run still
+times the whole script under its old name).
 Each script's full output goes to `${CHECK_DIR:-.ci}/browser-logs/<script>.log`, with
 `summary.json` beside it; a failure prints the last 400 lines of its log and the log's path, and
 the job then fails. CI uploads `browser-logs` on success or failure; browser-main adds the evidence

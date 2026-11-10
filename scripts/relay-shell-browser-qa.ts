@@ -4,8 +4,9 @@
  * isolated herdr test session with its relay turned on, and the Bun relay (relay/bun.ts) between
  * them. It builds the shell itself (as `bun run build:shell` does) into a folder of its own, so it
  * never runs against a dist-shell/ older than the checkout. The browser lane (scripts/ci-browser.sh)
- * runs it through relay-e2e-regression.ts, which calls `relayShellQa` with its own server tree; run
- * alone, the script makes that tree itself.
+ * runs it as an entry of its own, against this checkout's server tree, which the script makes
+ * itself; relay-e2e-regression.ts calls `relayShellQa` only with another server tree
+ * (RELAY_E2E_SERVER_DIR, --skew).
  *
  * The shell accepts only a wss: relay, and the PC's server only a wss: relay origin, so both name
  * `wss://relay.test`: the server's outbound sockets reach the local relay through the service's
@@ -16,8 +17,8 @@
  *   UI_EVIDENCE_DIR=<dir> bun scripts/relay-shell-browser-qa.ts
  *
  * writes the screenshots and logs there (task-16-*, task-18-* for push alerts, task-9-* for the sign-in screen and
- * dashboard, dashboard-matrix/ for relay-dashboard-browser-qa.ts, which runs last on fixture fleets); without it the
- * checks still run.
+ * dashboard); without it the checks still run. The dashboard's acceptance matrix on fixture fleets is
+ * relay-dashboard-browser-qa.ts, a lane entry of its own: no PC, relay or herdr takes part in it.
  *
  * The sign-in screen and the dashboard need the account service, which the shell offers on app.ovis.sh alone
  * (lib/account/service.ts shellAccountServiceOf): that part routes https://app.ovis.sh to the same built shell and
@@ -59,7 +60,6 @@ import { assertCspClean, watchCsp } from "./csp-violations.ts";
 import type { CspWatch } from "./csp-violations.ts";
 import { servePagesSite } from "./pages-static.ts";
 import { relayBrowserSocket, relayServerTree } from "./relay-browser-bridge.ts";
-import { relayDashboardQa } from "./relay-dashboard-browser-qa.ts";
 import { closeMarked, whileOpen } from "./relay-qa-teardown.ts";
 import type { RelayServerTree } from "./relay-browser-bridge.ts";
 import { relayShellQaVersions } from "./relay-shell-qa-versions.ts";
@@ -67,7 +67,7 @@ import { openSettingsPage } from "./settings-page.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { answerServerChallenge, deriveServerId } from "../shared/relay-server-proof.ts";
 
-/** The shell's states (M6), push per PC and its rotation (M9) and version skew, against `tree`'s server (relay-e2e-regression.ts runs it too). */
+/** The shell's states (M6), push per PC and its rotation (M9) and version skew, against `tree`'s server (relay-e2e-regression.ts runs it against another server tree). */
 export async function relayShellQa(tree: RelayServerTree): Promise<void> {
   const { createServer, RelayService } = tree;
   const repo = join(import.meta.dir, "..");
@@ -1777,13 +1777,6 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     note(`csp: ${csp.length} watched pages, every one served the policy, no violation`);
     keep("task-16-states.txt", `# relay-shell-browser-qa: dist-shell at ${origin} (scripts/pages-static.ts), PC ${base} (createServer, relay ${RELAY} bridged to the Bun relay)\n${report.join("\n")}\n`);
     console.log(report.join("\n"));
-
-    // (o) the dashboard's acceptance matrix on fixture fleets: the same build and browser, no PC behind it
-    if (resolve(tree.dir) === resolve(repo)) {
-      if (!browser) throw new Error("no browser");
-      const matrix = await relayDashboardQa({ browser, origin, evidence: evidence ? join(evidence, "dashboard-matrix") : null });
-      console.log(`dashboard matrix: ${matrix.length} checks passed`);
-    }
   } finally {
     if (browser) await closeMarked(browser);
     site.stop(true);

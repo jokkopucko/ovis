@@ -3,6 +3,8 @@
  * Run after both builds, with FFMPEG pointing at ffmpeg and an isolated HERDR_TEST_SESSION.
  * Reuses the shell QA's Pages host and WebSocket bridge. All waits name an event; the browser
  * clock is frozen, so a readiness check cannot accidentally win by letting a timer elapse.
+ * The browser lane (scripts/ci-browser.sh) runs it as an entry of its own; relay-e2e-regression.ts
+ * calls `relayMediaQa` only with another server tree (RELAY_E2E_SERVER_DIR, --skew).
  */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
@@ -26,7 +28,7 @@ import { loadPagesSite, pagesResponse } from "./pages-static.ts";
 import { relayBrowserSocket, relayServerTree } from "./relay-browser-bridge.ts";
 import type { RelayServerTree } from "./relay-browser-bridge.ts";
 
-/** Todo 17's two-PC resource proof, against `tree`'s server (relay-e2e-regression.ts runs it too). */
+/** Todo 17's two-PC resource proof, against `tree`'s server (relay-e2e-regression.ts runs it against another server tree). */
 export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
   const { createServer, RelayService } = tree;
   const repo = join(import.meta.dir, "..");

@@ -10,11 +10,14 @@
  * `connect` seam, the browser's through Playwright's WebSocket routing (relay-browser-bridge.ts).
  * Every page runs on a frozen clock; a deadline is reached by advancing it, never by waiting.
  *
- * After its own journey (pairing, terminal, roster, reload, the relay lost mid-session, storage,
- * network, revoke) it runs relay-shell-browser-qa.ts (the shell's states, push per PC and its
+ * Its own journey is pairing, terminal, roster, reload, the relay lost mid-session, storage,
+ * network and revoke. Against this checkout's server that is the whole run: the browser lane
+ * (scripts/ci-browser.sh) runs relay-shell-browser-qa.ts (the shell's states, push per PC and its
  * rotation, version skew) and relay-media-browser-qa.ts (both PCs' files and media, a remote PC,
- * isolation in worker and blob mode, MP4 seek and Range), all against the same server tree. The
- * media part encodes its video with FFMPEG (default `ffmpeg`; CI: scripts/ci-ffmpeg.sh).
+ * isolation in worker and blob mode, MP4 seek and Range) as entries of their own. Against another
+ * server tree (the two commands below that name one) it runs both after its journey, on that tree,
+ * so one command still checks an older server from end to end. The media part encodes its video
+ * with FFMPEG (default `ffmpeg`; CI: scripts/ci-ffmpeg.sh).
  *
  *   bun scripts/relay-e2e-regression.ts                  this checkout's shell against this checkout's server
  *   RELAY_E2E_SERVER_DIR=<tree> bun scripts/relay-e2e-regression.ts
@@ -28,7 +31,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { $ } from "bun";
 import { chromium } from "playwright-core";
 import type { Browser, BrowserContext, Page } from "playwright-core";
@@ -393,9 +396,14 @@ async function main(): Promise<void> {
   // with no window open (relay-shell-browser-qa.ts), then both PCs' files and media: image, chat
   // attachment, PDF, rendered page and SVG escape attempts in worker and blob mode, a 30 MiB MP4 sought
   // to 80% with its Range at the right PC only, and a remote PC behind PC 1 (relay-media-browser-qa.ts).
-  note("relay e2e: shell states, push and its rotation");
-  await relayShellQa(tree);
-  note("relay e2e: files, media and isolation of two PCs");
-  await relayMediaQa(tree);
+  // Only against another server tree (RELAY_E2E_SERVER_DIR, --skew): for this checkout's server the
+  // browser lane runs both files as entries of their own, and here they would run a second time.
+  // (A whole lane run with RELAY_E2E_SERVER_DIR set does run them twice: those entries read it too.)
+  if (resolve(tree.dir) !== resolve(repo)) {
+    note("relay e2e: shell states, push and its rotation");
+    await relayShellQa(tree);
+    note("relay e2e: files, media and isolation of two PCs");
+    await relayMediaQa(tree);
+  }
   console.log("PASS relay end to end");
 }
