@@ -14,6 +14,16 @@ import type { usePaneLens } from "./usePaneLens.ts";
 import type { useSettingsDialog } from "./useSettingsDialog.ts";
 
 /**
+ * Whether a Back or Forward is landing whose entry the address bar's handler has not read: `dispatching`
+ * is the event the browser is dispatching (`window.event`, set for each listener and for what runs
+ * between two of them, and cleared when the dispatch ends), `read` the popstate the handler last read.
+ * It says no by itself once the dispatch is over, whether or not the handler ever heard the event.
+ */
+export function popUnread(dispatching: Event | undefined, read: Event | null): boolean {
+  return dispatching !== undefined && dispatching.type === "popstate" && dispatching !== read;
+}
+
+/**
  * Keeps the address and the history in step with the selection (lib/deepLink.ts): a move between
  * panes is an entry, Back and Forward select the entry's pane, and a file open over a pane is left
  * behind, or kept for Back and shown again on return (#3179), when another pane is selected.
@@ -85,6 +95,14 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
   // the last pop (lib/useFileViewer.ts numbers them) the handler found moves nothing
   const popStill = useRef(0);
   const [, setPopSettled] = useState(0);
+  // The popstate the handler last read. Back and Forward land on an entry before any listener hears
+  // of it, and React draws between two listeners: what an earlier one set (Settings closing, the file
+  // viewer's file) and any update still waiting (a roster, the New workspace dialog's fields). The
+  // place shown must not be written over that entry before the handler has read where it leads, so
+  // the write is held back until then (heldWrite) and made right after (released).
+  const readPop = useRef<Event | null>(null);
+  const heldWrite = useRef(false);
+  const [released, setReleased] = useState(0);
   const filePop = fileFromPop();
   const entryLink = fileLeft && filePop !== 0 && popStill.current !== filePop ? readLink(pageSearch()) : null;
   const fileLanding = entryLink !== null && viewing !== null && entryLink.machine === viewing.machineId && entryLink.pane === viewing.paneId &&
@@ -113,6 +131,9 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
     if (poppedTo.current && selectedPaneId === null && snapshot.panes.length > 0 && selectedMachine?.state === "connected") return;
     // a file shown again by a popped entry, before its pane is selected: the place is written once it lands
     if (fileLanding) return;
+    // the entry Back or Forward landed on is the handler's to read first: the place is written once it has
+    if (popUnread(window.event, readPop.current)) { heldWrite.current = true; return; }
+    heldWrite.current = false;
     const link: AppLink = {
       machine: selectedMachineId, workspace: linkWorkspaceId, workspaceSlug: linkSlug, pane: selectedPaneId, view: selectedPaneId ? view : null, file: linkFile,
       settings: settingsOpen ? settingsPage : null, section: settingsOpen && settingsPage === settingsLinkPage ? settingsLinkSection : null,
@@ -124,11 +145,12 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
     const search = linkSearch(link, pageSearch());
     const popped = poppedTo.current;
     poppedTo.current = false;
+    // a kept file is this run's alone, written or not: left set, a later replace would take the file off another entry
+    const kept = fileKept.current;
+    fileKept.current = false;
     // Back and Forward land where the address already says: nothing to write
     if (search === pageSearch()) return;
     const url = pageAddress(window.location.pathname, search, window.location.hash);
-    const kept = fileKept.current;
-    fileKept.current = false;
     if (previous !== null && !popped && !autoSelected && !settingsOpen && !newSessionOpen && isNavigation(previous, link)) {
       // a move that leaves the open file behind takes the file's entry: no entry is left between
       if (fileLeft && !kept) window.history.replaceState({ [NAV_KEY]: true }, "", url);
@@ -136,7 +158,7 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
       // a file left on the pane moved to opens over the move's entry, as its own (#3179)
       if (selectedPaneId !== null) restoreFileRef.current(selectedMachineId, selectedPaneId);
     } else window.history.replaceState(kept && !popped ? withoutFile(window.history.state) : window.history.state, "", url);
-  }, [locked, machines.length, snapshot, linkLanded, selectedMachine?.state, selectedMachineId, selectedPaneId, linkWorkspaceId, linkSlug, linkFile, fileLeft, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, newSessionOpen, newTab, newFields, wideScreen, sidebarCollapsed, autoSelected]);
+  }, [locked, machines.length, snapshot, linkLanded, selectedMachine?.state, selectedMachineId, selectedPaneId, linkWorkspaceId, linkSlug, linkFile, fileLeft, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, newSessionOpen, newTab, newFields, wideScreen, sidebarCollapsed, autoSelected, released]);
   useEffect(() => {
     shownSelection.current = { machineId: selectedMachineId, paneId: selectedPaneId };
   }, [selectedMachineId, selectedPaneId]);
@@ -208,6 +230,9 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
       sayShown();
     };
     const sayShown = (): void => {
+      // the place shown was held back while this entry was unread: the effect writes it over the entry,
+      // as it does the place any pop lands on
+      if (heldWrite.current) { poppedTo.current = true; return; }
       const shown = writtenLink.current;
       const search = shown ? linkSearch(shown, pageSearch()) : pageSearch();
       if (search !== pageSearch()) window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, search, window.location.hash));
@@ -216,7 +241,10 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
     // and the render that follows leaves its file behind
     const decidePop = (event: PopStateEvent): void => {
       popMoving.current = false;
+      readPop.current = event;
       onPop(event);
+      // the entry is read: the write held back for it is made now
+      if (heldWrite.current) { heldWrite.current = false; setReleased((count) => count + 1); }
       const pop = fileFromPopRef.current();
       if (pop !== 0 && !popMoving.current) { popStill.current = pop; setPopSettled((count) => count + 1); }
     };

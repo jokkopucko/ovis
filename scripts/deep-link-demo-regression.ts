@@ -23,10 +23,19 @@ const selected = (page: Page) => page.locator('.agents-sidebar .agent-select[ari
 const waitSelected = (page: Page, pane: string) => page.waitForFunction((id) => document.querySelector('.agents-sidebar .agent-select[aria-current="true"]')?.closest(".agent-item")?.getAttribute("data-pane") === id, pane, { timeout: 10_000 });
 const waitQuery = (page: Page, name: string, value: string | null) => page.waitForFunction(([key, want]) => new URLSearchParams(window.location.search).get(key) === want, [name, value] as const, { timeout: 10_000 });
 
-async function withPage(browser: Browser, search: string, run: (page: Page) => Promise<void>): Promise<void> {
+/** Opens `pane` from the sidebar, its resting group unfolded first. */
+async function openPane(page: Page, pane: string): Promise<void> {
+  const resting = page.locator(".agents-sidebar .agent-resting-label .agent-background-toggle");
+  await resting.waitFor();
+  if (await resting.getAttribute("aria-expanded") === "false") await resting.click();
+  await page.locator(`.agents-sidebar .agent-item[data-pane="${pane}"] .agent-select`).click();
+  await waitQuery(page, "pane", pane);
+}
+
+async function withPage(browser: Browser, search: string, run: (page: Page) => Promise<void>, settings: Record<string, unknown> = {}): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "en-US" });
   try {
-    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", fileOpen: "panel" })));
+    await context.addInitScript((extra) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", fileOpen: "panel", ...extra })), settings);
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -138,6 +147,44 @@ try {
         assert.equal(await selected(page), DOCS);
       });
       console.log("PASS opening another pane is a history entry and a lens switch is not; Back and Forward return to each pane in its lens");
+
+      // Back and Forward land on the entry's pane when a listener before the address bar's changes what
+      // is shown (Settings closing, the file viewer's file leaving): React draws that before the entry
+      // is read, and the place shown must not be written over the entry meanwhile.
+      // A jump back from Settings past the entry it opened over (the browser's Back menu):
+      await withPage(browser, `?ws=${wsOf(INFRA)}&pane=${encodeURIComponent(INFRA)}&view=chat`, async (page) => {
+        await waitSelected(page, INFRA);
+        await openPane(page, DOCS);
+        const settings = page.getByRole("dialog", { name: "Settings" });
+        await page.locator(".sidebar-footer-settings").click();
+        await settings.waitFor();
+        await page.waitForFunction(() => new URLSearchParams(window.location.search).has("settings"));
+        const length = await page.evaluate(() => history.length);
+        await page.evaluate(() => history.go(-2));
+        await waitSelected(page, INFRA);
+        await waitQuery(page, "pane", INFRA);
+        await settings.waitFor({ state: "detached" });
+        await page.goForward();
+        await waitSelected(page, DOCS);
+        await waitQuery(page, "pane", DOCS);
+        assert.equal(await page.evaluate(() => history.length), length, "the jump and Forward kept every entry");
+      });
+      // Forward off a file's entry that a move left under it (Reopen files on return):
+      await withPage(browser, `?ws=${wsOf(INFRA)}&pane=${encodeURIComponent(INFRA)}&file=README.md`, async (page) => {
+        const panel = page.locator("aside.file-panel");
+        await panel.locator(".file-viewer").waitFor();
+        await waitQuery(page, "file", "README.md");
+        await openPane(page, DOCS);
+        await panel.waitFor({ state: "detached" });
+        await page.goBack();
+        await waitSelected(page, INFRA);
+        await panel.locator(".file-viewer").waitFor();
+        await page.goForward();
+        await waitSelected(page, DOCS);
+        await waitQuery(page, "pane", DOCS);
+        await panel.waitFor({ state: "detached" });
+      }, { reopenFileOnReturn: true });
+      console.log("PASS a jump back from Settings and Forward off a kept file's entry land on the entry's pane");
 
       // an entry naming a PC since removed leaves the app where it is and says so, opens no dialog it
       // named; Forward still works

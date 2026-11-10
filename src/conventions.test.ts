@@ -205,6 +205,19 @@ describe("regular expressions", () => {
   });
 });
 
+describe("popstate listeners", () => {
+  // lib/useAddressBar.ts reads the entry every Back and Forward lands on, and holds the address back
+  // until it has. The order of the listeners does not matter to that; a listener that stops the
+  // event does, since the read then never comes.
+  it("never stop the event for the listeners after them", () => {
+    const offenders = scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name)).filter((file) => {
+      const source = read(file);
+      return /["'\x60]popstate["'\x60]/.test(source) && source.includes("stopImmediatePropagation");
+    });
+    fail(offenders, "A file that listens for popstate does not call stopImmediatePropagation: every popstate listener after it, lib/useAddressBar.ts's among them, must hear each Back and Forward. A listener for another event that needs the call goes in a file of its own.");
+  });
+});
+
 describe("terminal mount", () => {
   // The attach stream is the only writer of the terminal and herdr owns scrollback (AGENTS.md): xterm
   // keeps none, or the fit addon reserves a scrollbar column and the last columns go dead.
