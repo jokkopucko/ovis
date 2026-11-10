@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError, herdrRpc, paneGet, paneProcessInfo, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveBeside, paneMoveToNewTab, tabClose, tabCreate, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "../herdr/client.ts";
 import { claudeInputDraft, viewportShowsLive } from "../claude-input.ts";
@@ -1405,6 +1405,40 @@ describe("herdr-core adapter, Ovis's layout document", () => {
       root: { split: "right", ratio: 0.5, first: { split: "down", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t3" } }, second: { leaf: "t2" } } }] }] });
     const layout = (await sessionSnapshot(socket)).layouts[0]!;
     expect(layout.splits.map((split) => split.id)).toEqual(["split_0_root", "split_1_0"]);
+  });
+
+  /** What `terminal.run` was asked when `t1`, working in `cwd`, is split on `machine`. */
+  const splitRun = async (cwd: string, machine?: string): Promise<Record<string, unknown>> => {
+    const runs: Record<string, unknown>[] = [];
+    const prefix = machine ? `${machine}/` : "";
+    const terminals = [terminal(`${prefix}t1`, { cwd, labels: { "herdr.space": "S", "herdr.tab": "T" } })];
+    const { socket } = await setup(terminals, {
+      ...documents().handlers,
+      "terminal.run": (params) => {
+        runs.push(params);
+        const record = terminal(`${prefix}t2`, { labels: params["labels"] as Record<string, string> });
+        terminals.push(record);
+        return record;
+      },
+    }, undefined, machine);
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket);
+    return runs[0]!;
+  };
+
+  it("splits a pane whose folder is there in that folder", async () => {
+    expect((await splitRun(tmpdir()))["cwd"]).toBe(tmpdir());
+  });
+
+  it("splits a pane whose folder is gone into a shell at this PC's home", async () => {
+    expect((await splitRun("/nonexistent/removed-worktree"))["cwd"]).toBe(homedir());
+  });
+
+  it("splits a pane on another machine in its folder, which this PC's disk does not hold", async () => {
+    expect(await splitRun("/nonexistent/only-on-lab", "lab")).toMatchObject({ on: "lab-id", cwd: "/nonexistent/only-on-lab" });
+  });
+
+  it("splits a pane that reports no folder into a shell given none", async () => {
+    expect(await splitRun("")).not.toHaveProperty("cwd");
   });
 
   it("writes again at the new version when another writer came first, once", async () => {
