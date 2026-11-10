@@ -128,6 +128,18 @@ export interface ListedFor {
   readonly running: () => boolean;
 }
 
+/** The sign-in a listing is made for without a press (`listThisPc`): its account, and whether the attempt it began still runs. */
+export interface ListedAs {
+  readonly account: string;
+  /** asked once the window opened, and right before every write to the directory and to the PC: false once the screen gave the attempt up */
+  readonly running: () => boolean;
+  /**
+   * Told how far the listing came, for a screen that gives it up: `opened` once this PC opened its pairing
+   * window, `writing` right before the first write to the directory is sent (one sent cannot be taken back).
+   */
+  readonly reached?: (step: "opened" | "writing") => void;
+}
+
 /**
  * Lists this PC in the account's directory and opens its approve-here pairing window; the PC as
  * listed. An entry the card would stop showing before the next relist (`RELIST_MS`) is listed anew,
@@ -136,16 +148,25 @@ export interface ListedFor {
  * Every directory call is made as the sign-in stored when the listing began (`forSignIn`): one made meanwhile
  * (another tab signed out and in) is never written to. Listing again `for` a wait writes nothing, and throws
  * `AddPcWaitOver`, when the PC that answers or the stored account is not the wait's, or the wait no longer runs.
+ * Listing `as` a sign-in that just finished (no press was made) writes nothing either, and throws the same,
+ * when the account stored at that read is another one or none, or the attempt was given up. A listing whose
+ * wait or attempt ended while its entry was being written does not tell the PC the account either.
  */
-export async function listThisPc(service: AccountService, options: { relistMs: number; for?: ListedFor }): Promise<ListedPc> {
+export async function listThisPc(service: AccountService, options: { relistMs: number; for?: ListedFor; as?: ListedAs }): Promise<ListedPc> {
   const wait = options.for;
+  const as = options.as;
   const offer = decodeOffer((await requestRelayLink({ localOnly: true })).url);
   if (offer === null) throw new Error("This PC's pairing link did not parse");
+  as?.reached?.("opened");
   if (wait !== undefined && offer.server_id !== wait.serverId) throw new AddPcWaitOver("pc");
+  // given up while the window was being opened: nothing more is read or written for it
+  if (as !== undefined && !as.running()) throw new AddPcWaitOver("ended");
   const session = await service.session();
   if (wait !== undefined && session?.account !== wait.account) throw new AddPcWaitOver("sign-in");
+  if (as !== undefined && session?.account !== as.account) throw new AddPcWaitOver("sign-in");
   const directory = session === undefined ? service : service.forSignIn(session);
-  const running = (): void => { if (wait !== undefined && !wait.running()) throw new AddPcWaitOver("ended"); };
+  const runs = (): boolean => (wait === undefined || wait.running()) && (as === undefined || as.running());
+  const running = (): void => { if (!runs()) throw new AddPcWaitOver("ended"); as?.reached?.("writing"); };
   const listed = (await directory.listPcs()).find((pc) => pc.server_id === offer.server_id);
   if (listed !== undefined && Date.now() - Date.parse(listed.added_at) >= NEW_PC_MS - options.relistMs) {
     running();
@@ -156,7 +177,8 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   running();
   await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });
   // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
-  if (session) {
+  // (not for a wait or an attempt that ended while the entry was written: nobody waits for this PC under it)
+  if (session && runs()) {
     // never in the way of pairing, so not awaited: a failing or hanging setup never holds the pairing wait, and the
     // relay status says when this PC has no pass (404: an Ovis from before relay passes)
     void apiFetch("/api/account/relay-account", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account: session.account }) }).then(
