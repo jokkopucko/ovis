@@ -22,7 +22,7 @@ import { useEdgeFades } from "../lib/useEdgeFades.ts";
 import "./Machines.css";
 import "./SidebarSections.css";
 import { useT } from "../lib/i18n.ts";
-import { FoundHerdrChoices } from "./FoundHerdrChoices.tsx";
+import { asksChoice, FoundHerdrChoices } from "./FoundHerdrChoices.tsx";
 import { useSettings } from "../lib/settings.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway, sshFailure } from "../lib/userError.ts";
@@ -48,6 +48,12 @@ export function pcListExit(page: { nativeApp: boolean; relayShell: boolean; path
 }
 
 /** The PC header's state word; "connected" is the quiet default and shows as a dot alone, every other state also writes its word under the name. */
+/** The PC waits on a fresh choice of what to connect to: the card's own rule (FoundHerdrChoices), so the dot, the menu
+ *  line and the line under the header never call a question an error, nor what was chosen and is gone a question */
+function asksWhatToConnect(machine: Machine): boolean {
+  return machine.action_required === "choose_herdr" && asksChoice(machine.error, machine.found_herdr_sessions ?? [], machine.found_ovis ?? []);
+}
+
 export const STATE_WORD: Readonly<Record<MachineState, string>> = {
   connecting: "Connecting…",
   connected: "Connected",
@@ -406,7 +412,8 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     if (save && typed !== "" && typed !== machine.name) void mutate("PATCH", { name: typed });
   };
   // how the PC is reached follows its state word; a machine of herdr-core says where it is managed instead
-  const stateWords = machine.action_required === "setup" ? t("Setup needed") : t(STATE_WORD[machine.state]);
+  // a PC waiting on a choice (choose_herdr) or a setup waits on the user: neither is told as a connection error
+  const stateWords = machine.action_required === "setup" ? t("Setup needed") : asksWhatToConnect(machine) ? t("Choose what to connect to") : t(STATE_WORD[machine.state]);
   const stateLine = machine.kind === "hc" ? stateWords : `${stateWords} · ${machine.kind === "relay" ? t("through the relay") : t("over SSH")}`;
   const manageNote = machine.kind === "hc" ? t("A machine of herdr-core. Add, rename or remove it with hc machine or in the Herdr app.") : machine.herdr_profile_id ? t("Managed by herdr. Rename, disable or remove it there.") : null;
   const manageItems = (): RowMenuItem[] => manageActions(machine, { busy, canHide }).map(({ id, disabled }): RowMenuItem => {
@@ -473,7 +480,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     /> : <span className="machine-name" title={machine.name}>{machine.name}</span>}
     {/* the computer this app's server runs on; on a phone "this PC" read as the phone */}
     {machine.kind === "local" && <span className="machine-kind" title={t("The computer this app runs on")}>{t("Host")}</span>}
-    <span className={`machine-dot is-${machine.action_required === "setup" ? "setup" : machine.state}`} title={machine.action_required === "setup" ? t("Setup needed") : t(STATE_WORD[machine.state])} aria-hidden="true" />
+    <span className={`machine-dot is-${machine.action_required === "setup" || asksWhatToConnect(machine) ? "setup" : machine.state}`} title={stateWords} aria-hidden="true" />
   </>;
   // the PC's name is the head of its workspaces, and the caret beside its + the one fold over them
   return <section className={`machine-group${current ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}${compact ? "" : " is-two-line"}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
@@ -578,7 +585,7 @@ function MachineActionNotice({ machine, onSetup }: { machine: Machine; onSetup(m
   </div>;
   // another app's bridge runs on this PC: neither an update from here nor an approval fixes that,
   // so it is named as what it is, with the server's reason and a plain reconnect
-  if (machine.action_required === "choose_herdr" && (machine.found_herdr_sessions || machine.found_ovis) && machine.target) return <FoundHerdrChoices sessions={machine.found_herdr_sessions ?? []} ownOvis={machine.found_ovis} coreRefusal={machine.target.own_ovis && !machine.found_ovis?.length && machine.error ? machineErrorText(machine.error, t) : undefined} busy={busy || !machine.enabled} onChoose={(choice) => onSetup({ ...machine, target: { ...machine.target!, ...choice, ...(machine.herdr_profile_id ? { session: machine.target?.session } : {}) } }, false)} />;
+  if (machine.action_required === "choose_herdr" && (machine.found_herdr_sessions || machine.found_ovis) && machine.target) return <FoundHerdrChoices sessions={machine.found_herdr_sessions ?? []} ownOvis={machine.found_ovis} error={machine.error} busy={busy || !machine.enabled} onChoose={(choice) => onSetup({ ...machine, target: { ...machine.target!, ...choice, ...(machine.herdr_profile_id ? { session: machine.target?.session } : {}) } }, false)} />;
   if (machine.action_required === "bridge_conflict") return <div className="machine-action" role="alert">
     <p className="machine-action-text"><strong>{t("Bridge connection conflict")}</strong><span>{t("Update the apps connected to this PC to the same version, or disconnect the other app, then reconnect here. Sessions keep running.")}</span>{machine.error && <span className="machine-action-reason">{machineErrorText(machine.error, t)}</span>}</p>
     <button type="button" className="btn btn-primary" onClick={() => onSetup(machine, false)}>{t("Reconnect")}</button>
@@ -694,13 +701,14 @@ export function MachineActionBanner({ machines, onSetup }: { machines: Machine[]
   const update = first.action_required === "update_bridge";
   const login = first.action_required === "windows_login";
   const startupFailed = first.action_required === "windows_start_failed";
+  const choosing = asksWhatToConnect(first);
   const others = waiting.length > 1 ? t(" (+{n} more)", { n: waiting.length - 1 }) : "";
   const own = ownOvisAction(first);
   // a failed update of it says so here; the PC's card says why
   const failure = ownUpdateFailure(first);
   return <div className="update-notice" role="status">
-    <span title={failure === null ? undefined : machineErrorText(failure, t)}>{own ? t(failure ? "Updating {name}'s own Ovis failed{others}." : own.updatable ? "{name}'s own Ovis needs an update to reconnect{others}." : "{name}'s own Ovis needs an update on that PC{others}.", { name: first.name, others }) : t(startupFailed ? "Windows desktop startup failed on {name}{others}." : login ? "{name} is waiting for Windows sign-in{others}." : conflict ? "{name} has a bridge connection conflict{others}." : update ? "{name} needs a bridge update to reconnect{others}." : "{name} needs web access setup{others}.", { name: first.name, others })}</span>
-    <button type="button" className="btn" onClick={() => update ? void machineRequest(`/${encodeURIComponent(first.id)}/update-bridge`, "POST", shownRevision(first)).catch(() => onSetup(first, true)) : onSetup(first, false)}>{own ? t(own.updatable ? "Update this PC's Ovis" : "Reconnect") : t(login || startupFailed ? "Review startup options" : conflict ? "Reconnect" : update ? "Update bridge" : "Set up web access")}</button>
+    <span title={failure === null ? undefined : machineErrorText(failure, t)}>{own ? t(failure ? "Updating {name}'s own Ovis failed{others}." : own.updatable ? "{name}'s own Ovis needs an update to reconnect{others}." : "{name}'s own Ovis needs an update on that PC{others}.", { name: first.name, others }) : t(startupFailed ? "Windows desktop startup failed on {name}{others}." : login ? "{name} is waiting for Windows sign-in{others}." : conflict ? "{name} has a bridge connection conflict{others}." : update ? "{name} needs a bridge update to reconnect{others}." : choosing ? "Choose what {name} connects to{others}." : "{name} needs web access setup{others}.", { name: first.name, others })}</span>
+    <button type="button" className="btn" onClick={() => update ? void machineRequest(`/${encodeURIComponent(first.id)}/update-bridge`, "POST", shownRevision(first)).catch(() => onSetup(first, true)) : onSetup(first, false)}>{own ? t(own.updatable ? "Update this PC's Ovis" : "Reconnect") : t(login || startupFailed ? "Review startup options" : conflict ? "Reconnect" : update ? "Update bridge" : choosing ? "Choose" : "Set up web access")}</button>
     <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => { const next = [...dismissed, ...waiting.map(noticeKey)]; setDismissed(next); writeDismissed(next); }}><X /></button>
   </div>;
 }
