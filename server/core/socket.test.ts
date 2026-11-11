@@ -97,6 +97,33 @@ it("offers no watch where none can be drawn (herdr-core), and ends a watch sent 
   expect(frames.map((frame) => frame.code)).toEqual(["invalid_geometry"]);
 });
 
+it("refuses a watch whose pane id is no nonempty string before anything is started for it", async () => {
+  const watched: unknown[] = [];
+  const unwatched: unknown[] = [];
+  const handler = createSocket({
+    clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false,
+    watchPane: (_client, paneId) => { watched.push(paneId); }, unwatchPane: (_client, paneId) => { unwatched.push(paneId); },
+    end() {}, holdPending() {}, attachments: new Map(),
+    clientSnapshot: async () => ({ workspaces: [], panes: [], agents: [], layouts: [] }) as unknown as SessionSnapshot, herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
+  });
+  const frames: { type: string; code?: string }[] = [];
+  const client: Client = { data: connectionData({ deviceId: undefined, readOnly: true }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (raw: string) => { frames.push(JSON.parse(raw)); return raw.length; }, close() {} };
+  await handler.open!(client);
+  frames.length = 0;
+  // an array is another Map key every time: each such frame would start one more observe process, which no unwatch could name
+  // and an id shaped as an option would be read as one by herdr's own command line, which is handed the id as it came
+  // and one no pane has: megabytes of it would be logged and sent back for each frame
+  for (const paneId of [["w1:p1"], 7, null, undefined, "", "   ", { id: "w1:p1" }, "--help", "-V", "--socket=/tmp/x", " --help", "p".repeat(257), "w1:p1\u0000", "w1\np1"]) {
+    await handler.message!(client, JSON.stringify({ type: "watch", pane_id: paneId, cols: 80, rows: 24 }));
+    await handler.message!(client, JSON.stringify({ type: "unwatch", pane_id: paneId }));
+  }
+  expect([watched, unwatched]).toEqual([[], []]);
+  expect(frames.map((frame) => frame.code)).toEqual(Array.from({ length: 28 }, () => "invalid_watch"));
+  // a watching device's own pane is still watched, and so is the longest id taken
+  for (const paneId of ["w1:p1", "p".repeat(256)]) await handler.message!(client, JSON.stringify({ type: "watch", pane_id: paneId, cols: 80, rows: 24 }));
+  expect(watched).toEqual(["w1:p1", "p".repeat(256)]);
+});
+
 it("delivers a session snapshot larger than the transport budget to a socket with nothing queued (#2566)", async () => {
   // a large session: its snapshot alone serializes past the 1 MiB the transport may hold queued
   const snapshot = { workspaces: [], panes: Array.from({ length: 600 }, (_, i) => ({ pane_id: `p${i}`, cwd: `/w/${"x".repeat(2000)}` })), agents: [], layouts: [] } as unknown as SessionSnapshot;

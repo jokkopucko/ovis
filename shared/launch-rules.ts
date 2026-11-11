@@ -41,6 +41,17 @@ export const MODEL_NAME = /^[A-Za-z0-9][\w.:/-]*(?:\[[A-Za-z0-9]+\])?$/;
 /** the most a first message (and a queued chat message, server/core/composer.ts pendingText) may hold */
 export const MAX_FIRST_MESSAGE_CHARS = 20_000;
 
+/**
+ * A message without the line breaks it ends in, read from its end. As a pattern (`/[\r\n]+$/`) this starts over at
+ * every line break of a run that does not end the text, which costs the run's length squared: 40,000 line breaks
+ * before one letter took 1.4 s, on the server's only thread and before any length was checked.
+ */
+export function withoutTrailingBreaks(text: string): string {
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === "\n" || text[end - 1] === "\r")) end--;
+  return end === text.length ? text : text.slice(0, end);
+}
+
 /** terminal control characters a queued message may not carry; TAB, LF and CR are text there */
 const MESSAGE_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 /** every control character, TAB and line breaks included: one argument on a command line is one line */

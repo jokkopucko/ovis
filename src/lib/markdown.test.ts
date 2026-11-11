@@ -7,7 +7,7 @@ import { FILE_LINK_COUNT, FILE_LINK_LIMIT, linkFilePaths } from "../components/F
 import { HighlightedCode } from "../components/HighlightedCode.tsx";
 import { OpenFileContext } from "./filePaths.ts";
 import { SettingsProvider } from "./settings.ts";
-import { FOLD_CODE_AFTER_LINES, FOLD_OUTPUT_CHARS, FOLDED_CODE_LINES, foldCode, foldToolOutput, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, shownText, trimUrl, type InlineNode, type ListBlock } from "../../shared/markdown.ts";
+import { FOLD_CODE_AFTER_LINES, FOLD_OUTPUT_CHARS, FOLDED_CODE_LINES, foldCode, foldToolOutput, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, shownText, trimUrl, type InlineNode, type ListBlock, markdownFileTarget } from "../../shared/markdown.ts";
 
 describe("parseMarkdown", () => {
   it("renders inline and display math while leaving fenced code untouched", async () => {
@@ -153,6 +153,34 @@ describe("inline markdown", () => {
     }
     // the same share, its slashes written as JSON escapes
     expect(parseInline(':codex-file-citation{path="\\u002f\\u002fserver/share/a.txt" purpose="output"}').some((node) => node.type === "file")).toBe(false);
+  });
+
+  it("opens a Markdown link to a path only where a file:/// link could: no network share, however it is written", () => {
+    // two separators in front name a share on a Windows PC: its file viewer would ask that host for the file, with
+    // the user's sign-in. Percent-encoded too, which the link's path is decoded from
+    for (const target of [
+      "//server/share/a.md", "%5C%5Cserver%5Cshare%5Ca.md", "%2F%2Fserver%2Fshare%2Fa.md", "/%5Cserver/share/a.md", "%5C/server/share/a.md",
+      "//server/share/a.md:12", "%5C%5Cserver%5Cshare%5Ca.md#L3", "//server/share/a%20b.md",
+      // after `~/` too: the server reads what follows it against the home folder, where two separators are a share again
+      "~///server/share/a.md", "~/%5C%5Cserver%5Cshare%5Ca.md", "%7E///server/share/a.md", "~/%2F%5Cserver/share/a.md", "~///server/share/a.md:12", "~///server/share/a.md#L3",
+    ]) {
+      expect(parseInline(`[report](${target})`).some((node) => node.type === "file"), target).toBe(false);
+      expect(markdownFileTarget(target), target).toBeNull();
+    }
+    for (const target of ["\\\\server\\share\\a.md", "~/\\\\server\\share\\a.md", "~//\\server/share/a.md"]) expect(markdownFileTarget(target), target).toBeNull();
+    // two separators further in are a path, and so is one in front, after `~/` as well
+    expect(markdownFileTarget("/home/u//a.md")).toBe("/home/u//a.md");
+    expect(markdownFileTarget("/srv/a.md")).toBe("/srv/a.md");
+    expect(markdownFileTarget("~/notes//a.md")).toBe("~/notes//a.md");
+    expect(markdownFileTarget("~//notes/a.md")).toBe("~//notes/a.md");
+    // WSL's files are this PC's own, under either of the names Windows gives them, and open as before
+    for (const [target, path] of [
+      ["//wsl$/Ubuntu/home/u/a.md", "//wsl$/Ubuntu/home/u/a.md"], ["//wsl.localhost/Ubuntu/home/u/a.md:12", "//wsl.localhost/Ubuntu/home/u/a.md:12"],
+      ["%5C%5Cwsl$%5CUbuntu%5Ca.md", "\\\\wsl$\\Ubuntu\\a.md"], ["//WSL.LOCALHOST/Ubuntu/a.md", "//WSL.LOCALHOST/Ubuntu/a.md"],
+    ] as const) expect(markdownFileTarget(target), target).toBe(path);
+    expect(markdownFileTarget("\\\\wsl$\\Ubuntu\\a.md")).toBe("\\\\wsl$\\Ubuntu\\a.md");
+    // no other host by a name like them
+    for (const target of ["//wsl$evil/share/a.md", "//wsl.localhost.example.com/share/a.md", "//wsl$@80/share/a.md", "//wsl$", "%5C%5Cwsl$evil%5Ca.md"]) expect(markdownFileTarget(target), target).toBeNull();
   });
 
   it("leaves the markdown after an unfinished Codex citation as markdown, and reads a brace inside a quoted path", () => {

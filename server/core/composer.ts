@@ -4,6 +4,7 @@
  * itself (createSubmitText), handed the state it reads. Pending delivery and the immediate send
  * share them.
  */
+import { withoutTrailingBreaks } from "../../shared/launch-rules.ts";
 import { stripVTControlCharacters } from "node:util";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { displayWidth, secretPrompt } from "../../shared/secret-prompt.ts";
@@ -177,8 +178,11 @@ export const pendingIdentity = (pane: HerdrPane): PendingIdentity => ({
 });
 
 export const pendingText = (text: string): string => {
-  const normalized = text.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
-  if (!normalized.trim() || normalized.length > 20_000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(normalized)) {
+  const written = withoutTrailingBreaks(text);
+  // a CRLF is read as one character, so a message of more than twice the limit cannot fit: its megabytes are not
+  // rewritten to be measured
+  const normalized = written.length > 2 * 20_000 ? written : written.replace(/\r\n?/g, "\n");
+  if (normalized.length > 20_000 || !normalized.trim() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(normalized)) {
     throw new HerdrError("invalid_submit_text", "A pending chat message must be nonempty text, at most 20000 characters, without terminal control characters");
   }
   return normalized;
@@ -197,13 +201,16 @@ const MAX_TYPED_SUBMIT_CHARS = 32_768;
  * commands. `typed`: the terminal's input line, whose cap is the longer one.
  */
 export function submitFraming(text: string, payload: string, typed: boolean): { text: string; payload: string } {
-  const message = text.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
+  const written = withoutTrailingBreaks(text);
   const limit = typed ? MAX_TYPED_SUBMIT_CHARS : MAX_CHAT_SUBMIT_CHARS;
+  const refusal = (): HerdrError => new HerdrError("invalid_submit_text", `A message must be at most ${limit} characters, without terminal control characters or paste markers, and sent as the composer shapes it; nothing was typed`);
+  // a CRLF is read as one character, so a message of more than twice the limit cannot fit: its megabytes are not
+  // rewritten twice to be measured
+  if (written.length > 2 * limit) throw refusal();
+  const message = written.replace(/\r\n?/g, "\n");
   const body = message.replace(/\n/g, "\r");
   if (message.length > limit || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(message)
-    || (payload !== body && payload !== `\u001b[200~${body}\u001b[201~`)) {
-    throw new HerdrError("invalid_submit_text", `A message must be at most ${limit} characters, without terminal control characters or paste markers, and sent as the composer shapes it; nothing was typed`);
-  }
+    || (payload !== body && payload !== `\u001b[200~${body}\u001b[201~`)) throw refusal();
   return { text: message, payload };
 }
 

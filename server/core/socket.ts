@@ -30,6 +30,19 @@ export type SocketHandler = Omit<WebSocketHandler<SocketData>, "open" | "message
 /** The frames of the connection itself: its liveness, its watches and its role. */
 type ConnectionFrame = "ping" | "watch" | "unwatch" | "role" | "machine-events";
 
+const INVALID_WATCH = "pane_id must be a pane's id: a string of at most 256 characters that is not blank, holds no control character and does not begin with a hyphen";
+
+/**
+ * A `watch` or `unwatch` frame's pane, checked before anything is started for it. An id that is no string would be
+ * another Map key at every frame: a watch that no later frame replaces and no unwatch names. One that begins with a
+ * hyphen (blanks before it aside) would be read as an option by herdr's own command line, which is handed the id as
+ * it came (watch.ts). And an id is written to the server's log and sent back when its watch cannot start: no pane's
+ * id is longer than a few dozen characters, or holds a control character.
+ */
+function watchablePane(paneId: unknown): paneId is string {
+  return typeof paneId === "string" && paneId.length <= 256 && paneId.trim() !== "" && !paneId.trim().startsWith("-") && !/[\u0000-\u001f\u007f]/.test(paneId);
+}
+
 export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames }: {
   clients: Set<Client>;
   present: Set<Client>;
@@ -79,6 +92,10 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       return;
     },
     watch(client: Client, message: Frame<"watch">): void {
+      if (!watchablePane(message.pane_id)) {
+        send(client, { type: "error", code: "invalid_watch", message: INVALID_WATCH });
+        return;
+      }
       const geometry = validGeometry(message.cols, message.rows);
       if (!geometry) {
         send(client, { type: "error", code: "invalid_geometry", message: "cols and rows must be integers in 1..1000" });
@@ -93,6 +110,10 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       return;
     },
     unwatch(client: Client, message: Frame<"unwatch">): void {
+      if (!watchablePane(message.pane_id)) {
+        send(client, { type: "error", code: "invalid_watch", message: INVALID_WATCH });
+        return;
+      }
       unwatchPane(client, message.pane_id);
       return;
     },

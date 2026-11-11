@@ -11,7 +11,7 @@ import { HerdrError, herdrSocketPath, LARGE_REPLY_BYTES } from "../herdr/client.
 import type { MachineRelay } from "../machine-relay.ts";
 import { crossingMs, OUTPUT_HARD_BYTES, OUTPUT_LOW_BYTES, OUTPUT_STALL_MS, type OutputWindow } from "../output-window.ts";
 import type { PendingInputs } from "../pending-input.ts";
-import { PaneWatch } from "../watch.ts";
+import { PaneWatch, type PaneWatchOptions } from "../watch.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 export interface SocketData {
@@ -55,7 +55,9 @@ interface ConnectionState {
   mode: ClientRole;
   /** how often `mode` changed: a switch away and back during an await is still a change */
   roles: number;
-  watches: Map<string, PaneWatch>;
+  watches: Map<string, PaneView>;
+  /** the views asked for that wait for a place among them (watchPane), each at the grid asked for last */
+  waiting: Map<string, { cols: number; rows: number }>;
   unwatchDevice?: () => void;
   unwatchGate?: () => void;
   recheck?: ReturnType<typeof setTimeout>;
@@ -83,7 +85,7 @@ function stateOf(client: Client): ConnectionState {
 /** The data for a connection's upgrade: it starts to interact unless its access is read-only. */
 export function connectionData(fields: { machineEvents?: MachineEventDocument; relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; open?: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number }): SocketData {
   const data: SocketData = { connectionId: crypto.randomUUID(), attached: new Map<string, { keepSize: boolean }>(), conversationInterests: new Set<string>(), conversationWatches: new Set<string>(), promptWatches: new Set<string>(), output: new Map(), ...fields };
-  states.set(data, { closing: false, revoked: false, mode: fields.readOnly ? "observe" : "interact", roles: 0, watches: new Map<string, PaneWatch>() });
+  states.set(data, { closing: false, revoked: false, mode: fields.readOnly ? "observe" : "interact", roles: 0, watches: new Map<string, PaneView>(), waiting: new Map() });
   return data;
 }
 
@@ -244,10 +246,33 @@ function expire(client: Client, frame: ExcusedFrame): void {
 }
 
 /**
+ * How many panes one connection may watch at a time, and how many observe processes it may have. Each watch is a
+ * `herdr terminal session observe` process with three descriptors, and a watching device may ask for one: without
+ * a bound, frames alone could take the PC's processes and descriptors. A page watches the panes of its four most
+ * recent tabs (PaneCanvas), far below this.
+ */
+const WATCHES = 64;
+
+/**
+ * One pane's view on a connection: its observe process, kept here until that process has exited, so the
+ * connection's views are its processes and WATCHES bounds both. A view asked for while every process's place is
+ * taken, some by a pane given up whose process has not exited yet, waits for one of those (ConnectionState.waiting).
+ */
+interface PaneView {
+  process: Pick<PaneWatch, "kill" | "exited">;
+  /** watched again, unwatched or ended by itself: the page is owed no `watch-end` for it. Its place is its until it has exited */
+  over: boolean;
+  /** its process was asked to end, which a view that ended by itself was not */
+  stopped: boolean;
+  /** the grid asked for since: the view starts again at it once the process has exited, the last one asked for */
+  next?: { cols: number; rows: number };
+}
+
+/**
  * What a connection may do, its observe processes, and its end. A connection's panes stay with the
  * terminal code: `detachClaimed` detaches them while the claims still count, `dropClaims` forgets them.
  */
-export function createConnections({ clients, present, pending, devices, detachClaimed, dropClaims }: {
+export function createConnections({ clients, present, pending, devices, detachClaimed, dropClaims, startWatch = (options) => new PaneWatch(options) }: {
   clients: Set<Client>;
   present: Set<Client>;
   /** the pending messages' end for a connection: its own are held, whoever else the store holds messages for */
@@ -255,6 +280,8 @@ export function createConnections({ clients, present, pending, devices, detachCl
   devices: DeviceStore;
   detachClaimed: (client: Client) => void;
   dropClaims: (client: Client) => void;
+  /** starts the observe process of one watch; a test passes its own */
+  startWatch?: (options: PaneWatchOptions) => Pick<PaneWatch, "kill" | "exited">;
 }) {
   /** authorizeSocket as a test: may this connection type now? */
   function mayType(client: Client): boolean {
@@ -297,23 +324,86 @@ export function createConnections({ clients, present, pending, devices, detachCl
     state.mode = mode;
   }
 
+  /** Ends a view the page replaced or gave up: its process is asked to end, once, and no end is told. */
+  function stopView(view: PaneView): void {
+    view.over = true;
+    if (view.stopped) return;
+    view.stopped = true;
+    view.process.kill();
+  }
+
+  /** A view the page still has: one running, or one that starts again once its process has exited. Not one given up, or ended by itself. */
+  const wanted = (view: PaneView): boolean => !view.over || view.next !== undefined;
+
   function watchPane(client: Client, paneId: string, geometry: { cols: number; rows: number }): void {
+    const { watches, waiting } = stateOf(client);
+    if (waiting.has(paneId)) { waiting.set(paneId, geometry); return; }
+    const current = watches.get(paneId);
+    if (current && wanted(current)) {
+      // drawn again for another grid, in the same place. A pane has one process at a time: started at each frame,
+      // frames naming one pane over and over would each hold a process until the event loop turned, past any
+      // count of panes. So the view starts again once this process has exited, at the grid asked for last. herdr's
+      // observe process is gone within a millisecond of being asked, and one that is not is killed (watch.ts)
+      current.next = geometry;
+      stopView(current);
+      return;
+    }
+    // one more view. The limit is told as a view that cannot start is: with its end alone, since a page writes an
+    // error it does not know into every terminal it shows
+    let views = waiting.size;
+    for (const view of watches.values()) if (wanted(view)) views++;
+    if (views >= WATCHES) {
+      send(client, { type: "watch-end", pane_id: paneId });
+      return;
+    }
+    // a pane given up, or one whose view ended by itself, with its process not exited yet: its view starts after
+    // that, as one watched again does
+    if (current) { current.next = geometry; stopView(current); }
+    // every process's place is taken, some by a pane given up a moment ago (a tab left the page's recent ones as
+    // another came): the view waits for one of those to exit, and is told nothing meanwhile
+    else if (watches.size >= WATCHES) waiting.set(paneId, geometry);
+    else startView(client, paneId, geometry);
+  }
+
+  /** The views that wait for a place take the ones that are free, the first asked for first. */
+  function startWaiting(client: Client): void {
+    const { watches, waiting } = stateOf(client);
+    for (const [paneId, geometry] of waiting) {
+      if (watches.size >= WATCHES) return;
+      waiting.delete(paneId);
+      startView(client, paneId, geometry);
+    }
+  }
+
+  function startView(client: Client, paneId: string, geometry: { cols: number; rows: number }): void {
     const { watches } = stateOf(client);
-    watches.get(paneId)?.kill();
-    watches.delete(paneId);
     try {
-      const watch = new PaneWatch({
+      let view: PaneView | undefined;
+      // ended by itself (its pane closed, herdr refused it): the page hears at once
+      const ended = (): void => {
+        if (!view || watches.get(paneId) !== view || view.over) return;
+        view.over = true;
+        send(client, { type: "watch-end", pane_id: paneId });
+      };
+      const started: PaneView = view = { over: false, stopped: false, process: startWatch({
         paneId,
         ...geometry,
         socketPath: herdrSocketPath(),
         onFrame: (data) => send(client, { type: "watch-data", pane_id: paneId, data }),
-        onEnd: () => {
-          if (watches.get(paneId) !== watch) return;
-          watches.delete(paneId);
-          send(client, { type: "watch-end", pane_id: paneId });
-        },
-      });
-      watches.set(paneId, watch);
+        onEnd: ended,
+      }) };
+      watches.set(paneId, started);
+      const exited = (): void => {
+        // the connection ended meanwhile (killWatches forgot its views): nothing of it starts again
+        if (watches.get(paneId) !== started) return;
+        // a process gone without a word ends its view too
+        ended();
+        watches.delete(paneId);
+        if (started.next) startView(client, paneId, started.next);
+        // its place, when nothing started in it again, is the next waiting view's
+        startWaiting(client);
+      };
+      void started.process.exited.then(exited, exited);
     } catch (error) {
       console.warn(`[watch] ${paneId} could not start: ${error instanceof Error ? error.message : String(error)}`);
       send(client, { type: "watch-end", pane_id: paneId });
@@ -321,15 +411,20 @@ export function createConnections({ clients, present, pending, devices, detachCl
   }
 
   function unwatchPane(client: Client, paneId: string): void {
-    const { watches } = stateOf(client);
-    watches.get(paneId)?.kill();
-    watches.delete(paneId);
+    const { watches, waiting } = stateOf(client);
+    if (waiting.delete(paneId)) return;
+    const view = watches.get(paneId);
+    if (!view) return;
+    // nothing starts in its place, which stays its process's until that has exited
+    view.next = undefined;
+    stopView(view);
   }
 
   function killWatches(client: Client): void {
-    const { watches } = stateOf(client);
-    for (const watch of watches.values()) watch.kill();
+    const { watches, waiting } = stateOf(client);
+    for (const view of watches.values()) view.process.kill();
     watches.clear();
+    waiting.clear();
   }
 
   /**

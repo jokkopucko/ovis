@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, win32 } from "node:path";
 
 import * as fileView from "./file-view.ts";
 import { crossSiteFileRead, fileInfo, fileResponse, forgetPageMedia, locateFile, locateFileInFolder, PAGE_MEDIA_LIFETIME_MS, PAGE_MEDIA_PER_RENDER, pageFileHooks, pageMediaResponse, pageMediaSource, resolveFilePath, STREAM_CHUNK_BYTES, watchPageMedia } from "./file-view.ts";
@@ -83,6 +83,42 @@ describe("file view", () => {
     expect(resolveFilePath("docs/demo.mp4", "/work/app")).toBe("/work/app/docs/demo.mp4");
     expect(resolveFilePath("docs/demo.mp4", null)).toBeNull();
     expect(resolveFilePath("  ", "/work")).toBeNull();
+  });
+
+  // every path the page asks for comes through here, whoever wrote it: a Markdown link, a tool call's row, the
+  // address `?file=//host/share/a.md`, the reader's `?read=`. On a Windows PC a network share is asked of its host,
+  // with the user's sign-in
+  it("resolves no network share on a Windows PC but the pane's own, the home folder's and WSL's", () => {
+    const windows = (input: string, cwd: string | null = "C:\\work", home = "C:\\Users\\me") => resolveFilePath(input, cwd, win32, home);
+    for (const share of [
+      "//host/share/a.md", "\\\\host\\share\\a.md", "/\\host/share/a.md", "~///host/share/a.md", "~/\\\\host\\share\\a.md",
+      "\\\\?\\UNC\\host\\share\\a.md", "\\\\.\\pipe\\x", "//host/share", "  //host/share/a.md  ",
+      // no other host by a name like WSL's
+      "\\\\wsl$evil\\share\\a.md", "\\\\wsl.localhost.example.com\\share\\a.md", "\\\\wsl$@80\\share\\a.md",
+    ]) {
+      expect(windows(share), share).toBeNull();
+      expect(windows(share, null), share).toBeNull();
+    }
+    // the PC's own files, as before
+    expect(windows("C:\\x\\a.md")).toBe("C:\\x\\a.md");
+    expect(windows("docs\\a.md")).toBe("C:\\work\\docs\\a.md");
+    expect(windows("~/a.md")).toBe("C:\\Users\\me\\a.md");
+    expect(windows("~//notes/a.md")).toBe("C:\\notes\\a.md");
+    // WSL's files are served by this PC itself, under either name
+    expect(windows("\\\\wsl$\\Ubuntu\\home\\u\\a.md")).toBe("\\\\wsl$\\Ubuntu\\home\\u\\a.md");
+    expect(windows("//wsl.localhost/Ubuntu/home/u/a.md")).toBe("\\\\wsl.localhost\\Ubuntu\\home\\u\\a.md");
+    expect(windows("\\\\WSL$\\Ubuntu\\a.md")).toBe("\\\\WSL$\\Ubuntu\\a.md");
+    // a pane whose folder is on a share works there already: that share's files open, another's do not
+    const onShare = (input: string) => windows(input, "\\\\nas\\work\\proj");
+    expect(onShare("a.md")).toBe("\\\\nas\\work\\proj\\a.md");
+    expect(onShare("\\\\NAS\\Work\\other\\a.md")).toBe("\\\\NAS\\Work\\other\\a.md");
+    expect(onShare("\\\\nas\\private\\a.md")).toBeNull();
+    expect(onShare("\\\\nas2\\work\\a.md")).toBeNull();
+    // and so does a home folder kept on one
+    expect(windows("~/a.md", "C:\\work", "\\\\files\\home\\me")).toBe("\\\\files\\home\\me\\a.md");
+    expect(windows("\\\\files\\other\\a.md", "C:\\work", "\\\\files\\home\\me")).toBeNull();
+    // on this system two slashes in front name no other host: the path is the local one, as before
+    if (process.platform !== "win32") expect(resolveFilePath("//host/share/a.md", "/work")).toBe("/host/share/a.md");
   });
 
   it("tells media, text and binary apart, and is null for a folder or nothing", () => {

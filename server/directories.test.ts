@@ -1,9 +1,30 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 
-import { createDirectory, listDirectories, MAX_DIRECTORY_ENTRIES } from "./directories.ts";
+import { createDirectory, listDirectories, MAX_DIRECTORY_ENTRIES, resolveFolder } from "./directories.ts";
+
+// the file viewer lists a path it found no file at, and the folder browser one its dialog was opened with: both can be
+// a link's (`?file=//host/share/`, `?new=1&cwd=//host/share`), and listing a network share asks its host
+describe("the folder a path names", () => {
+  const windows = (path: string, base?: string, home = "C:\\Users\\me") => resolveFolder(path, home, base, win32);
+  it("is no network share on a Windows PC but the pane's own, the home folder's and WSL's", () => {
+    for (const share of ["//host/share", "\\\\host\\share\\docs", "~///host/share", "\\\\?\\UNC\\host\\share", "\\\\wsl$evil\\share"]) {
+      expect(windows(share), share).toBeNull();
+      expect(windows(share, "C:\\work"), share).toBeNull();
+    }
+    expect(windows("")).toBe("C:\\Users\\me");
+    expect(windows("~/code")).toBe("C:\\Users\\me\\code");
+    expect(windows("docs", "C:\\work")).toBe("C:\\work\\docs");
+    expect(windows("\\\\wsl$\\Ubuntu\\home\\u")).toBe("\\\\wsl$\\Ubuntu\\home\\u");
+    expect(windows("//wsl.localhost/Ubuntu/home/u")).toBe("\\\\wsl.localhost\\Ubuntu\\home\\u");
+    expect(windows("docs", "\\\\nas\\work\\proj")).toBe("\\\\nas\\work\\proj\\docs");
+    expect(windows("\\\\nas\\work\\other", "\\\\nas\\work\\proj")).toBe("\\\\nas\\work\\other");
+    expect(windows("\\\\nas\\private", "\\\\nas\\work\\proj")).toBeNull();
+    expect(windows("~/code", undefined, "\\\\files\\home\\me")).toBe("\\\\files\\home\\me\\code");
+  });
+});
 
 describe("listDirectories", () => {
   const roots: string[] = [];

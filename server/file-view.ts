@@ -1,13 +1,14 @@
 import { randomBytes } from "node:crypto";
 import { type BigIntStats, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, read, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, parse, relative as relativePath, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, parse, type PlatformPath, relative as relativePath, resolve, sep } from "node:path";
 
 import type { FileInfo, FileKind } from "../shared/protocol.ts";
 import { fileTask } from "./file-pool.ts";
 import type { OpenedFile, RenderedPage } from "./file-tasks.ts";
 import { filesNamed } from "./files.ts";
 import { jsonResponse } from "./http.ts";
+import { otherHostsShare } from "./windows-share.ts";
 
 /**
  * Opening a file from the browser: the files agents write (a screenshot, a demo video, a
@@ -29,14 +30,19 @@ import { jsonResponse } from "./http.ts";
  * browser can already type into.
  */
 
-/** A path as agents and people write it: absolute, `~/…`, or relative to the pane's folder. */
-export function resolveFilePath(input: string, cwd: string | null): string | null {
+/**
+ * A path as agents and people write it: absolute, `~/…`, or relative to the pane's folder. Every path the page
+ * asks for comes through here, whoever wrote it (a Markdown link, a tool call's row, the address's `?file=`, the
+ * reader's `?read=`), so this is where a network share is refused on a Windows PC (windows-share.ts): never one
+ * of another host, however it is written. `rules` and `home`: this system's; a test passes Windows' own.
+ */
+export function resolveFilePath(input: string, cwd: string | null, rules: Pick<PlatformPath, "resolve" | "isAbsolute" | "sep"> = { resolve, isAbsolute, sep }, home = homedir()): string | null {
   const path = input.trim();
   if (path === "") return null;
-  if (path === "~") return homedir();
-  if (path.startsWith("~/")) return resolve(homedir(), path.slice(2));
-  if (isAbsolute(path)) return resolve(path);
-  return cwd === null ? null : resolve(cwd, path);
+  const resolved = path === "~" ? home : path.startsWith("~/") ? rules.resolve(home, path.slice(2)) : rules.isAbsolute(path) ? rules.resolve(path) : cwd === null ? null : rules.resolve(cwd, path);
+  if (resolved === null) return null;
+  // read after it is resolved, as Windows will read it: `~///host/share` and `/\\host/share` are shares only then
+  return rules.sep === "\\" && otherHostsShare(resolved, [cwd === null ? null : rules.resolve(cwd), rules.resolve(home)]) ? null : resolved;
 }
 
 const TEXT_TYPES = /^(?:text\/|application\/(?:json|javascript|typescript|xml|x-sh|toml|yaml|x-yaml|sql)|image\/svg\+xml)/;

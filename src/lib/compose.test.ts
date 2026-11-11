@@ -127,6 +127,10 @@ describe("omo command completion", () => {
 describe("composerMessage and submitNote", () => {
   it("keeps the message as written for agent.prompt: inner newlines stay, the composer's own trailing ones go", () => {
     expect(composerMessage("line one\r\nline two\n\n")).toBe("line one\nline two");
+    // line breaks that do not end the message are read in one pass, by the rule the server reads them with
+    // (withoutTrailingBreaks): as a pattern they cost their count squared, a third of a second for the 20,000 the
+    // composer takes
+    expect(composerMessage(`${"\n".repeat(60_000)}a\n\n`).length).toBe(60_001);
   });
 
   it("keeps pasted Markdown, blank lines and code indentation in one submitted message", () => {

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError } from "../herdr/client.ts";
-import { createSubmitText } from "./composer.ts";
+import { createSubmitText, pendingText, submitFraming } from "./composer.ts";
 
 // The real RPC client against a unix socket this test owns; only herdr's answers are synthetic. The pane runs a
 // shell (herdr names no agent), so a chat message falls back from agent.prompt to the payload, as a typed line does.
@@ -128,4 +128,32 @@ describe("an immediate submit's paste framing", () => {
       expect(calls).toEqual([]);
     }
   });
+});
+
+it("reads a message of line breaks that do not end it in one pass, before it refuses it", () => {
+  // `/[\r\n]+$/` starts over at every line break of a run that does not end the text: 40,000 took 1.4 s and twice as
+  // many four times that, on the server's only thread, for a frame any connection that may type can send. With the
+  // pattern these take seconds each and the test times out; in one pass they take under a millisecond
+  const breaks = `${"\n".repeat(60_000)}a`;
+  for (const typed of [false, true]) expect(() => submitFraming(breaks, breaks.replace(/\n/g, "\r"), typed)).toThrow("at most");
+  expect(() => pendingText(breaks)).toThrow("at most");
+  expect(() => pendingText(`${"\r\n".repeat(30_000)}a`)).toThrow("at most");
+  // the line breaks a message ends in still go, however many
+  expect(submitFraming(`hi${"\r\n".repeat(50_000)}`, "hi", false)).toEqual({ text: "hi", payload: "hi" });
+  expect(pendingText(`a\r\nb${"\n".repeat(50_000)}`)).toBe("a\nb");
+}, 5_000);
+
+it("refuses a message of more than twice its limit, and takes one of up to twice its limit that is short enough once read", () => {
+  // a CRLF is read as one character, so a message as written may be up to twice its limit: one of exactly that
+  // is still taken. A longer one cannot fit, so it is refused by its length as written (megabytes of it are not
+  // rewritten first, which this does not show)
+  for (const [typed, limit] of [[false, 20_000], [true, 32_768]] as const) {
+    const most = `${"\r\n".repeat(limit - 1)}a`;
+    expect(submitFraming(most, `\u001b[200~${"\r".repeat(limit - 1)}a\u001b[201~`, typed).text, `${limit}`).toBe(`${"\n".repeat(limit - 1)}a`);
+    expect(() => submitFraming(`${most}\r\nb`, `\u001b[200~${"\r".repeat(limit)}b\u001b[201~`, typed), `${limit}`).toThrow(`at most ${limit}`);
+    expect(() => submitFraming(`${"\n".repeat(2 * limit)}a`, `${"\r".repeat(2 * limit)}a`, typed), `${limit}`).toThrow(`at most ${limit}`);
+  }
+  expect(pendingText(`${"\r\n".repeat(19_999)}a`)).toBe(`${"\n".repeat(19_999)}a`);
+  expect(() => pendingText(`${"\r\n".repeat(20_000)}a`)).toThrow("at most 20000");
+  expect(() => pendingText(`${"\n".repeat(40_000)}a`)).toThrow("at most 20000");
 });
