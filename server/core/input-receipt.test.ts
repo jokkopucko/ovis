@@ -34,13 +34,44 @@ function lane(ready = true) {
   });
   spyOn(client, "paneSendText").mockImplementation(async (_pane, text) => { typed.push(`text ${text}`); });
   const clients = new Set([phone, other]);
-  const { inputFrames } = createInputLane({
+  const { inputFrames, typedInto } = createInputLane({
     TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight: () => sighting, poke: () => {},
     terminalAttach: async () => false, terminalAttachKnown: () => true, mayType: () => true, authorizeSocket: () => {},
   });
   const results = () => told.filter((frame) => frame.type === "input-result");
-  return { typed, results, clients, phone, other, inputFrames, keyStarted, answer };
+  return { typed, results, clients, phone, other, inputFrames, typedInto, keyStarted, answer };
 }
+
+// a message that waits at a pane asks whether a person typed there meanwhile (pending.ts waitForOmp)
+it("counts what a person types into a pane, by any way, and not the terminal's own answers or the mouse", async () => {
+  const live = lane();
+  expect(live.typedInto("w:p1")).toBe(0);
+  // straight to the pty
+  live.inputFrames.input(live.phone, { type: "input", pane_id: "w:p1", text: "a" });
+  expect(live.typedInto("w:p1")).toBe(1);
+  // the terminal answering its program (a cursor report), and a mouse report: no one typing
+  live.inputFrames.input(live.phone, { type: "input", pane_id: "w:p1", text: "\u001b[12;40R", automatic: true });
+  live.inputFrames.input(live.phone, { type: "input", pane_id: "w:p1", text: "\u001b[<0;10;5M" });
+  expect(live.typedInto("w:p1")).toBe(1);
+  // a key, and typing queued behind it in the pane's turn
+  const key = live.inputFrames.keys(live.phone, { type: "keys", pane_id: "w:p1", keys: ["left"] });
+  await live.keyStarted;
+  live.inputFrames.input(live.phone, { type: "input", pane_id: "w:p1", text: "b" });
+  const barrier = live.inputFrames.keys(live.other, { type: "keys", pane_id: "w:p1", keys: ["right"] });
+  live.answer();
+  await key;
+  await barrier;
+  expect(live.typed).toEqual(["pty a", "pty \u001b[12;40R", "pty \u001b[<0;10;5M", "keys left", "text b", "keys right"]);
+  expect(live.typedInto("w:p1")).toBe(4);
+  // each pane has its own count
+  expect(live.typedInto("w:p2")).toBe(0);
+  // and a count is kept for the panes typed into last: one typed into again is not the first to go
+  const typeInto = (pane: string) => live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "a" });
+  for (let pane = 0; pane < 255; pane++) typeInto(`other:p${pane}`);
+  typeInto("w:p1");
+  typeInto("other:p255");
+  expect([live.typedInto("w:p1"), live.typedInto("other:p0")]).toEqual([5, 0]);
+});
 
 it("answers queued typing with an id only once herdr typed it, and a connection that ended before its turn gets nothing typed", async () => {
   for (const disconnect of [false, true]) {

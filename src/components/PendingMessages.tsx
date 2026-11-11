@@ -27,7 +27,11 @@ interface Props {
  * holds it on the bridge: a copy restored from storage (another tab's live hold, or one from before
  * a reload) is reviewed first, since the tab that held it may still send it.
  */
-export function pendingStatus(message: Pick<PendingMessageView, "state" | "error" | "serverOwned">, busy: boolean, t: (text: string, vars?: Vars) => string): string {
+export function pendingStatus(message: Pick<PendingMessageView, "state" | "error" | "serverOwned" | "waiting">, busy: boolean, t: (text: string, vars?: Vars) => string): string {
+  // what it waits for besides its turn: its pane shows the agent at rest, and one on its way would say Sending for as
+  // long. Only of a row the bridge still has: a copy kept after the connection dropped keeps the field it was last
+  // told, and the bridge sends nothing of it by itself
+  if (message.waiting === "omp_starting" && message.serverOwned && (message.state === "queued" || message.state === "sending")) return t("Waiting for omp to start…");
   if (busy) return t("Sending…");
   if (message.state === "queued") return t("Next turn");
   if (message.error?.code === "pi_transcript_pending") return t("Sent to Pi · waiting for transcript");
@@ -95,7 +99,7 @@ export function PendingMessages({ messages, active = true, connected, agent, blo
             }}><X aria-hidden="true" /></button>}
         </div>
         {message.error && !uncertain && !sent && <p className="pending-message-note" role="status">{message.error.code === "still_open" ? message.error.message
-          : (message.error.code === "input_draft" || message.error.code === "held_input" || message.error.code === "not_transmitted" || message.error.code === "capabilities_unknown" || message.error.code === "rewind_dialog_open" || message.error.code === "first_message_unattended" || message.error.code === "first_message_launch_ended" || message.error.code === "pending_target_changed" || message.error.code === "agent_blocked") ? submitNote(message.error.code, message.error.message, agent) : t("Not sent: {message}", { message: message.error.message })}</p>}
+          : (message.error.code === "input_draft" || message.error.code === "held_input" || message.error.code === "not_transmitted" || message.error.code === "capabilities_unknown" || message.error.code === "rewind_dialog_open" || message.error.code === "first_message_unattended" || message.error.code === "first_message_launch_ended" || message.error.code === "pending_target_changed" || message.error.code === "agent_blocked" || message.error.code === "typed_while_waiting") ? submitNote(message.error.code, message.error.message, agent) : t("Not sent: {message}", { message: message.error.message })}</p>}
       </li>;
     })}
   </ol>;

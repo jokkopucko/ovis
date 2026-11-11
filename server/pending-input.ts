@@ -68,6 +68,8 @@ export class PendingInputs<Owner, Lease> {
   /** how many status events each pane has had: orders a snapshot read against them (mark, observe) */
   private readonly events = new Map<string, number>();
   private readonly gates = new Map<string, TurnGate>();
+  /** what each pane's queued messages wait for besides their turn (waitingFor) */
+  private readonly waits = new Map<string, NonNullable<PendingMessage["waiting"]>>();
   private readonly closed = new Map<Owner, number>();
   /** sends on their way when their pane moved (`move`) */
   private readonly movedInFlight = new WeakSet<PendingRecord<Owner, Lease>>();
@@ -151,7 +153,34 @@ export class PendingInputs<Owner, Lease> {
   }
 
   list(owner: Owner, paneId: string): PendingMessage[] {
-    return [...this.records.values()].filter((item) => item.owner === owner && item.paneId === paneId).map((item) => ({ ...item.message, ...(item.message.error ? { error: { ...item.message.error } } : {}) }));
+    const waiting = this.waits.get(paneId);
+    return [...this.records.values()].filter((item) => item.owner === owner && item.paneId === paneId).map((item) => ({ ...item.message, ...(item.message.error ? { error: { ...item.message.error } } : {}),
+      ...(waiting !== undefined && item.message.state === "queued" ? { waiting } : {}) }));
+  }
+
+  /** Says what the pane's queued messages wait for besides their turn, or (undefined) that they wait for it no more, to each owner of one. */
+  waitingFor(paneId: string, waiting: PendingMessage["waiting"]): void {
+    if (this.waits.get(paneId) === waiting) return;
+    if (waiting === undefined) this.waits.delete(paneId); else this.waits.set(paneId, waiting);
+    for (const owner of new Set([...this.records.values()].filter((item) => item.paneId === paneId && item.message.state === "queued").map((item) => item.owner))) this.publish(owner, paneId);
+  }
+
+  /** Says what a message on its way waits for, or (undefined) that it waits for it no more. */
+  sendingWaitsFor(item: PendingRecord<Owner, Lease>, waiting: PendingMessage["waiting"]): void {
+    if (this.records.get(item.message.id) !== item || item.message.waiting === waiting) return;
+    if (waiting === undefined) delete item.message.waiting; else item.message.waiting = waiting;
+    this.publish(item.owner, item.paneId);
+  }
+
+  /** Every queued message of the pane held for an explicit send, with why; one on its way is left to its send's own end. */
+  holdQueued(paneId: string, fault: Fault): void {
+    const owners = new Set<Owner>();
+    for (const item of this.records.values()) {
+      if (item.paneId !== paneId || item.inFlight || item.message.state !== "queued") continue;
+      item.message.state = "held"; item.message.error = fault;
+      owners.add(item.owner);
+    }
+    for (const owner of owners) this.publish(owner, paneId);
   }
 
   private publish(owner: Owner, paneId: string, removed?: Removed[]): void { this.changed(owner, paneId, this.list(owner, paneId), removed); }
@@ -297,7 +326,7 @@ export class PendingInputs<Owner, Lease> {
   }
 
   /** The pane ended: its held messages stay with their owners, its status and turn gate go. */
-  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); }
+  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.waits.delete(paneId); }
 
   private apply(paneId: string, status: AgentStatus): void {
     this.statuses.set(paneId, status);

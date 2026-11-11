@@ -1166,6 +1166,9 @@ export interface PendingMessage {
    * it. Kept while uncertain; gone once it is queued or held again, and from older bridges. */
   sending_at?: string;
   error?: { code: string; message: string };
+  /** What it waits for besides its turn: `omp_starting`, an omp that does not take input yet (a queued row at a
+   * pane at rest, or one on its way). Gone once that is over. */
+  waiting?: "omp_starting";
   /** its submit was `agent_only`: a resend of a saved copy says so again */
   agent_only?: true;
 }
@@ -1213,6 +1216,9 @@ export type ClientMessage =
    * `delivery:hold` (feature "pending-hold") is the same, except the message is kept as held, also
    * when it arrives after the turn ended: it never goes on its own, only when the owner steers it.
    * Omission keeps the legacy immediate submission. Queued messages never resume after lease loss.
+   * An immediate chat submit is accepted as a queued row (`pending` in its result) instead of typed while the
+   * pane's queue waits for its omp to take input: it goes behind what waits there. Once the terminal was typed
+   * into during that start, it (and a queue request) is accepted as a held row instead, as what waited there is.
    * Queue request ids increase monotonically per connection; recent duplicates replay their
    * receipt, and retired ids are rejected rather than executed after history eviction.
    * `clear_draft`: an immediate chat message only, sent again over the `draft` its input_draft

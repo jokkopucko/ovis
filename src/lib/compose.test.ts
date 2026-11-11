@@ -189,6 +189,8 @@ describe("composerMessage and submitNote", () => {
     expect(submitNote("first_message_launch_ended", ended)).not.toContain(ended);
     expect(submitNote("pending_target_changed", changed)).not.toContain(changed);
     expect(submitNote("first_message_launch_ended", "x")).not.toBe(submitNote("pending_target_changed", "x"));
+    // held because the terminal was typed into while it waited for a starting omp: where to look, not the bridge's words
+    expect(submitNote("typed_while_waiting", "x")).toBe("Not sent: something was typed in the terminal while omp was starting. Check its input line there, then send this message.");
     expect(submitNotTyped("submit_changed")).toBe(false);
     expect(submitNotTyped("pending_uncertain")).toBe(false);
     expect(submitNotTyped("submit_partial")).toBe(false);

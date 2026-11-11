@@ -43,6 +43,20 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
   const paneQueues = new Map<string, Promise<unknown>>();
   /** when each pane last got keystrokes through its attach pty */
   const lastTyped = new Map<string, number>();
+  /**
+   * How many times a person's own input went to each pane: typing, a key, a line inserted, a masked answer. Not
+   * the terminal's answers to its program, nor the mouse. A message that waits at a pane (pending.ts waitForOmp)
+   * asks whether anything was typed there meanwhile.
+   */
+  const typedInto = new Map<string, number>();
+  const personTyped = (paneId: string): void => {
+    const count = (typedInto.get(paneId) ?? 0) + 1;
+    // kept for the panes typed into last (set again, a key moves to the end): a wait is half a minute long, and
+    // its pane is not the 257th typed into since
+    typedInto.delete(paneId);
+    typedInto.set(paneId, count);
+    if (typedInto.size > 256) typedInto.delete(typedInto.keys().next().value!);
+  };
   /** panes whose last pty keystroke ended in an ESC, which herdr holds ~150ms: a key waits TYPED_SETTLE_MS there */
   const typedEscape = new Set<string>();
   /** per pane, the WS keys still waiting at the tail of the pane's queue: later keys of the same sender join them */
@@ -126,6 +140,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
           if (!clients.has(client)) return;
           authorizeSocket(client);
           await paneSendText(message.pane_id, shaped, undefined, allowed);
+          personTyped(message.pane_id);
           receipt(true);
           // the echo is read at once, not at the mirror's next idle read
           poke(message.pane_id);
@@ -179,6 +194,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
             return;
           }
           await paneSendText(message.pane_id, text, undefined, allowed);
+          personTyped(message.pane_id);
           receipt(true);
           // herdr still holds a lone ESC a moment: a message after the Stop waits out the same
           // settling gap as after a typed one, and checks again for a question before pasting
@@ -187,6 +203,8 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
       } else {
         if (!sighting.write(message.text, message.automatic === true)) { inputFailed(); return; }
         typedIntoPty(message.text);
+        // the terminal's own answers and the mouse are no one typing
+        if (message.automatic !== true && !isMouseReport(message.text)) personTyped(message.pane_id);
         receipt(true);
       }
       return;
@@ -259,6 +277,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
         batch.sent = true;
         try {
           await paneSendKeys(message.pane_id, batch.keys, undefined, allowed);
+          personTyped(message.pane_id);
         } catch (error) {
           if (!(error instanceof HerdrError && error.code === "cancelled")) throw error;
           if (clients.has(client)) send(client, { type: "error", code: "input_failed", message: "Terminal input could not be confirmed. Check the terminal before typing again.", pane_id: message.pane_id });
@@ -333,6 +352,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
             // Direct attach keystrokes: no agent transcript, RPC payload or delayed Enter.
             if (!sighting.write(`${message.secret}\r`)) { result(false, "input_not_ready"); return; }
           }
+          personTyped(message.pane_id);
           result(true);
         });
       } catch {
@@ -397,6 +417,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
           try {
             // one line, no line break and no escape (insertTextProblem): typed as it came, on an attach or a mirror
             await paneSendText(message.pane_id, message.text, undefined, allowed);
+            personTyped(message.pane_id);
           } catch (error) {
             if (error instanceof HerdrError && error.code === "cancelled") { refuse(standing() ?? "not_attached"); return; }
             throw error;
@@ -413,5 +434,5 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
   };
 
   // `lastTyped` stays the server's to read: a composer message and a pending one wait out the last keystroke too
-  return { serialize, settleAfterTyping, lastTyped, inputFrames };
+  return { serialize, settleAfterTyping, lastTyped, typedInto: (paneId: string): number => typedInto.get(paneId) ?? 0, inputFrames };
 }
