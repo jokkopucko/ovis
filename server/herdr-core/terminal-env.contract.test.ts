@@ -25,7 +25,8 @@ describe.skipIf(!bin || process.platform === "win32")("terminals Ovis starts on 
     writeFileSync(join(root, "home", ".profile"), "export GH_TOKEN=from-profile\n");
     env = isolatedHcEnv(root, { PATH: "/usr/bin:/bin", SHELL: "/bin/sh" });
     const agent = { ...env, TERM: "dumb", COLORTERM: "", NO_COLOR: "1" };
-    const started = Bun.spawn([bin!, "server", "start"], { env: agent, stdout: "ignore", stderr: "pipe" });
+    // as an agent starts it: `hc run` in its shell, which starts the core and a terminal (and so its holder)
+    const started = Bun.spawn([bin!, "run", "--bg", "--json"], { env: agent, stdout: "ignore", stderr: "pipe" });
     expect({ exit: await started.exited, stderr: await new Response(started.stderr).text() }).toMatchObject({ exit: 0 });
     process.env["OVIS_HC_ENV"] = JSON.stringify(env);
     process.env["OVIS_HC_BIN"] = bin!;

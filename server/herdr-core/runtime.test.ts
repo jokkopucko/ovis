@@ -206,6 +206,56 @@ it.skipIf(platform === "win32")("runs hc connect in the user's terminal environm
   }
 });
 
+it.skipIf(platform === "win32")("starts without waiting for the login shell when a core already runs", async () => {
+  // regression: every server start waited for the login profile (seconds on a slow one), also where the core it reaches runs already
+  const dir = mkdtempSync(join(tmpdir(), "ovis-hc-core-runs-"));
+  const previousHcSocket = process.env["HC_SOCKET"];
+  let release = (_env: Record<string, string>) => {};
+  cleanup = () => {
+    release({});
+    if (previousHcSocket === undefined) delete process.env["HC_SOCKET"]; else process.env["HC_SOCKET"] = previousHcSocket;
+    rmSync(dir, { recursive: true, force: true });
+  };
+  const bin = join(dir, "herdr-core");
+  writeFileSync(bin, `#!/bin/sh\n[ "$1" = --version ] && echo 'hc 0.1.17'\n`, { mode: 0o755 });
+  process.env["OVIS_RUNTIME"] = "herdr-core";
+  // the core's socket answers: it runs
+  process.env["HC_SOCKET"] = join(dir, "hc.sock");
+  const core = Bun.listen({ unix: join(dir, "hc.sock"), socket: { data() {} } });
+  const stopCore = cleanup;
+  cleanup = () => { core.stop(true); stopCore(); };
+  const pending = new Promise<Record<string, string>>((resolve) => { release = resolve; });
+  const adapter = await startRuntime(join(dir, "state"), async () => ({ bin, version: "0.1.17" }), () => pending);
+  expect(adapter).not.toBeNull();
+  adapter?.stop();
+});
+
+it.skipIf(platform === "win32")("waits for the login shell when the core's socket file is left with nothing listening", async () => {
+  // regression: a crashed core's socket file read as a running core, so `hc connect` started a new one without the login environment
+  const dir = mkdtempSync(join(tmpdir(), "ovis-hc-stale-socket-"));
+  const previousHcSocket = process.env["HC_SOCKET"];
+  cleanup = () => {
+    if (previousHcSocket === undefined) delete process.env["HC_SOCKET"]; else process.env["HC_SOCKET"] = previousHcSocket;
+    rmSync(dir, { recursive: true, force: true });
+  };
+  const out = join(dir, "connect-env");
+  const bin = join(dir, "herdr-core");
+  writeFileSync(bin, `#!/bin/sh\nif [ "$1" = --version ]; then echo 'hc 0.1.17'; else env > '${out}'; fi\n`, { mode: 0o755 });
+  process.env["OVIS_RUNTIME"] = "herdr-core";
+  process.env["HC_SOCKET"] = join(dir, "hc.sock");
+  writeFileSync(join(dir, "hc.sock"), "");
+  // the login read answers a turn of the event loop later, after a start that does not wait for it is done
+  const late = async () => { await new Promise((resolve) => setImmediate(resolve)); return { GH_TOKEN: "from-profile" }; };
+  const adapter = await startRuntime(join(dir, "state"), async () => ({ bin, version: "0.1.17" }), late);
+  if (!adapter) throw new Error("runtime did not start");
+  try {
+    await coreConnection().hello().catch(() => null);
+    expect(readFileSync(out, "utf8").split("\n")).toContain("GH_TOKEN=from-profile");
+  } finally {
+    adapter.stop();
+  }
+});
+
 it.skipIf(platform === "win32")("refuses another user's state directory before changing its mode", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-owner-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });

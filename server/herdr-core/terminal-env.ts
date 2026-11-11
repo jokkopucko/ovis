@@ -88,23 +88,65 @@ export function forCore(terminal: Env, core: SourceEnv): Env {
   return env;
 }
 
-/** The environment of the core `hc` reaches, where this PC tells it (Linux /proc, the core runs as this user), else null. */
-export async function coreEnvironment(hc: Pick<HcConnection, "call">): Promise<Env | null> {
-  if (process.platform !== "linux") return null;
+/**
+ * The environment the core `hc` reaches hands its terminals: that of its current holder, which
+ * starts their shells (live-verified, hc 0.1.17: on macOS the core itself is a launchd job with
+ * launchd's environment, its holder has the starter's), else of the core on Linux, where it has
+ * the starter's too; null where this PC does not tell it (a macOS core with no terminal yet, so no
+ * holder: the caller goes by the environment that starts the core).
+ */
+export async function coreEnvironment(hc: Pick<HcConnection, "call">, read: (pid: number) => Promise<Env | null> = processEnv, platform: NodeJS.Platform = process.platform): Promise<Env | null> {
   try {
-    const { pid } = await hc.call("server.status", {});
-    return Object.fromEntries(readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter((entry) => entry.includes("=")).map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)]));
+    const status = await hc.call("server.status", {});
+    // only the current holder: one an update left draining has the old core's starter's environment
+    const pid = status.holder?.pid ?? status.holders.find((holder) => holder.current)?.pid ?? (platform === "darwin" ? null : status.pid);
+    return pid === null ? null : await read(pid);
+  } catch { return null; }
+}
+
+/** A process's environment as it was started (this user's processes only): Linux's /proc, macOS's `ps -E`; else null. */
+export async function processEnv(pid: number, platform: NodeJS.Platform = process.platform): Promise<Env | null> {
+  if (platform === "linux") {
+    try {
+      return Object.fromEntries(readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter((entry) => entry.includes("=")).map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)]));
+    } catch { return null; }
+  }
+  if (platform !== "darwin") return null;
+  const ps = async (format: string): Promise<string> => {
+    const child = Bun.spawn(["/bin/ps", format, "-o", "command=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore", signal: AbortSignal.timeout(2000) });
+    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    if (code !== 0) throw new Error(`ps exited ${code}`);
+    return out;
+  };
+  try {
+    const [command, withEnv] = await Promise.all([ps("-ww"), ps("-wwE")]);
+    return envAfterCommand(command, withEnv);
   } catch { return null; }
 }
 
 /**
- * What every shell started on the core `hc` reaches gets: `terminal` fitted to that core's own
- * environment, or, where it cannot be read, to `starter`'s (the environment that starts the core).
- * Read once the core first answers, then kept.
+ * The variables `ps -wwE` prints after a process's command line, the same line `ps -ww` prints
+ * alone: each begins at a space followed by `NAME=`. A value holding such a space would be cut there:
+ * a name read twice says one was, and which is the real one cannot be told, so nothing is read.
  */
-export function terminalEnvFor(hc: Pick<HcConnection, "call">, terminal: Env, starter: SourceEnv): () => Promise<Env> {
-  let fitted: Promise<Env> | null = null;
-  return () => fitted ??= coreEnvironment(hc).then((core) => forCore(terminal, core ?? starter));
+export function envAfterCommand(command: string, withEnv: string): Env | null {
+  const line = command.replace(/\n+$/, "");
+  const all = withEnv.replace(/\n+$/, "");
+  if (line === "" || !all.startsWith(line)) return null;
+  const rest = all.slice(line.length).replace(/^ /, "");
+  if (rest === "") return {};
+  const entries = rest.split(/ (?=[A-Za-z_][A-Za-z0-9_]*=)/).map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)] as const);
+  const env = Object.fromEntries(entries);
+  return Object.keys(env).length === entries.length ? env : null;
+}
+
+/**
+ * What every shell started on the core `hc` reaches gets: the login environment `terminal` fitted
+ * to the environment that core hands its terminals, asked afresh each time (a core restarted since
+ * may hand another), or, where that cannot be read, to `starter`'s (the environment that starts the core).
+ */
+export function terminalEnvFor(hc: Pick<HcConnection, "call">, terminal: Env | Promise<Env>, starter: SourceEnv, core: (hc: Pick<HcConnection, "call">) => Promise<Env | null> = coreEnvironment): () => Promise<Env> {
+  return async () => forCore(await terminal, await core(hc) ?? starter);
 }
 
 const read = new Map<string, Env>();

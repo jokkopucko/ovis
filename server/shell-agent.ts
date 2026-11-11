@@ -55,10 +55,11 @@ const LOGIN_ENV_END = "__OVIS_LOGIN_ENV_END__";
 /**
  * The same for the whole environment, printed as JSON by this server's own runtime: `env` prints one
  * `NAME=value` per line, which a value holding a newline or an exported bash function
- * (`BASH_FUNC_f%%=() {…`) cannot be read back from. Single quotes read the same in fish.
+ * (`BASH_FUNC_f%%=() {…`) cannot be read back from. It reads no .env and no bunfig.toml (whose
+ * preload would run in the home folder it starts in). Single quotes read the same in fish.
  */
 const loginEnvScript = (runtime: string): string =>
-  `printf '\\n%s\\n' ${LOGIN_ENV_START}; '${runtime}' --no-env-file -e 'process.stdout.write(JSON.stringify(process.env))'; printf '\\n%s\\n' ${LOGIN_ENV_END}`;
+  `printf '\\n%s\\n' ${LOGIN_ENV_START}; '${runtime}' --no-env-file --config=/dev/null -e 'process.stdout.write(JSON.stringify(process.env))'; printf '\\n%s\\n' ${LOGIN_ENV_END}`;
 
 /** The user's login shell as an absolute executable: $SHELL, else the account's; null when neither is one. */
 export function loginShell(env: Record<string, string | undefined> = process.env): string | null {
