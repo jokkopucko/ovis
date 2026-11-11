@@ -48,7 +48,43 @@ diff --git a/react.mjs b/react.mjs
      clampedOffset = Math.min(offset, maxOffset);
    }
    clampedOffset = Math.max(0, clampedOffset);
-@@ -5668,7 +5693,10 @@ function sortDOMElements(container, indexByElement) {
+@@ -4783,10 +4808,35 @@ function updateItemSizes(ctx, measurement) {
+     updateItemSizesBatch(ctx, [measurement]);
+   }
+ }
++// A scroll whose event has not come yet (a write earlier in this frame, a jump to the end) is heard before
++// a measurement is applied, as that event would hear it: the rows held in place are the ones in view now,
++// and the adjustment starts from where the view is, not from where the list last heard it. Only a move
++// down, past where the browser last reported the view and not toward where the list's own adjustments
++// put it: a move up can be the browser keeping the view inside content that got shorter, which the
++// adjustment reconciles against itself (ScrollAdjust), and an adjustment can still be landing.
++function hearUnheardScroll(ctx) {
++  const state = ctx.state;
++  if (state.scrollingTo || state.props.horizontal || !peek$(ctx, "readyToRender") || state.adjustingFromInitialMount || state.lastNativeScroll === void 0) {
++    return;
++  }
++  const target = getScrollAdjustTarget(ctx, null);
++  const live = target == null ? void 0 : target.scrollElement.scrollTop;
++  if (live === void 0) {
++    return;
++  }
++  const reported = state.lastNativeScroll;
++  const towardList = Math.min(reported, state.scroll) - 1 <= live && live <= Math.max(reported, state.scroll) + 1;
++  if (live - reported <= 1 || towardList) {
++    return;
++  }
++  state.scrollPending = live;
++  updateScroll(ctx, live, true, { fromNativeScrollEvent: true });
++}
+ function updateItemSizesBatch(ctx, measurements) {
+   var _a3;
+   const state = ctx.state;
+   const result = {};
++  hearUnheardScroll(ctx);
+   for (const measurement of measurements) {
+     const ownsMeasuredItem = measurement.containerId === void 0 || peek$(ctx, `containerItemKey${measurement.containerId}`) === measurement.itemKey;
+     if (ownsMeasuredItem) {
+@@ -5668,7 +5718,10 @@ function sortDOMElements(container, indexByElement) {
            break;
          }
        }
@@ -60,7 +96,7 @@ diff --git a/react.mjs b/react.mjs
          container.insertBefore(element, nextStableElement);
        } else {
          container.appendChild(element);
-@@ -5716,32 +5744,19 @@
+@@ -5716,32 +5769,19 @@
  function useDOMOrder(ref) {
    const ctx = useStateContext();
 -  const debounceRef = useRef(void 0);
@@ -108,7 +144,7 @@ diff --git a/react.mjs b/react.mjs
 +    }
 +  }, [ctx, version]);
  }
-@@ -6425,8 +6440,11 @@ function ScrollAdjust() {
+@@ -6425,8 +6465,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -121,7 +157,7 @@ diff --git a/react.mjs b/react.mjs
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7194,10 +7212,12 @@ function scrollToEnd(ctx, options) {
+@@ -7194,10 +7237,12 @@ function scrollToEnd(ctx, options) {
    }
    const paddingBottom = state.props.stylePaddingBottom || 0;
    const footerSize = peek$(ctx, "footerSize") || 0;
@@ -135,7 +171,7 @@ diff --git a/react.mjs b/react.mjs
      viewPosition: 1
    });
    return true;
-@@ -7288,6 +7308,7 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+@@ -7288,6 +7333,7 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
    const startImperativeScroll = (resolve) => {
 +    state.mvcpAnchorLock = void 0;
      state.scheduledWork.cancel("imperativeScrollReady");
@@ -143,7 +179,7 @@ diff --git a/react.mjs b/react.mjs
      settlePendingImperativeScroll(state);
      state.pendingScrollResolve = resolve;
      return token;
-@@ -7436,15 +7457,24 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+@@ -7436,15 +7482,24 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
          params.index >= 0 ? () => isScrollToIndexReady(params.index) : void 0
        );
      },
