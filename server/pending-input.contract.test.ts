@@ -168,7 +168,11 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
   const log = join(root, `${id}.jsonl`);
   const screenFile = join(root, `${id}.screen`);
   writeFileSync(screenFile, "");
-  const command = `'${join(root, agent)}' '${join(root, "record.cjs")}' '${log}' '${screen.replace(/\n/g, "\r\n")}' '${screenFile}'${ompStarting ? ` -e '${join(root, "herdr-omp-agent-state.ts")}'` : ""}`;
+  const command = `'${join(root, agent)}' '${join(root, "record.cjs")}' '${log}' '${screen.replace(/\n/g, "\r\n")}' '${screenFile}'${ompStarting ? ` -e '${join(root, "herdr-omp-agent-state.ts")}'`
+    // any other omp loads no integration, also where one is installed (a PC with omp): no send waits for it to report a
+    // session (composer.ts untilOmpReported), and no session is reported, after which herdr drops the manual state
+    // reports `state` makes about half the time, and a queued message never sees its turn end
+    : agent === "omp" ? " --no-extensions" : ""}`;
   // The shell immediately starts SESSION2 once SESSION1 exits, preserving terminal and lease.
   const replacementLog = join(root, `${id}-replacement.jsonl`);
   await herdrRpc("pane.send_text", { pane_id: pane, text: replaceable === "launcher"
@@ -185,10 +189,6 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
       await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent, state: "working" });
       await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:pi", agent, seq: piSeq++, agent_session_path: piTranscript, session_start_source: "startup" });
     } else await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent, state: "working" });
-    // an omp with herdr's integration reports its session once it takes input, and a send waits for that
-    // (composer.ts untilOmpReported): this one is at work, so it has. Where the integration is installed
-    // (a PC with omp), the stand-in started moments ago would otherwise be waited for
-    if (agent === "omp" && !ompStarting) await ompReports();
   }
   const server = createServer({ ...options, port: 0, stateDir: join(root, `state-${id}`) });
   entry.stop = server.stop;
