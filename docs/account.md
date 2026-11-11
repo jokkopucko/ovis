@@ -819,7 +819,9 @@ another account only once its rows of the deleted one are revoked there.
 
 The client (`src/lib/account/deleteAccount.ts`) deletes for the sign-in the person acted on, never
 one stored meanwhile, then forgets that sign-in and its account key; a pairing keeps its own copy
-of the key. It is offered behind a second press on the same button that says what goes and what
+of the key. A delete that finds the sign-in already gone (another tab signed out, or the answer to an
+earlier delete was lost and the service now refuses the sign-in) shows the signed-out page and keeps
+the key: nothing here proves the account went, and a key kept too long costs nothing. It is offered behind a second press on the same button that says what goes and what
 stays, wherever the sign-in is one the service lets delete: **Settings → Devices and PCs → Account**
 in the desktop app, and **Devices → Account** in the hosted shell and the phone apps. A PC's own page
 in a browser signs in with a device code or the link page, so its Account section offers no delete

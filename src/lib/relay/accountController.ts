@@ -289,6 +289,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       if (error instanceof SignedOutError || error instanceof AnotherAccountError) await refresh(true);
       // a sign-out or a sign-in while that read was out: what it drew stays
       if (!current()) return;
+      if (error instanceof SignedOutError && await account.session().catch(() => undefined) === undefined) {
+        // nothing is stored any more: the signed-out page. Whether the account went with it is not known here (a delete whose
+        // answer was lost, then a refused sign-in, looks the same as a sign-in ended some other way), so the device keeps
+        // its account key and records: a key kept too long costs nothing, a live account's key wiped costs its identity
+        directory = [];
+        accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") };
+        armRefresh();
+        await changed();
+        return;
+      }
       // a sign-in that ended or was replaced deleted nothing, and the page now shown is not the one asked about: no
       // failure is drawn on it to try again
       // said on Devices alone, where Delete account was pressed: the directory's own failure keeps `error`
