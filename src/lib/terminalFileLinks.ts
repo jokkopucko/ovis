@@ -39,6 +39,43 @@ export function isWebLink(uri: string): boolean {
 }
 
 /**
+ * The address that opens an http(s) link of another site in the Safari app, in the iOS home-screen
+ * app; null anywhere else. A home-screen app opens every new tab and every other site in a sheet
+ * of its own, and only the `x-safari-https` scheme (iOS 17 and later) reaches Safari. Ovis's own
+ * addresses stay in the app: Safari has none of its sign-in. The iOS app (app/) is a WebView,
+ * not a home-screen app, and hands links to the system browser itself.
+ */
+export function safariUrl(uri: string): string | null {
+  if (typeof navigator === "undefined" || typeof window === "undefined") return null;
+  if ((navigator as Navigator & { standalone?: boolean }).standalone !== true || inNativeApp()) return null;
+  if (!isWebLink(uri)) return null;
+  try {
+    if (new URL(uri).origin === window.location.origin) return null;
+  } catch {
+    return null;
+  }
+  return `x-safari-${uri}`;
+}
+
+/**
+ * Sends a click on a link to another site to Safari in the iOS home-screen app (safariUrl), for
+ * every plain `<a>` of the page. It listens on the document, below React's root, so a handler that
+ * took the click first (the web panel, a file link) has already called preventDefault.
+ */
+export function installSafariLinks(): () => void {
+  const onClick = (event: MouseEvent): void => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+    const url = link === null || link.hasAttribute("download") ? null : safariUrl(link.href);
+    if (url === null) return;
+    event.preventDefault();
+    window.location.href = url;
+  };
+  document.addEventListener("click", onClick);
+  return () => document.removeEventListener("click", onClick);
+}
+
+/**
  * Makes an http(s) link opener. Each instance owns at most one reusable tab. A browser lets a page
  * steer a tab of another site only as its opener, so the reused tab keeps its opener: the site in it
  * can see and navigate this tab. That is why reuse is a setting, off by default; a new tab has none.
@@ -53,6 +90,12 @@ export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
     link.click();
   };
   return (uri, reuse) => {
+    const safari = safariUrl(uri);
+    if (safari !== null) {
+      // Safari opens a tab of its own for each: the home-screen app can neither reuse nor steer it
+      window.location.href = safari;
+      return;
+    }
     if (!reuse || !canReuseExternalLinkTab()) {
       newTab(uri);
       return;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Terminal } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
-import { bareNameLinks, createWebLinkOpener, hyperlinkFilter, isWebLink, terminalFileLinks } from "./terminalFileLinks.ts";
+import { bareNameLinks, createWebLinkOpener, hyperlinkFilter, installSafariLinks, isWebLink, safariUrl, terminalFileLinks } from "./terminalFileLinks.ts";
 
 describe("openWebLink", () => {
   // which path a click takes; what a real browser does with it is scripts/external-link-tab-regression.ts
@@ -60,6 +60,84 @@ describe("openWebLink", () => {
       if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
       else Reflect.deleteProperty(globalThis, "window");
     }
+  });
+});
+
+describe("Safari links in the iOS home-screen app", () => {
+  /** runs `body` as a page of `origin`, standalone or not, with document and window stubbed */
+  function asPage(standalone: boolean, body: (page: { location: { href: string; origin: string }; listeners: ((event: MouseEvent) => void)[] }) => void): void {
+    const saved = ["document", "window", "Element"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+    const savedStandalone = Object.getOwnPropertyDescriptor(navigator, "standalone");
+    const location = { href: "https://ovis.example/", origin: "https://ovis.example" };
+    const listeners: ((event: MouseEvent) => void)[] = [];
+    class FakeElement {
+      constructor(readonly href: string, readonly attributes: string[] = []) {}
+      closest(): FakeElement { return this; }
+      hasAttribute(name: string): boolean { return this.attributes.includes(name); }
+    }
+    Object.defineProperty(globalThis, "Element", { configurable: true, value: FakeElement });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { location, open: () => { throw new Error("no tab in this test"); } } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      addEventListener: (_type: string, listener: (event: MouseEvent) => void) => listeners.push(listener),
+      removeEventListener: (_type: string, listener: (event: MouseEvent) => void) => listeners.splice(listeners.indexOf(listener), 1),
+      createElement: () => { throw new Error("no tab in this test"); },
+    } });
+    Object.defineProperty(navigator, "standalone", { configurable: true, value: standalone });
+    try {
+      body({ location, listeners });
+    } finally {
+      for (const [name, descriptor] of saved) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+      if (savedStandalone) Object.defineProperty(navigator, "standalone", savedStandalone);
+      else Reflect.deleteProperty(navigator, "standalone");
+    }
+  }
+
+  it("sends another site's http(s) address to Safari, and keeps Ovis's own and other schemes", () => {
+    asPage(true, () => {
+      expect(safariUrl("https://tasks.example/t/T-1")).toBe("x-safari-https://tasks.example/t/T-1");
+      expect(safariUrl("http://tasks.example/")).toBe("x-safari-http://tasks.example/");
+      expect(safariUrl("https://ovis.example/file?path=a")).toBeNull();
+      expect(safariUrl("mailto:someone@example.com")).toBeNull();
+      // the iOS app (a WebView) hands links to the system browser itself
+      (globalThis as { Capacitor?: unknown }).Capacitor = { isNativePlatform: () => true };
+      try {
+        expect(safariUrl("https://tasks.example/")).toBeNull();
+      } finally {
+        Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+    asPage(false, () => expect(safariUrl("https://tasks.example/")).toBeNull());
+  });
+
+  it("opens chat and terminal links in Safari instead of a tab", () => {
+    asPage(true, ({ location }) => {
+      createWebLinkOpener()("https://tasks.example/t/T-2", true);
+      expect(location.href).toBe("x-safari-https://tasks.example/t/T-2");
+    });
+  });
+
+  it("takes a plain click on a link no other handler took", () => {
+    asPage(true, ({ location, listeners }) => {
+      const remove = installSafariLinks();
+      const Fake = (globalThis as unknown as { Element: new (href: string, attributes?: string[]) => object }).Element;
+      const click = (href: string, init: Partial<MouseEvent> = {}, attributes: string[] = []) => {
+        let prevented = init.defaultPrevented ?? false;
+        listeners[0]!({ button: 0, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...init, defaultPrevented: prevented, target: new Fake(href, attributes), preventDefault: () => { prevented = true; } } as unknown as MouseEvent);
+        return prevented;
+      };
+      expect(click("https://ovis.example/x")).toBe(false);
+      expect(click("https://tasks.example/", { defaultPrevented: true })).toBe(true);
+      expect(click("https://tasks.example/", { metaKey: true })).toBe(false);
+      expect(click("https://tasks.example/", {}, ["download"])).toBe(false);
+      expect(location.href).toBe("https://ovis.example/");
+      expect(click("https://tasks.example/t/T-3")).toBe(true);
+      expect(location.href).toBe("x-safari-https://tasks.example/t/T-3");
+      remove();
+      expect(listeners).toHaveLength(0);
+    });
   });
 });
 
