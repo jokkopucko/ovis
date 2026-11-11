@@ -2222,8 +2222,11 @@ export function matchCodexFirstExchange(
 }
 
 /**
- * Codex's native status line prints session-id (also called thread-id) as a full UUID item,
- * separated from its other items by " · ". Only the footer below the last composer counts:
+ * Prerequisite: the user separately enables Thread ID / Session ID in Codex's /statusline,
+ * or adds "session-id" to [tui].status_line in CODEX_HOME/config.toml. Ovis does not change
+ * that setting. Keep the full ID visible; without it, the existing text-match lookup is used.
+ * Codex prints the UUID as an item separated from its other status-line items by " · ".
+ * Only the footer below the last composer counts:
  * an id in an answer, a tool result, or the input itself is not the pane's identity.
  */
 export function statusLineThread(screen: string): string | null {
