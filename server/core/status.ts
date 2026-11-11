@@ -46,6 +46,7 @@ import { type AlertTiming, createPushService, defaultStateDir } from "../push.ts
 import { SessionPlans } from "../session-plan.ts";
 import { readStatuslineContext } from "../statusline.ts";
 import { userHome } from "../user-home.ts";
+import { notePaneFolders } from "../windows-share.ts";
 import type { Telemetry } from "../telemetry.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
@@ -346,6 +347,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // reads overlap (the collector's, each client's): only one newer than every read applied before tells title turns
     const newest = titleRead > titleApplied;
     if (newest) titleApplied = titleRead;
+    // a share a pane works on is the PC's own to read (windows-share.ts): as the newest read tells the folders
+    if (newest) notePaneFolders(named.panes.flatMap((pane) => [pane.cwd, pane.foreground_cwd]));
     if (capabilities().agents === "reported") for (const { paneId, status } of lettaTitleStatus(named, (paneId) => letta.tracks(paneId), lettaTitled, newest)) {
       const rest = status === "idle" ? lettaRests.get(paneId) : undefined;
       if (status !== "blocked") lettaRests.delete(paneId);

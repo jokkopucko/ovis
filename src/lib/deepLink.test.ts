@@ -131,6 +131,12 @@ describe("the New workspace dialog", () => {
   it("reads what a link puts in its fields, and only what a person could type", () => {
     expect(readLink("?new=workspace&cwd=%2Fhome%2Fben%2FLocally&name=VOR-12&agent=claude").create).toEqual({ kind: "workspace", cwd: "/home/ben/Locally", name: "VOR-12", agent: "claude" });
     expect(readLink("?new=tab&ws=w2&agent=shell").create).toEqual({ kind: "tab", cwd: null, name: null, agent: "" });
+    // no network share as the folder, however it is written: Start would read what the address named
+    for (const share of ["//host/share/repo", "\\\\host\\share\\repo", "/\\host/share", "~///host/share", "~/\\\\host\\share"]) {
+      expect(readLink(`?new=workspace&cwd=${encodeURIComponent(share)}&name=x&agent=claude`).create, share).toEqual({ kind: "workspace", cwd: null, name: "x", agent: "claude" });
+    }
+    expect(readLink("?new=workspace&cwd=~%2F%2Fnotes").create?.cwd).toBe("~//notes");
+    expect(readLink("?new=workspace&cwd=%2Fsrv%2F%2Fapp").create?.cwd).toBe("/srv//app");
     expect(readLink(`?new=workspace&name=${"x".repeat(300)}&agent=rm%20-rf%20%2F`).create).toEqual({ kind: "workspace", cwd: null, name: "x".repeat(120), agent: null });
     expect(readLink("?new=window").create).toBeNull();
     expect(readLink("?cwd=%2Ftmp").create).toBeNull();

@@ -155,32 +155,21 @@ describe("inline markdown", () => {
     expect(parseInline(':codex-file-citation{path="\\u002f\\u002fserver/share/a.txt" purpose="output"}').some((node) => node.type === "file")).toBe(false);
   });
 
-  it("opens a Markdown link to a path only where a file:/// link could: no network share, however it is written", () => {
-    // two separators in front name a share on a Windows PC: its file viewer would ask that host for the file, with
-    // the user's sign-in. Percent-encoded too, which the link's path is decoded from
-    for (const target of [
-      "//server/share/a.md", "%5C%5Cserver%5Cshare%5Ca.md", "%2F%2Fserver%2Fshare%2Fa.md", "/%5Cserver/share/a.md", "%5C/server/share/a.md",
-      "//server/share/a.md:12", "%5C%5Cserver%5Cshare%5Ca.md#L3", "//server/share/a%20b.md",
-      // after `~/` too: the server reads what follows it against the home folder, where two separators are a share again
-      "~///server/share/a.md", "~/%5C%5Cserver%5Cshare%5Ca.md", "%7E///server/share/a.md", "~/%2F%5Cserver/share/a.md", "~///server/share/a.md:12", "~///server/share/a.md#L3",
-    ]) {
-      expect(parseInline(`[report](${target})`).some((node) => node.type === "file"), target).toBe(false);
-      expect(markdownFileTarget(target), target).toBeNull();
-    }
-    for (const target of ["\\\\server\\share\\a.md", "~/\\\\server\\share\\a.md", "~//\\server/share/a.md"]) expect(markdownFileTarget(target), target).toBeNull();
-    // two separators further in are a path, and so is one in front, after `~/` as well
-    expect(markdownFileTarget("/home/u//a.md")).toBe("/home/u//a.md");
-    expect(markdownFileTarget("/srv/a.md")).toBe("/srv/a.md");
-    expect(markdownFileTarget("~/notes//a.md")).toBe("~/notes//a.md");
-    expect(markdownFileTarget("~//notes/a.md")).toBe("~//notes/a.md");
-    // WSL's files are this PC's own, under either of the names Windows gives them, and open as before
+  it("keeps a Markdown link to a path that begins with two separators a file link: the server says whether it opens", () => {
+    // on a Windows PC such a path is a network share. Whether it is another host's is the server's to say, which knows
+    // its system and the folders its panes work in (server/windows-share.ts): a pane on `//nas/work` links its own
+    // files this way, and on Linux and macOS the path is the local one
     for (const [target, path] of [
-      ["//wsl$/Ubuntu/home/u/a.md", "//wsl$/Ubuntu/home/u/a.md"], ["//wsl.localhost/Ubuntu/home/u/a.md:12", "//wsl.localhost/Ubuntu/home/u/a.md:12"],
-      ["%5C%5Cwsl$%5CUbuntu%5Ca.md", "\\\\wsl$\\Ubuntu\\a.md"], ["//WSL.LOCALHOST/Ubuntu/a.md", "//WSL.LOCALHOST/Ubuntu/a.md"],
-    ] as const) expect(markdownFileTarget(target), target).toBe(path);
-    expect(markdownFileTarget("\\\\wsl$\\Ubuntu\\a.md")).toBe("\\\\wsl$\\Ubuntu\\a.md");
-    // no other host by a name like them
-    for (const target of ["//wsl$evil/share/a.md", "//wsl.localhost.example.com/share/a.md", "//wsl$@80/share/a.md", "//wsl$", "%5C%5Cwsl$evil%5Ca.md"]) expect(markdownFileTarget(target), target).toBeNull();
+      ["//nas/work/report.md", "//nas/work/report.md"], ["//nas/work/report.md:12", "//nas/work/report.md:12"], ["//nas/work/a%20b.md#L3", "//nas/work/a b.md#L3"],
+      ["%5C%5Cnas%5Cwork%5Creport.md", "\\\\nas\\work\\report.md"], ["~///nas/work/report.md", "~///nas/work/report.md"],
+      ["//wsl$/Ubuntu/home/u/a.md", "//wsl$/Ubuntu/home/u/a.md"], ["//home/u/a.md", "//home/u/a.md"],
+    ] as const) {
+      expect(markdownFileTarget(target), target).toBe(path);
+      expect(parseInline(`[report](${target})`).find((node) => node.type === "file"), target).toMatchObject({ path });
+    }
+    expect(markdownFileTarget("\\\\nas\\work\\report.md")).toBe("\\\\nas\\work\\report.md");
+    // a file:/// link still names no share (fileUri.ts), as before
+    expect(markdownFileTarget("file:////nas/work/report.md")).toBeNull();
   });
 
   it("leaves the markdown after an unfinished Codex citation as markdown, and reads a brace inside a quoted path", () => {

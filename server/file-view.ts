@@ -42,7 +42,7 @@ export function resolveFilePath(input: string, cwd: string | null, rules: Pick<P
   const resolved = path === "~" ? home : path.startsWith("~/") ? rules.resolve(home, path.slice(2)) : rules.isAbsolute(path) ? rules.resolve(path) : cwd === null ? null : rules.resolve(cwd, path);
   if (resolved === null) return null;
   // read after it is resolved, as Windows will read it: `~///host/share` and `/\\host/share` are shares only then
-  return rules.sep === "\\" && otherHostsShare(resolved, [cwd === null ? null : rules.resolve(cwd), rules.resolve(home)]) ? null : resolved;
+  return rules.sep === "\\" && otherHostsShare(resolved, [cwd === null ? null : rules.resolve(cwd), rules.resolve(home), rules.resolve(".")]) ? null : resolved;
 }
 
 const TEXT_TYPES = /^(?:text\/|application\/(?:json|javascript|typescript|xml|x-sh|toml|yaml|x-yaml|sql)|image\/svg\+xml)/;

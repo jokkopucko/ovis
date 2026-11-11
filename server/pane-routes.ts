@@ -22,7 +22,7 @@ import { ompScreenContext } from "./omp-status.ts";
 import { PasteImageError, readImageBody, savePaneImage } from "./paste.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "./dialogs/claude.ts";
 import { claudeRewindOpen } from "./prompt.ts";
-import { expandedDirectory } from "./workspace-routes.ts";
+import { expandedDirectory } from "./directories.ts";
 import { ConversationDiagnostics } from "./conversation-diagnostics.ts";
 
 const conversationDiagnostics = new ConversationDiagnostics();

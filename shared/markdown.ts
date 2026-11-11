@@ -100,10 +100,9 @@ export function webLikeHref(target: string): string | null {
  * files they wrote (`[report](/repo/out/REPORT.md)`, `[x](src/x.ts#L12)`, `[x](x.ts:12)`).
  * A line anchor (`#L12`, `:12`) stays for the viewer; other anchors are dropped. A line after a bare
  * word is a scheme's (`tel:123`), not a file's. The path is URL-encoded, as a `file:///` URI's is
- * (`/a%20b/%EC%95%B0.md`): it is decoded once, and kept as written when it is not valid encoding. Never a
- * network share (`//host/share/a.md`, `\\\\host\\share\\a.md`, `~///host/share/a.md`), as the Codex citation and the image readers
- * refuse one, and as the server does for every path it is asked for (server/windows-share.ts). WSL's own files
- * (`//wsl$/…`, `//wsl.localhost/…`) are the PC's and stay links.
+ * (`/a%20b/%EC%95%B0.md`): it is decoded once, and kept as written when it is not valid encoding. A path
+ * that begins with two separators (`//nas/work/a.md`, a network share on a Windows PC) stays a link: whether it
+ * opens is the server's to say, which knows its system and where its panes work (server/windows-share.ts).
  */
 export function markdownFileTarget(href: string): string | null {
   const value = href.trim();
@@ -117,13 +116,6 @@ export function markdownFileTarget(href: string): string | null {
   // a control character belongs to no path, an encoded `%3A12` or `%23L12` names the file, not a
   // line, and an encoded space at either end would be trimmed away by the viewer
   if (/[\u0000-\u001f\u007f]|(?::\d+){1,2}$|#L\d+(?:-L?\d+)?$|^\s|\s$/.test(decoded)) decoded = path;
-  // as a file:/// link (fileUri.ts): two separators in front name a network share on a Windows PC, however they
-  // are written and whether they were encoded, and its file viewer would ask that host for the file. After `~/`
-  // too: the server reads what follows it against the home folder (file-view.ts resolveFilePath), where two
-  // separators in front are a share again
-  const share = /^(?:~\/)?[\\/]{2}/;
-  // but for WSL's own files, which Windows serves under these two names from the PC itself
-  if ((share.test(decoded) || share.test(path)) && !/^[\\/]{2}(?:wsl\$|wsl\.localhost)[\\/]/i.test(decoded)) return null;
   return decoded + target.slice(path.length);
 }
 

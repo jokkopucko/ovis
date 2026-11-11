@@ -8,6 +8,7 @@ import { filePoolSize, setFilePoolOptions } from "./file-pool.ts";
 import { HERMES_ECHO_RE } from "./dialogs/hermes.ts";
 import { registry } from "./dialogs/registry.ts";
 import { findLastIndex } from "./dialogs/shared.ts";
+import * as directories from "./directories.ts";
 import { handlePaneRequest } from "./pane-routes.ts";
 import { paneAgentOf, resolveAgent } from "./pane-context.ts";
 import { openCodeServiceOptions } from "./opencode-service.ts";
@@ -583,4 +584,16 @@ it("reads a version from the store the pane's own transcript names, and leaks no
   // a session report names the agent when herdr's label is absent
   expect(resolveAgent({ agent_session: { agent: "codex" } } as never, null).agent).toBe("codex");
   expect(resolveAgent({} as never, null)).toEqual({ agent: null, version: null });
+});
+
+// the New workspace dialog asks for a folder's skills by itself, also with the folder an address named
+it("asks the share rule about the folder an agent's commands are listed for, as one nobody chose and no pane's", async () => {
+  const expanded = spyOn(directories, "expandedDirectory").mockReturnValue(null);
+  try {
+    const url = new URL("http://x/api/agent/commands?agent=claude&cwd=%2F%2Fhost%2Fshare");
+    const response = (await handlePaneRequest(new Request(url), url, "/api/agent/commands", {}))!;
+    expect([response.status, ((await response.json()) as { error: { code: string } }).error.code]).toEqual([400, "invalid_cwd"]);
+    // on a Windows PC a share no pane works on is refused before it is read (directories.ts expandedPath)
+    expect(expanded.mock.calls).toEqual([["//host/share"]]);
+  } finally { expanded.mockRestore(); }
 });

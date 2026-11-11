@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:te
 import type { PendingMessage, ServerMessage } from "../shared/protocol.ts";
 import { MAX_INVENTORY_WORKSPACES } from "../shared/workspace-lifecycle.ts";
 import * as agentLaunchModule from "./agent-launch.ts";
+import * as directories from "./directories.ts";
 import * as herdr from "./herdr/client.ts";
 import { handleWorkspaceRequest, INVENTORY_BUDGET_MS, MAX_ENV_BYTES, MAX_ENV_VARS } from "./workspace-routes.ts";
 
@@ -133,5 +134,26 @@ describe("a create answers after the roster is told", () => {
     expect(response.status).toBe(200);
     // once, and after the launch: a roster read beside the launch's own herdr calls slows both
     expect(calls).toEqual([...order]);
+  });
+});
+
+describe("a folder a workspace route is given", () => {
+  it("is taken as chosen for a create request, and read with its pane's own folder for a repository route", async () => {
+    // the share rule (directories.ts expandedPath) refuses another host's share on a Windows PC unless the folder was
+    // chosen, or is on the share its pane works on
+    const expanded = spyOn(directories, "expandedDirectory").mockImplementation((value, own) => own === "chosen" ? value : null);
+    for (const path of ["/api/workspace/create", "/api/tab/create"]) {
+      await post(path, { ...(path === "/api/tab/create" ? { workspace_id: "w1" } : {}), cwd: "//nas/work/proj", label: "x", agent: null });
+    }
+    expect(expanded.mock.calls).toEqual([["//nas/work/proj", "chosen"], ["//nas/work/proj", "chosen"]]);
+    expanded.mockClear();
+    spyOn(herdr, "paneGet").mockResolvedValue({ pane_id: "p", cwd: "/work/repo" } as never);
+    for (const [directory, asked] of [["sub", "/work/repo/sub"], ["/elsewhere", "/elsewhere"]] as const) {
+      const url = new URL(`http://127.0.0.1/api/workspace/diff/files?pane_id=p&directory=${encodeURIComponent(directory)}`);
+      const response = await handleWorkspaceRequest(new Request(url), url, "/api/workspace/diff/files", { timeout: () => {} },
+        () => {}, async () => ({ id: "m1" }) as PendingMessage, () => ({ order_epoch: "e", moved_seq: 1 }));
+      expect(((await response!.json()) as { error: { code: string } }).error.code, directory).toBe("invalid_cwd");
+      expect(expanded.mock.calls.at(-1), directory).toEqual([asked, ["/work/repo"]]);
+    }
   });
 });

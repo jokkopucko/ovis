@@ -17,6 +17,7 @@ import { noteSubmitted } from "../prompt.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
 import { at, claude, collectorSnapshot, handlers, hub, line, opencode, originalCollector, root, workingClaude } from "./status.fake.ts";
+import { notePaneFolders, otherHostsShare } from "../windows-share.ts";
 
 describe.each(["baseline", "gap", "resync", "newer-event"] as const)("native OpenCode ownership reconciliation (%s)", (mode) => {
   it.each([
@@ -2326,5 +2327,34 @@ describe("a pane closed, not ended by itself", () => {
     handlers.onPaneEnded(claude.pane_id);
     expect(h.held).toEqual([{ paneId: claude.pane_id, code: "pane_not_found" }]);
     expect(h.ended()).toEqual({ push: [claude.pane_id], frames: 1 });
+  });
+});
+
+describe("the read of herdr's snapshot", () => {
+  afterEach(() => notePaneFolders([]));
+  it("tells the share rule the folders the panes are in: the pane's and its program's (windows-share.ts)", async () => {
+    const h = hub();
+    const asked = (share: string) => otherHostsShare(`${share}\\a.md`, []);
+    expect([asked("\\\\nas\\work"), asked("\\\\nas\\tools")]).toEqual([true, true]);
+    // the pane's own folder on one share, its program's on another
+    h.herdrSays({ ...claude, cwd: "\\\\nas\\tools\\bin", foreground_cwd: "\\\\nas\\work\\proj" });
+    await h.status.clientSnapshot();
+    expect([asked("\\\\nas\\work"), asked("\\\\nas\\tools")]).toEqual([false, false]);
+    // the pane moved on: both are another host's again at the next read
+    h.herdrSays({ ...claude, cwd: "C:\\code", foreground_cwd: "C:\\code\\sub" });
+    await h.status.clientSnapshot();
+    expect([asked("\\\\nas\\work"), asked("\\\\nas\\tools")]).toEqual([true, true]);
+  });
+
+  it("keeps what the newest read told when an older one is answered after it", async () => {
+    const h = hub();
+    h.herdrSays({ ...claude, cwd: "C:\\code" });
+    // a read begun before a workspace is made on a share, and answered after the read that saw it
+    const answerOlder = await h.heldSnapshot();
+    h.herdrSays({ ...claude, cwd: "\\\\nas\\work\\proj" });
+    await h.status.clientSnapshot();
+    expect(otherHostsShare("\\\\nas\\work\\proj\\a.md", [])).toBe(false);
+    await answerOlder();
+    expect(otherHostsShare("\\\\nas\\work\\proj\\a.md", [])).toBe(false);
   });
 });
