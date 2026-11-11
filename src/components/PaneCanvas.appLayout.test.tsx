@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { act, createElement } from "react";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { act, createElement, type ReactNode } from "react";
+import * as ReactDom from "react-dom";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { HerdrPane, SessionSnapshot } from "../../shared/protocol.ts";
@@ -7,7 +8,9 @@ import { AppLayoutContext, appLayoutOf, type LayoutOffer } from "../lib/machineC
 import { SettingsProvider } from "../lib/settings.ts";
 import { setSidebarPins } from "../lib/sidebarPins.ts";
 import type { RowMenuItem } from "./RowMenu.tsx";
-import { PaneCanvas } from "./PaneCanvas.tsx";
+
+await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
+const { PaneCanvas } = await import("./PaneCanvas.tsx");
 
 /** herdr's TUI server, a herdr-core PC the Herdr app lays out, and one whose layout Ovis keeps (lib/machineContext.tsx) */
 const TUI = appLayoutOf({ version: "0.9.5", protocol: 22 });
@@ -37,7 +40,7 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
   let phone = false;
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     stored.clear();
     const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
     const events = new EventTarget();
@@ -45,6 +48,7 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
     const media = { get matches() { return phone; }, addEventListener() {}, removeEventListener() {} };
     const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
     define("IS_REACT_ACT_ENVIRONMENT", true);
+    define("HTMLElement", class {});
     define("localStorage", storage);
     define("navigator", { languages: ["en-US"], platform: "Linux" });
     define("window", { localStorage: storage, matchMedia: () => media, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout, clearTimeout });
@@ -185,10 +189,67 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
     phone = true;
     await draw(TUI);
     expect(zoomButtons()).toHaveLength(0);
+    expect(closeButtons()).toHaveLength(0);
     phone = false;
     await act(async () => renderer?.unmount());
     await draw(APP_CORE);
     expect(zoomButtons()).toHaveLength(0);
+    expect(closeButtons()).toHaveLength(0);
+  });
+
+  const closeButtons = () => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "icon-button pane-frame-close");
+  const headButtons = (id: string) => frameOf(id).findAll((node) => node.type === "button").map((button) => button.props.className as string);
+  let pressedFocus = 0;
+  async function pressClose(drawn: SessionSnapshot, id: string, detail = 1): Promise<unknown[]> {
+    await draw(TUI, drawn);
+    pressedFocus = 0;
+    const bodies: unknown[] = [];
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/pane/close") && typeof init?.body === "string") bodies.push(JSON.parse(init.body));
+      return Response.json({});
+    }, { preconnect: globalThis.fetch.preconnect }));
+    try {
+      await act(async () => { closeButtons()[drawn.panes.findIndex((item) => item.pane_id === id)]!.props.onClick({ detail, currentTarget: { focus: () => { pressedFocus++; } } }); });
+    } finally {
+      fetch.mockRestore();
+    }
+    return bodies;
+  }
+  const asking = () => renderer!.root.findAll((node) => node.props.className === "modal confirm-dialog");
+
+  it("ends each split pane's title with Close pane, Zoom pane just left of it, zoomed or not", async () => {
+    await draw(TUI);
+    for (const id of ["p1", "p2"]) expect(headButtons(id)).toEqual(["icon-button pane-frame-menu", "icon-button pane-frame-zoom", "icon-button pane-frame-close"]);
+    expect(closeButtons().map((button) => [button.props["aria-label"], button.props.title])).toEqual([["Close pane", "Close pane"], ["Close pane", "Close pane"]]);
+    await act(async () => renderer?.unmount());
+    await draw(TUI, zoomed);
+    expect(headButtons("p1")).toEqual(["icon-button pane-frame-menu", "icon-button pane-frame-zoom", "icon-button pane-frame-close"]);
+  });
+
+  it("closes an idle pane from its title's Close at once, as the menu's Close does", async () => {
+    expect(await pressClose(snapshot, "p2")).toEqual([{ pane_id: "p2" }]);
+    expect(asking()).toHaveLength(0);
+  });
+
+  it("asks before the title's Close stops a working or blocked agent, as the menu's Close does", async () => {
+    for (const agent_status of ["working", "blocked"] as const) {
+      const busy: SessionSnapshot = { ...snapshot, panes: [snapshot.panes[0]!, { ...snapshot.panes[1]!, agent_status }] };
+      expect(await pressClose(busy, "p2")).toEqual([]);
+      expect(asking()).toHaveLength(1);
+      // the pressed Close holds the focus before the confirmation opens, so Cancel hands it back there (Safari focuses no clicked button)
+      expect(pressedFocus).toBe(1);
+      await act(async () => renderer?.unmount());
+    }
+  });
+
+  it("closes nothing on a double click's second press, which may land on the neighbour that took the corner", async () => {
+    expect(await pressClose(snapshot, "p2", 2)).toEqual([]);
+    expect(asking()).toHaveLength(0);
+  });
+
+  it("shows a watching device the title's Close, which it cannot use", async () => {
+    await draw(TUI, snapshot, true);
+    expect(closeButtons().map((button) => button.props.disabled)).toEqual([true, true]);
   });
 
   it("offers no Close for a locked pinned agent, nor Close tab for the tab it is in (#2432)", async () => {
@@ -201,6 +262,12 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
       // the other pane of the tab still closes on its own; the tab, with the locked agent in it, does not
       expect(itemsOf(snapshot.panes[1] as HerdrPane)).toContain("close");
       expect(itemsOf(snapshot.panes[1] as HerdrPane)).not.toContain("close-tab");
+      phone = false;
+      await act(async () => renderer?.unmount());
+      await draw(TUI);
+      // nor a Close on its title: the other pane's title keeps its own
+      expect(headButtons("p1")).toEqual(["icon-button pane-frame-menu", "icon-button pane-frame-zoom"]);
+      expect(headButtons("p2")).toContain("icon-button pane-frame-close");
     } finally {
       setSidebarPins([]);
     }

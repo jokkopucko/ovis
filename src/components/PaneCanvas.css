@@ -27,6 +27,8 @@
   flex: none;
   display: flex;
   align-items: center;
+  /* a pane narrower than its buttons overflows them at the start, past the title: Close stays in the corner */
+  justify-content: flex-end;
   gap: var(--space-1);
   height: var(--control-h);
   padding-inline: var(--space-2);
@@ -59,6 +61,8 @@
 .pane-frame-menu { flex: none; width: var(--control-h); height: var(--control-h); pointer-events: auto; }
 /* a split pane's zoom stays in sight on every pointer, in the title's own color (#2037) */
 .pane-frame-zoom { color: inherit; pointer-events: auto; }
+/* Close takes the corner beside it; the wider gap keeps a press meant for Zoom off it */
+.pane-frame-close { color: inherit; pointer-events: auto; margin-inline-start: var(--space-2); }
 .pane-frame-body { flex: 1; min-width: 0; min-height: 0; position: relative; }
 /* A lone pane's head floats over the terminal's top right corner, where a full-screen program may
    draw a control of its own (Claude Code's diff panel close): only its ellipsis takes a press. Under

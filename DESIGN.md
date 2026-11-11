@@ -2170,8 +2170,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--accent` around the selected pane. The compact header names its pane and, on a screen that takes touch
   (`any-pointer: coarse`), the ellipsis; a mouse opens the same menu by right-click. Keyboard users
   tab to the pane's ellipsis, which becomes visible on keyboard focus, and press Enter.
-  Shift+F10 in the terminal goes to the terminal program, not the app menu. A lone or zoomed
-  pane is borderless; its actions live in the tab's `⋯` menu rather than a second ellipsis, on a desktop as on touch.
+  Where every pane of a split tab is drawn (wider than 768px, on a PC whose layout Ovis keeps),
+  each header ends with two buttons always in sight: Zoom pane / Unzoom pane (`Maximize2` /
+  `Minimize2`), then Close pane (`X`) in the corner, where a window closes: the order of a
+  Windows or GNOME title bar, Maximize just left of Close. Close is the menu's Close pane, with its confirmation (the workspace's last
+  pane, an agent `working` or `blocked`), and is drawn only where the menu offers it (not on a
+  locked agent's pane); a watching device sees it disabled. A pane narrower than its header gives up
+  its title, then its ellipsis, never the corner's Close. `--space-2` more than the header's gap stands between the two, so a press
+  meant for Zoom does not land on Close; each is a `--control-h` square, `--touch-target` under a
+  coarse pointer. herdr's zoomed pane keeps that header, Unzoom and Close included.
+  Shift+F10 in the terminal goes to the terminal program, not the app menu. A lone pane, and a
+  zoomed one where panes are shown one at a time, is borderless and draws neither button; its actions live in the tab's `⋯` menu rather than a second ellipsis, on a desktop as on touch.
 - A left click or keyboard focus selects the actual pane. Right-click opens the clicked pane's
   menu without changing the selected pane: Rename pane, Clear pane name when named, Swap with
   focused pane when another is selected, Split right, Split down, Zoom/Unzoom pane, Recover
