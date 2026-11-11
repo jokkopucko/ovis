@@ -22,7 +22,7 @@ mock.module("../collector.ts", () => ({
   startStatusCollector: (seen: Handlers, deps: { snapshot: typeof collectorSnapshot }) => {
     collectorSnapshot = deps.snapshot;
     handlers = seen;
-    return { ready: Promise.resolve(), structureReady: Promise.resolve(), focusReady: Promise.resolve(), trackPane() {}, stop() {} };
+    return { ready: Promise.resolve(), structureReady: Promise.resolve(), focusReady: Promise.resolve(), trackPane() {}, refresh() {}, stop() {} };
   },
 }));
 const { createStatusHub } = await import("./status.ts");
@@ -81,6 +81,8 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
     spyOn(service, "readOpenCodeService").mockReturnValue(null),
     spyOn(conversation, "claudePaneSession").mockResolvedValue({ path, startedAt: null, pid: null } as never),
     spyOn(conversation, "claudePanePid").mockResolvedValue(null as never),
+    // the fixtures' shell pids are made up: no process of this PC answers for them
+    spyOn(conversation, "stoppedAgentJob").mockResolvedValue(false),
   );
   const frames: { type: string; agent_status?: string; background_tasks?: number; background_wait?: boolean }[] = [];
   const client: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; }, close: () => {} };

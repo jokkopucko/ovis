@@ -142,6 +142,8 @@ export interface StatusCollector {
   focusReady: Promise<void>;
   /** Register a pane before starting work whose exit must survive a lifecycle subscription gap. */
   trackPane: (paneId: string) => void;
+  /** Ask for a fresh snapshot, registering nothing: a snapshot already on its way still counts for every tracked pane. */
+  refresh: () => void;
   stop: () => void;
 }
 
@@ -640,6 +642,7 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
       trackedPanes.set(paneId, ++statusEvents);
       void reconcile();
     },
+    refresh() { void reconcile(); },
     stop() {
       stopped = true;
       if (reconcileTimer !== null) clearTimeout(reconcileTimer);

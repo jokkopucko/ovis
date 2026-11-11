@@ -168,7 +168,7 @@ describe("native OpenCode ownership verified during a snapshot", () => {
         },
       });
       await captured.promise;
-      untrack = trackVerifiedOpenCodePanes(collector.trackPane);
+      untrack = trackVerifiedOpenCodePanes(collector.trackPane, collector.refresh);
       // When verification succeeds while the captured snapshot is still pending,
       // trackPane requests another read but must not let the older one release it.
       expect(await openCodePaneService(pane)).not.toBeNull();
@@ -221,7 +221,7 @@ describe("native OpenCode ownership without a status event", () => {
       snapshot: collectorSnapshot,
       subscribe: (_subs, callbacks) => { queueMicrotask(() => callbacks.onStarted?.()); return { close() {} }; },
     });
-    const untrack = trackVerifiedOpenCodePanes(collector.trackPane);
+    const untrack = trackVerifiedOpenCodePanes(collector.trackPane, collector.refresh);
     let info: { mockRestore(): void } | undefined;
     try {
       await collector.ready;
@@ -249,6 +249,142 @@ describe("native OpenCode ownership without a status event", () => {
       closeOpenCodeNative();
       jest.useRealTimers();
       info?.mockRestore();
+      events.mockRestore();
+      session.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+
+  it("keeps a verified pane whose OpenCode the shell stopped (Ctrl+Z), herdr's label staying with the shell alone in front", async () => {
+    // Given a pane verified as OpenCode v2 and tracked by the real collector, with its status subscription live.
+    jest.useFakeTimers();
+    const h = hub();
+    closeOpenCodeNative();
+    const pane: HerdrPane = { ...claude, ...opencode("ses_parent"), agent_status: "unknown", focused: false, revision: 0, terminal_id: "native-stopped" };
+    const lookup = spyOn(service, "openCodeService").mockResolvedValue({
+      version: "2.0.32", config: { baseUrl: "http://127.0.0.1:1", port: 1, pid: process.pid, password: "fixture" },
+    });
+    const session = spyOn(service, "openCodeHasSession").mockResolvedValue(true);
+    let closed = false;
+    const events = spyOn(service, "subscribeOpenCodeEvents").mockImplementation(() => ({ close() { closed = true; } }));
+    h.herdrSays(pane);
+    let reconciled = Promise.withResolvers<void>();
+    const collector = originalCollector({
+      onBaseline: handlers.onBaseline,
+      onReconciled: (panes) => { handlers.onReconciled(panes); reconciled.resolve(); },
+      onStatus: handlers.onStatus,
+      onPaneEnded: handlers.onPaneEnded,
+      onStructureChange() {},
+    }, {
+      snapshot: collectorSnapshot,
+      subscribe: (_subs, callbacks) => { queueMicrotask(() => callbacks.onStarted?.()); return { close() {} }; },
+    });
+    const untrack = trackVerifiedOpenCodePanes(collector.trackPane, collector.refresh);
+    let info: { mockRestore(): void } | undefined;
+    const stopped = spyOn(conversation, "stoppedAgentJob").mockImplementation(async (shellPid, agent) => shellPid === 41000 && agent === "opencode");
+    try {
+      await collector.ready;
+      reconciled = Promise.withResolvers<void>();
+      expect(await openCodePaneService(pane)).not.toBeNull();
+      await reconciled.promise;
+      // When the user stops OpenCode with Ctrl+Z: herdr 0.9.5 keeps calling the pane OpenCode and names the
+      // shell alone in front, as right after an exit (live-checked), while OpenCode is the shell's stopped job.
+      h.herdrSays(pane);
+      info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+        pane_id: pane.pane_id, shell_pid: 41000, foreground_process_group_id: 41000, foreground_processes: [{ pid: 41000, name: "bash", argv: ["/bin/bash"] }],
+      });
+      reconciled = Promise.withResolvers<void>();
+      jest.advanceTimersByTime(PANE_VERIFIED_MS);
+      await reconciled.promise;
+      // Then the pane keeps its hold on the stream, for the events of a send made before it stopped.
+      expect(openCodeNativeState()).toEqual({ stream: true, panes: [pane.pane_id] });
+      expect(closed).toBe(false);
+    } finally {
+      untrack();
+      collector.stop();
+      closeOpenCodeNative();
+      jest.useRealTimers();
+      stopped.mockRestore();
+      info?.mockRestore();
+      events.mockRestore();
+      session.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+
+  it("ends a verified pane gone from herdr's snapshot while each read outlasts the recheck", async () => {
+    // Given a pane verified as OpenCode v2 and tracked by the real collector, on a host where every snapshot
+    // takes longer than PANE_VERIFIED_MS to answer.
+    jest.useFakeTimers();
+    const h = hub();
+    closeOpenCodeNative();
+    const pane: HerdrPane = { ...claude, ...opencode("ses_parent"), agent_status: "unknown", focused: false, revision: 0, terminal_id: "native-slow" };
+    const lookup = spyOn(service, "openCodeService").mockResolvedValue({
+      version: "2.0.32", config: { baseUrl: "http://127.0.0.1:1", port: 1, pid: process.pid, password: "fixture" },
+    });
+    const session = spyOn(service, "openCodeHasSession").mockResolvedValue(true);
+    let closed = false;
+    const events = spyOn(service, "subscribeOpenCodeEvents").mockImplementation(() => ({ close() { closed = true; } }));
+    h.herdrSays(pane);
+    let gone = false;
+    let slow = false;
+    let slowReads = 0;
+    /** the slow reads in the order they were asked, each answered when the test says */
+    const asked = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const answers: (() => void)[] = [];
+    let reconciled = Promise.withResolvers<void>();
+    let read = Promise.withResolvers<void>();
+    const collector = originalCollector({
+      // the collector checks its tracked panes in the same turn, right after this
+      onBaseline: (panes) => { handlers.onBaseline(panes); read.resolve(); },
+      onReconciled: (panes) => { handlers.onReconciled(panes); reconciled.resolve(); },
+      onStatus: handlers.onStatus,
+      onPaneEnded: handlers.onPaneEnded,
+      onStructureChange() {},
+    }, {
+      replaySettleMs: 1,
+      snapshot: async () => {
+        const snapshot = await collectorSnapshot();
+        const read = gone ? { ...snapshot, panes: [] } : snapshot;
+        if (slow) {
+          const answer = Promise.withResolvers<void>();
+          answers.push(answer.resolve);
+          asked[slowReads++]?.resolve();
+          await answer.promise;
+        }
+        return read;
+      },
+      subscribe: (_subs, callbacks) => { queueMicrotask(() => callbacks.onStarted?.()); return { close() {} }; },
+    });
+    const untrack = trackVerifiedOpenCodePanes(collector.trackPane, collector.refresh);
+    try {
+      await collector.ready;
+      reconciled = Promise.withResolvers<void>();
+      expect(await openCodePaneService(pane)).not.toBeNull();
+      await reconciled.promise;
+      expect(openCodeNativeState()).toEqual({ stream: true, panes: [pane.pane_id] });
+      // When the pane goes with no lifecycle frame, and the recheck comes due again while each read is on its way.
+      gone = true;
+      slow = true;
+      jest.advanceTimersByTime(PANE_VERIFIED_MS);
+      for (const pending of asked) {
+        await pending.promise;
+        jest.advanceTimersByTime(PANE_VERIFIED_MS);
+        read = Promise.withResolvers<void>();
+        answers.shift()!();
+        await read.promise;
+        // the pane set changed: the collector lets the old subscription settle before it reads on
+        jest.advanceTimersByTime(1);
+      }
+      // Then a read asked after the pane was tracked ends it, and its hold on the stream goes.
+      expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
+      expect(closed).toBe(true);
+    } finally {
+      untrack();
+      collector.stop();
+      for (const answer of answers) answer();
+      closeOpenCodeNative();
+      jest.useRealTimers();
       events.mockRestore();
       session.mockRestore();
       lookup.mockRestore();

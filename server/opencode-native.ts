@@ -63,8 +63,11 @@ export function openCodeVerificationCheckpoint(): number { return verificationGe
 type Verification = { cancelled: boolean; started: number };
 const inFlight = new Set<Verification>();
 const inFlightByPane = new Map<string, Set<Verification>>();
-/** the status collectors that end a pane: a verified pane is tracked so its close reaches releaseOpenCodePane */
-const paneTrackers = new Map<(paneId: string) => void, Set<string>>();
+/**
+ * the status collectors that end a pane: a verified pane is tracked so its close reaches releaseOpenCodePane.
+ * Each one's `refresh` asks it for a snapshot without registering any pane again.
+ */
+const paneTrackers = new Map<(paneId: string) => void, { handed: Set<string>; refresh: () => void }>();
 /** each tracker gets a pane once while it stays verified: tracking asks herdr for a snapshot */
 function handOver(track: (paneId: string) => void, handed: Set<string>, paneId: string): void {
   if (handed.has(paneId)) return;
@@ -77,13 +80,15 @@ function handOver(track: (paneId: string) => void, handed: Set<string>, paneId: 
  * gone, the shell idle in front, and nothing said for its pane), so no snapshot would read it until the collector's
  * backstop. While panes hold the stream, each one's collectors read it again whenever its verification is due
  * (PANE_VERIFIED_MS): what that snapshot shows releases it as any other (server/core/status.ts, onReconciled).
+ * Each collector is only asked to read again: tracking a pane anew would make every snapshot already on its
+ * way older than the pane, so on a host where a read outlasts the recheck a pane gone would never be ended.
  */
 let recheck: ReturnType<typeof setInterval> | null = null;
 function scheduleRecheck(): void {
   if (recheck !== null) return;
   recheck = setInterval(() => {
     if (verifiedPanes.size === 0) { stopRecheck(); return; }
-    for (const track of paneTrackers.keys()) for (const paneId of verifiedPanes.keys()) track(paneId);
+    for (const { refresh } of paneTrackers.values()) refresh();
   }, PANE_VERIFIED_MS);
   recheck.unref?.();
 }
@@ -95,11 +100,11 @@ function stopRecheck(): void {
 /**
  * A status hub's collector tracks verified OpenCode panes (server/core/status.ts): it gets every pane
  * verified now, and each one verified later, so a collector that replaces another misses no pane.
- * Returns its unregistration.
+ * `refresh` asks it for a snapshot, registering nothing. Returns its unregistration.
  */
-export function trackVerifiedOpenCodePanes(track: (paneId: string) => void): () => void {
+export function trackVerifiedOpenCodePanes(track: (paneId: string) => void, refresh: () => void): () => void {
   const handed = new Set<string>();
-  paneTrackers.set(track, handed);
+  paneTrackers.set(track, { handed, refresh });
   for (const paneId of verifiedPanes.keys()) handOver(track, handed, paneId);
   return () => { paneTrackers.delete(track); };
 }
@@ -215,7 +220,7 @@ export function closeOpenCodeNative(): void {
   for (const verification of inFlight) verification.cancelled = true;
   inFlight.clear();
   inFlightByPane.clear();
-  for (const handed of paneTrackers.values()) handed.clear();
+  for (const { handed } of paneTrackers.values()) handed.clear();
   stream?.close();
   stream = null;
   catalogs.clear();
@@ -236,7 +241,7 @@ export function releaseOpenCodePane(paneId: string, checkpoint = Infinity): void
   for (const verification of inFlightByPane.get(paneId) ?? []) if (verification.started > checkpoint) return;
   for (const verification of inFlightByPane.get(paneId) ?? []) { verification.cancelled = true; inFlight.delete(verification); }
   inFlightByPane.delete(paneId);
-  for (const handed of paneTrackers.values()) handed.delete(paneId);
+  for (const { handed } of paneTrackers.values()) handed.delete(paneId);
   verifiedPanes.delete(paneId);
   if (verifiedPanes.size === 0) stopRecheck();
   for (let index = watches.length - 1; index >= 0; index--) if (watches[index]!.paneId === paneId) watches.splice(index, 1);
@@ -294,7 +299,7 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   verifiedPanes.delete(paneId);
   verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration });
   // a pane closed without an exit frame ends only if its collector tracks it
-  for (const [track, handed] of paneTrackers) handOver(track, handed, paneId);
+  for (const [track, { handed }] of paneTrackers) handOver(track, handed, paneId);
   scheduleRecheck();
   return { service: service!, sessionID };
 }

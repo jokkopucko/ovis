@@ -21,7 +21,7 @@ import { listHcMachines, startMachineBridge } from "../herdr-core/machine-bridge
 import { coreConnection } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import { Finishes, herdrLifetime } from "../finishes.ts";
-import { claudePanePid, claudePaneSession, forgetPaneTranscriptState } from "../conversation.ts";
+import { claudePanePid, claudePaneSession, forgetPaneTranscriptState, stoppedAgentJob } from "../conversation.ts";
 import { openCodeNativeState, openCodeVerificationCheckpoint, releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import { opencodeDatabasePath } from "../opencode.ts";
 import { OpencodeSubagentStatus } from "../opencode-subagents.ts";
@@ -753,7 +753,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
         // `exec opencode` keeps the shell's pid, but not its process identity.
         const shell = /(?:^|\/)-?(?:sh|bash|dash|zsh|fish|ksh|mksh|csh|tcsh|ash|nu)$/u;
         if (info?.shell_pid != null && info.foreground_processes?.length === 1 && front?.pid === info.shell_pid
-          && shell.test(front.name) && shell.test(front.argv?.[0] ?? front.argv0 ?? front.name)) shellSnapshots.add(pane);
+          && shell.test(front.name) && shell.test(front.argv?.[0] ?? front.argv0 ?? front.name)
+          // OpenCode stopped with Ctrl+Z leaves the shell alone in front too, and herdr's label stays: it has not left
+          && !(await stoppedAgentJob(info.shell_pid, "opencode"))) shellSnapshots.add(pane);
       }));
     }
     return snapshot;
@@ -769,7 +771,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   plans.start();
 
   // a verified OpenCode pane is tracked like a usage-login pane: its end or close reaches paneGone above
-  const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId));
+  const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId), () => collector.refresh());
   const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
 
   /**

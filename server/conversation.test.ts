@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as darwinProcess from "./darwin-process.ts";
 import { Database } from "bun:sqlite";
 import { appendFileSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -31,7 +31,7 @@ import * as served from "./runtime/capabilities.ts";
 import { HERDR_CORE } from "./runtime/capabilities.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, stoppedAgentJob, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -74,6 +74,44 @@ it("says the transcript file's size on the newest page only, and again once it g
     expect(newest.cursor).not.toBeNull();
     expect(transcriptPage("claude-transcript", file, { before: newest.cursor! }).transcript_bytes).toBeUndefined();
   } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+describe("an agent the shell stopped as a job", () => {
+  // Given /proc as Linux lays it out: each of the shell's threads lists its children, each child its state and argv.
+  const proc = mkdtempSync(join(tmpdir(), "stopped-job-proc-"));
+  const child = (pid: number, comm: string, state: string, argv: string[]) => {
+    mkdirSync(join(proc, String(pid)), { recursive: true });
+    writeFileSync(join(proc, String(pid), "stat"), `${pid} (${comm}) ${state} 41000 ${pid} 41000 34816 41000 4194304`);
+    writeFileSync(join(proc, String(pid), "cmdline"), argv.map((word) => `${word}\0`).join(""));
+  };
+  const shell = (pid: number, threads: Record<string, number[]>) => {
+    for (const [thread, children] of Object.entries(threads)) {
+      mkdirSync(join(proc, String(pid), "task", thread), { recursive: true });
+      writeFileSync(join(proc, String(pid), "task", thread, "children"), children.map((id) => `${id} `).join(""));
+    }
+  };
+  child(41001, "opencode", "T", ["/usr/bin/opencode"]);
+  child(41002, "opencode", "S", ["/usr/bin/opencode"]);
+  child(41003, "vim", "T", ["vim", "notes.md"]);
+  child(41004, "node", "T", ["node", "/home/u/.npm/bin/opencode"]);
+  child(41005, "x) T (y", "S", ["/usr/bin/x"]);
+  child(41006, "opencode", "T", ["/bin/sh", "/home/u/bin/opencode"]);
+  shell(41000, { "41000": [41001] });
+  shell(42000, { "42000": [41002, 41003, 41005] });
+  shell(43000, { "43000": [], "43001": [41004] });
+  shell(45000, { "45000": [41006] });
+  afterAll(() => rmSync(proc, { recursive: true, force: true }));
+
+  it.each([
+    { shell: 41000, found: true, case: "its stopped child is the agent" },
+    { shell: 42000, found: false, case: "the agent runs, and only another program or a lookalike name is stopped" },
+    { shell: 43000, found: true, case: "another thread started it, under an interpreter" },
+    { shell: 44000, found: false, case: "the shell is gone" },
+    { shell: 45000, found: true, case: "a script named after it runs under a shell" },
+  ])("finds the agent as a stopped job of the shell when $case", async ({ shell: pid, found }) => {
+    // When / Then
+    expect(await stoppedAgentJob(pid, "opencode", proc)).toBe(found);
+  });
 });
 
 describe("omo skill roots", () => {

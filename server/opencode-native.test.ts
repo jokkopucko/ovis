@@ -322,14 +322,14 @@ describe("collectors track the verified panes", () => {
     closeOpenCodeNative();
     const first: string[] = [];
     const second: string[] = [];
-    const untrackFirst = trackVerifiedOpenCodePanes((paneId) => first.push(paneId));
+    const untrackFirst = trackVerifiedOpenCodePanes((paneId) => first.push(paneId), () => {});
     let untrackSecond = (): void => {};
     try {
       expect(await openCodePaneService(opencodePane("p_t1", "ses_t1"))).not.toBeNull();
       expect(await openCodePaneService(opencodePane("p_t1", "ses_t1"))).not.toBeNull();
       expect(first).toEqual(["p_t1"]);
       untrackFirst();
-      untrackSecond = trackVerifiedOpenCodePanes((paneId) => second.push(paneId));
+      untrackSecond = trackVerifiedOpenCodePanes((paneId) => second.push(paneId), () => {});
       expect(second).toEqual(["p_t1"]);
       expect(await openCodePaneService(opencodePane("p_t2", "ses_t2"))).not.toBeNull();
       expect(first).toEqual(["p_t1"]);

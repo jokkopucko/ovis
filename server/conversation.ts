@@ -36,7 +36,7 @@
 
 import { createHash, randomUUID, type Hash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
-import { open as openHandle, type FileHandle } from "node:fs/promises";
+import { open as openHandle, readdir, readFile, type FileHandle } from "node:fs/promises";
 import { readStatuslineContext } from "./statusline.ts";
 import { transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
@@ -1668,6 +1668,29 @@ export function agentProcesses<T extends { argv?: readonly string[] | null; argv
       || ["node", "bun"].includes(runtime) && NPM_ENTRIES[agent]?.test(argv[1] ?? "") === true;
   });
   return [...native, ...interpreted.filter((entry) => !native.includes(entry))];
+}
+
+/**
+ * Whether the shell `shellPid` holds `agent` as a stopped job (Ctrl+Z): a child of the shell in state T. herdr
+ * names only the foreground process group, the shell's own while a job is stopped, as after the agent's exit
+ * (live-checked, herdr 0.9.5), so this reads Linux's /proc: the children of each of the shell's threads, and
+ * each child's state and command line. Without /proc (macOS), or a process gone meanwhile, nothing is found.
+ */
+export async function stoppedAgentJob(shellPid: number, agent: string, proc = "/proc"): Promise<boolean> {
+  const threads = await readdir(`${proc}/${shellPid}/task`).catch(() => []);
+  const lists = await Promise.all(threads.map((thread) => readFile(`${proc}/${shellPid}/task/${thread}/children`, "utf8").catch(() => "")));
+  for (const pid of new Set(lists.join(" ").split(/\s+/u).filter(Boolean))) {
+    const stat = await readFile(`${proc}/${pid}/stat`, "utf8").catch(() => "");
+    // `pid (comm) state …`: the command name may itself hold ") ", the state follows its last one
+    const open = stat.indexOf("(");
+    const close = stat.lastIndexOf(")");
+    if (open < 0 || close < open || stat[close + 2] !== "T") continue;
+    const name = stat.slice(open + 1, close);
+    const argv = (await readFile(`${proc}/${pid}/cmdline`, "utf8").catch(() => "")).split("\0").filter(Boolean);
+    // its process name too, which herdr labels the pane by: a script named after the agent runs under its shell
+    if (programName(name) === agent || agentProcesses([{ argv, name }], agent).length > 0) return true;
+  }
+  return false;
 }
 
 /** Loaded roots and environment belong to the foreground agent, not the web server. */
