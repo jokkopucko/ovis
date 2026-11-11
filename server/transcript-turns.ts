@@ -1,5 +1,5 @@
 import type { StreamSource } from "./conversation-shared.ts";
-import { claudePeerNotice, piMessage, piPromptImages } from "./transcript-records.ts";
+import { claudeHandback, claudePeerNotice, piMessage, piPromptImages } from "./transcript-records.ts";
 import type { TranscriptEntry } from "./claude-transcript.ts";
 import { claudeImages, isCommandEntry, senpiPrompt, withoutPictureBytes } from "./claude-transcript.ts";
 import { copilotPromptOpens, copilotRootRecord } from "./copilot.ts";
@@ -137,8 +137,9 @@ export function opensTurn(source: StreamSource, line: string, blobs: string | nu
     if (source === "omp-transcript") return piPromptImages(entry, message, blobs).length > 0;
     return (source === "pi-transcript" || source === "cmd-transcript" || source === "omo-transcript") && piPromptImages(entry, message).length > 0;
   }
-  // another session's message opens a turn in either of its forms, the meta entry and the queued attachment
-  if (claudePeerNotice(entry) !== null) return true;
+  // another session's message opens a turn in either of its forms, the meta entry and the queued attachment;
+  // a subagent's hand-back does not: it stays with the task's notification, so one parser puts the report in its card (#3658)
+  if (claudePeerNotice(entry) !== null) return claudeHandback(entry) === null;
   if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary) return false;
   const content = entry.message?.content;
   if (typeof content === "string") return !isCommandEntry(content, entry);
