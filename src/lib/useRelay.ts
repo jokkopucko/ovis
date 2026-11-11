@@ -19,8 +19,33 @@ export function inRelayShell(): boolean {
  */
 export const PAIRING_CODE_EVENT = "ovis:pairing-code";
 
-export function announcePairingCode(code: PairingCode): void {
-  window.dispatchEvent(new CustomEvent<PairingCode>(PAIRING_CODE_EVENT, { detail: code }));
+/** `qrOnly`: the code of a QR code shown alone (RelayPairing `qrOnly`), which no place shows as digits */
+export interface AnnouncedCode extends PairingCode {
+  readonly qrOnly?: true;
+}
+
+export function announcePairingCode(code: AnnouncedCode): void {
+  window.dispatchEvent(new CustomEvent<AnnouncedCode>(PAIRING_CODE_EVENT, { detail: code }));
+}
+
+/**
+ * The relay tab's QR codes in this browser's other windows share the PC's one pending code (server/devices.ts
+ * `pairingForNoAccount`): one that ends it says so on this channel, with the code as the message, and one still
+ * showing that code asks for a new one (RelayPairing `qrOnly`).
+ */
+export const QR_CODE_ENDED_CHANNEL = "ovis:qr-code-ended";
+
+/** the code of a QR code shown alone ended: this window's places that show it, and other windows' QR codes, are told */
+export function announceQrCodeEnded(code: string): void {
+  announcePairingCode({ code, expires_at: new Date(0).toISOString(), qrOnly: true });
+  tellOtherWindowsQrCodeEnded(code);
+}
+
+export function tellOtherWindowsQrCodeEnded(code: string): void {
+  if (typeof BroadcastChannel === "undefined") return;
+  const channel = new BroadcastChannel(QR_CODE_ENDED_CHANNEL);
+  channel.postMessage(code);
+  channel.close();
 }
 
 /**

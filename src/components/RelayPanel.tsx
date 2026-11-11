@@ -4,10 +4,10 @@ import { Keyboard, Link2, RefreshCw } from "lucide-react";
 import "./RelayPanel.css";
 
 import { copyText } from "../lib/clipboard.ts";
-import { ApiError, cancelRelayCode, requestRelayCode, requestRelayLink, requestRelayOffer, startPairing, type RelayCode, type RelayOffer } from "../lib/api.ts";
+import { ApiError, cancelRelayCode, endPairing, requestRelayCode, requestRelayLink, requestRelayOffer, startPairing, type RelayCode, type RelayOffer } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
-import { announcePairingCode, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
+import { announcePairingCode, PAIRING_CODE_EVENT, QR_CODE_ENDED_CHANNEL, tellOtherWindowsQrCodeEnded, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
 import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
 import { isTailnetCarrier } from "../../shared/relay-mux.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
@@ -93,7 +93,7 @@ export function RelayDirectRow({ relay, readOnly }: { relay: RelayState; readOnl
 
 // a code announced by a relay QR (announceFromRelay), not by the Devices group
 let relayAnnouncing = false;
-function announceFromRelay(code: PairingCode): void {
+function announceFromRelay(code: AnnouncedCode): void {
   relayAnnouncing = true;
   try { announcePairingCode(code); } finally { relayAnnouncing = false; }
 }
@@ -106,8 +106,14 @@ function announceFromRelay(code: PairingCode): void {
  * up at once: a code another one announces is the one this shows already, or this asks for the offer
  * again without announcing it (the server's offer reuses its pending code), so the two never keep
  * answering each other.
+ * `qrOnly`: the QR code alone, with New code. No code to type is asked for (`POST /api/relay/code` is never sent), so
+ * nothing on the screen can be read and typed on another device: the relay tab's account QR code, which puts a PC in
+ * the account of whoever redeems it (ConnectPhoneDialog `AccountQr`). Its offer says so to the PC
+ * (`x-ovis-no-account-only`), which makes it only while it is in no account, with a code of its own that no other
+ * place started; New code ends that code and asks again. `onInAccount`: the PC refused the offer because it is in an
+ * account by now.
  */
-export function RelayPairing({ phone = false, compact = false }: { phone?: boolean; compact?: boolean }) {
+export function RelayPairing({ phone = false, compact = false, qrOnly = false, onInAccount }: { phone?: boolean; compact?: boolean; qrOnly?: boolean; onInAccount?: () => void }) {
   const t = useT();
   const [offer, setOffer] = useState<RelayOffer | null>(null);
   const [left, setLeft] = useState("");
@@ -120,7 +126,11 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
   // the code on screen, and an ask for the offer that is not announced (another relay QR's code)
   const shown = useRef<string | null>(null);
   const quiet = useRef(false);
+  // the code another relay QR code last announced
+  const heard = useRef<string | null>(null);
   const again = () => setGeneration((value) => value + 1);
+  const refused = useRef(onInAccount);
+  refused.current = onInAccount;
   // a six-digit code started anywhere else ends the typed code on the PC (server/relay/pair-code.ts): its words go too
   const [typedReset, setTypedReset] = useState(0);
   const [typedId, setTypedId] = useState<string | null>(null);
@@ -129,31 +139,52 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
   useEffect(() => {
     // compact: the code to type is asked for first and asks for the offer once it is in (CompactRelay's onMinted).
     // Asked for together, a new six-digit code the offer starts ends the code being minted on the PC.
-    if (compact && generation === 0) return;
+    if (compact && !qrOnly && generation === 0) return;
     let cancelled = false;
     const silent = quiet.current;
     quiet.current = false;
     setState("minting");
-    requestRelayOffer().then((next) => {
+    requestRelayOffer({ noAccountOnly: qrOnly }).then((next) => {
       if (cancelled) return;
       setOffer(next);
       setState("live");
       // the server made this offer's code, maybe with no New code pressed: the page watches it like any other
       // (the Devices group re-reads its list while a code is out and closes the dialog once the phone is in)
       const code = decodeOffer(next.url)?.code;
+      // qrOnly: the PC gives this QR code a code of its own, so the code another relay QR code announced is not the
+      // one it got, and the others are told this one (they then ask for the offer again, and get the same)
+      const differs = qrOnly && code !== heard.current;
       shown.current = code ?? null;
-      if (code !== undefined && !silent) {
+      if (code !== undefined && (!silent || differs)) {
         announcing.current = true;
-        try { announceFromRelay({ code, expires_at: next.expires_at }); } finally { announcing.current = false; }
+        try { announceFromRelay({ code, expires_at: next.expires_at, ...(qrOnly ? { qrOnly: true } : {}) }); } finally { announcing.current = false; }
       }
     }, (reason: unknown) => {
       if (cancelled) return;
       setOffer(null);
+      // the PC joined an account meanwhile: no refusal to read, the tab says which account instead
+      if (reason instanceof ApiError && reason.code === "in_account" && refused.current !== undefined) {
+        refused.current();
+        return;
+      }
       setFailure(failureText(reason));
       setState("failed");
     });
     return () => { cancelled = true; };
   }, [generation]);
+
+  // a window of this browser ended the code this QR code shows (they share the PC's one pending code): a new one
+  useEffect(() => {
+    if (!qrOnly || typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel(QR_CODE_ENDED_CHANNEL);
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      if (event.data !== shown.current) return;
+      shown.current = null;
+      setOffer(null);
+      again();
+    };
+    return () => channel.close();
+  }, [qrOnly]);
 
   useEffect(() => {
     const onCode = (event: Event) => {
@@ -161,6 +192,7 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
       dropTyped();
       const code = (event as CustomEvent<PairingCode | undefined>).detail?.code;
       if (relayAnnouncing) {
+        heard.current = code ?? null;
         if (code === undefined || code !== shown.current) { quiet.current = true; again(); }
         return;
       }
@@ -180,7 +212,7 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
         // a code that ran out while shown is replaced by itself; one that arrived already expired
         // (the PC's clock and this one apart) is not, or the asking would never end
         // compact: CompactRelay renews both, the code to type first and then this offer, so the two never race
-        if (wasLive) { if (!compact) again(); } else setState("expired");
+        if (wasLive) { if (!compact || qrOnly) again(); } else setState("expired");
         return;
       }
       wasLive = true;
@@ -194,6 +226,20 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
   const renew = async () => {
     setState("minting");
     dropTyped();
+    if (qrOnly) {
+      // the PC keeps this QR code's own code until it ends: ended here, the offer asked for next carries a new one.
+      // No code is started the way the Devices group starts one, which the PC would make on a PC in an account too
+      try {
+        const ended = shown.current;
+        if (ended !== null && (await endPairing(ended)).cancelled) tellOtherWindowsQrCodeEnded(ended);
+        again();
+      } catch (reason) {
+        setOffer(null);
+        setFailure(t("The old code could not be ended, so it may still work until it runs out: {message} New code tries again.", { message: failureText(reason) }));
+        setState("failed");
+      }
+      return;
+    }
     try {
       const code = await startPairing();
       announcing.current = true;
@@ -206,6 +252,23 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
     }
   };
 
+  if (qrOnly) return (
+    <div className="relay-pairing-compact relay-pairing-qr-only" role="status">
+      <div className="compact-pair">
+        {offer !== null ? <QrCode value={offer.url} label={t("QR code that pairs a phone through the relay")} size={132} /> : <div className="compact-pair-qr-empty" role="status">{state === "minting" ? t("Getting a code…") : ""}</div>}
+        <div className="compact-pair-side">
+          <p className="settings-description">
+            {state === "live" && t("Expires in {time}.", { time: left })}
+            {state === "expired" && t("This code expired.")}
+          </p>
+          <div className="compact-pair-actions">
+            <button type="button" className="btn" disabled={state === "minting"} aria-busy={state === "minting" || undefined} onClick={() => void renew()}><RefreshCw aria-hidden="true" />{t("New code")}</button>
+          </div>
+        </div>
+      </div>
+      {state === "failed" && failure !== null && <p className="settings-hint relay-error" role="alert">{failure}</p>}
+    </div>
+  );
   // Connect a device: the QR code and the code to type side by side, one Refresh for both
   if (compact) return <CompactRelay qr={offer?.url ?? null} qrExpires={offer?.expires_at ?? null} failure={state === "failed" ? failure : null} reset={typedReset} onMinted={again} />;
   const countdown = (

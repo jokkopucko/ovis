@@ -47,6 +47,17 @@ export class DeviceGoneError extends Error {
   }
 }
 
+/**
+ * This PC is in an account, so no code is made that would put it in one (DeviceStore.pairingForNoAccount): a device
+ * joins a PC that has members by signing in to their account, with a member's approval (docs/account.md).
+ */
+export class PcInAccountError extends Error {
+  readonly code = "in_account";
+  constructor() {
+    super("This PC is already in an Ovis account. Sign in to that account on the device to add it.");
+  }
+}
+
 /** Canonical base64url SPKI containing a public P-256 key, never private key material. */
 function isRelayPublicKey(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
@@ -286,8 +297,11 @@ export class DeviceStore {
    * member that started it there, whose addition the new device then is; `holders`: the paired devices that
    * started it or were handed it, on any transport. It ends when one of them is revoked (`revoke`)
    */
-  /** `open`: started by a request the open LAN alone let in (access.ts `via: "open"`), so it ends when the gate closes */
-  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; holders: Set<string> } | null = null;
+  /**
+   * `open`: started by a request the open LAN alone let in (access.ts `via: "open"`), so it ends when the gate closes;
+   * `noAccountOnly`: made to put this PC in an account (pairingForNoAccount), so it ends when the PC is in one
+   */
+  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string> } | null = null;
   private codeIssues: number[] = [];
   private readonly relayFailures: Record<PairingFailurePath, { at: number[]; blockedUntil: number }> = {
     code: { at: [], blockedUntil: 0 }, account: { at: [], blockedUntil: 0 }, lan: { at: [], blockedUntil: 0 },
@@ -498,7 +512,7 @@ export class DeviceStore {
    * (null for this PC itself), which holds it from then on. One that is paired no more by now starts nothing
    * (DeviceGoneError), and the code pending stays as it was.
    */
-  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; by?: string | null } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
+  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; by?: string | null } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
     this.assertWritable();
     const { by = null, ...how } = from;
     for (const id of [by, how.startedBy]) if (id !== null && !this.has(id)) throw new DeviceGoneError();
@@ -511,6 +525,33 @@ export class DeviceStore {
     const started = { code, expires_at: new Date(this.pending.expires).toISOString() };
     for (const listener of this.codeStarts) listener();
     return started;
+  }
+
+  /**
+   * The code of the QR code that puts this PC in an account: a signed-in device that scans it links itself as the
+   * PC's first member, with no approval here (the relay tab's QR code, POST /api/relay/offer with
+   * `x-ovis-no-account-only`). So it is made only while the PC is in no account (PcInAccountError otherwise, and the
+   * code pending stays as it was), and it ends when the PC joins one (endNoAccountCode). The code pending when that
+   * was made the same way, else a fresh one: never a code another place started, which may be on a screen as digits.
+   * `by` as in startPairing.
+   */
+  pairingForNoAccount(by: string | null = null, now = Date.now()): PairingCode {
+    if (by !== null && !this.has(by)) throw new DeviceGoneError();
+    if (this.account() !== null) throw new PcInAccountError();
+    const active = this.activePairing(now);
+    if (active !== null && this.pending?.noAccountOnly === true) {
+      if (by !== null) this.pending.holders.add(by);
+      return active;
+    }
+    return this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, noAccountOnly: true, by });
+  }
+
+  /**
+   * A row just became an account member. A code made only for a PC in no account goes: left pending, whoever scans it
+   * next would be paired with a PC that has members, with nobody approving and nobody asked.
+   */
+  private endNoAccountCode(): void {
+    if (this.pending?.noAccountOnly === true && this.account() !== null) this.endPairing();
   }
 
   /**
@@ -563,6 +604,8 @@ export class DeviceStore {
   private checkPairingCode(code: string, now: number, lan = false): boolean {
     const pending = this.pending;
     if (pending === null || now > pending.expires) { this.pending = null; return false; }
+    // made for a PC in no account, and the PC is in one: it ended as the PC joined (endNoAccountCode), and pairs nobody
+    if (pending.noAccountOnly === true && this.account() !== null) { this.endPairing(); return false; }
     if (lan) {
       if ((pending.lanAttempts ?? 0) >= CODE_ATTEMPTS) return false;
       if (same(code.replace(/\D/g, ""), pending.code)) return true;
@@ -585,6 +628,7 @@ export class DeviceStore {
     this.devices = next;
     this.gateClosedAt = gate;
     if (codeSpent) this.pending = null;
+    if (device.account !== undefined) this.endNoAccountCode();
     // A relay enrollment closes the gate immediately, invalidating every first-cookie candidate.
     if (device.relay_public_key !== undefined) this.unconfirmedFirstPairs = [];
     this.announce(device, now, origin);
@@ -1023,6 +1067,8 @@ export class DeviceStore {
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);
     this.devices = next;
+    // the PC's first member, however it got here: the QR code that was to bring one is taken back
+    this.endNoAccountCode();
     for (const listener of [...this.relinks.get(deviceId) ?? []]) listener(sessionId);
     return this.list(null).find((d) => d.id === deviceId) ?? null;
   }

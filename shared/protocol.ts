@@ -173,7 +173,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  POST   /api/relay/start               -> RelayStatus; closes an ungated tokenless device gate first
  *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
  *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
- *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
+ *         (the one Devices shows, else a new one); with x-ovis-no-account-only: 1, a code of its own made only
+ *         while the PC is in no account (409 in_account otherwise), ended when the PC joins one; 409 relay_off
+ *         while off, relay_offline in error
  *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
  *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the

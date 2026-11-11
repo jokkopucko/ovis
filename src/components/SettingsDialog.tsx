@@ -63,6 +63,7 @@ import { indexedAccountStore } from "../lib/account/store.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { ConnectPhoneDialog, relayOffered } from "./ConnectPhoneDialog.tsx";
+import { ACCOUNT_QR_WATCH_EVENT, accountQrNoticeWaiting } from "../lib/accountQrWatch.ts";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { AlertWebhookGroup } from "./AlertWebhookGroup.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
@@ -1332,10 +1333,25 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   /** the end of this PC's own row, for the device list's Check now (DevicesPanel `checkSlot`) */
   const [devicesCheck, setDevicesCheck] = useState<HTMLDivElement | null>(null);
   const closeConnect = useCallback(() => setConnecting(false), []);
+  // the relay tab's QR code may have put this PC in an account: Add a connection stays up to say which, and by which device
+  const pairingHeld = useRef(false);
+  const holdPairing = useCallback((held: boolean) => { pairingHeld.current = held; }, []);
+  const closeConnectOnPair = useCallback(() => { if (!pairingHeld.current) setConnecting(false); }, []);
+  const accountService = accountServiceHere();
   // a reset relay identity is a new ID for this PC: My devices reads it again
   const [identityResets, setIdentityResets] = useState(0);
   // the account as AccountSection reads it: signed in or not, and the account's PCs for the list
   const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null, provider: null, noPcs: false, reachable: true });
+  // the relay tab's QR code let a device in after it came down (lib/accountQrWatch.ts): Add a connection opens again
+  // to say so, where its relay tab can
+  const tellsQrNotice = accountService !== null && account.reachable && relayOffered(relay) && !relayReadOnly;
+  useEffect(() => {
+    if (!tellsQrNotice) return;
+    const open = () => { if (accountQrNoticeWaiting()) setConnecting(true); };
+    open();
+    window.addEventListener(ACCOUNT_QR_WATCH_EVENT, open);
+    return () => window.removeEventListener(ACCOUNT_QR_WATCH_EVENT, open);
+  }, [tellsQrNotice]);
   // a new device joins by signing in only to a PC in the account this browser is signed in to (docs/account.md
   // "Joining through the account"): read again each time the dialog opens, since this PC may have joined meanwhile
   const [pcAccount, setPcAccount] = useState<string | null>(null);
@@ -1353,7 +1369,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
     group?.scrollIntoView({ block: "start" });
     group?.querySelector<HTMLElement>("button")?.focus();
   }, []);
-  const accountService = accountServiceHere();
   const readAccountAgain = useCallback(() => setAccountChecks((count) => count + 1), []);
   // a touch phone on this PC's own address pairs itself through the relay in one tap: beside its own row
   const touchPhone = useMediaQuery("(pointer: coarse)");
@@ -1367,7 +1382,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       <SettingsGroup section="devices">
         <div className="settings-item my-devices">
           <MyPcRows machines={machines} account={account.account} accountPcs={account.pcs} onAccountChanged={readAccountAgain} watching={auth?.role === "watch"} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} selfAction={setDevicesCheck}>
-            <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} checkSlot={devicesCheck} />
+            <DevicesPanel onDevicePaired={closeConnectOnPair} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} checkSlot={devicesCheck} />
           </MyPcRows>
           {account.noPcs && account.provider !== null && <NoAccountPcHint provider={account.provider} />}
         </div>
@@ -1435,10 +1450,11 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       {connecting && (
         <ConnectPhoneDialog plan={plan} pairUrl={pairUrl}
           relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"}
-          signedIn={account.signedIn} joinBySignIn={joinBySignIn}
+          signedIn={account.signedIn} accountId={account.account} joinBySignIn={joinBySignIn}
           account={accountService !== null && account.reachable ? { service: accountService, onOpen: openAccount, onSignedIn: readAccountAgain } : null}
           onAddPc={(preset) => { setConnecting(false); openAddPc(preset); }} machines={machines}
-          onConnectMachine={(machine) => { setConnecting(false); connectPc(machine); }} onClose={closeConnect} />
+          onConnectMachine={(machine) => { setConnecting(false); connectPc(machine); }}
+          onPairingHeld={holdPairing} onRevokedAll={onRevokedAll} onClose={closeConnect} />
       )}
     </>
   );

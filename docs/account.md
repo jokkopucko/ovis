@@ -147,6 +147,28 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   since the code was shown is removed ([A PC with no screen](relay.md#a-pc-with-no-screen)).
   `add --approve` keeps the approval in the terminal: no code, and the adding device's digits
   are compared there.
+- **A pairing code admits whoever holds it**, with no approval on the PC: that is what a code is.
+  On a PC that has no member yet, a signed-in device let in by a code links itself and so becomes
+  the PC's first member: the PC joins that device's account
+  ([Adding a PC](#adding-a-pc), "By QR code"). In Add a connection's relay tab, where the page has
+  the Ovis account, that code is therefore shown only on its owner's press and as a QR code alone,
+  and the page says afterwards which account the PC joined, whether it is the one that browser is
+  signed in to, and which member of it added the PC; any other device that came meanwhile is named
+  and asked about.
+- **That QR code is for a PC in no account only.** On a PC that is in an account it would pair
+  whoever scans it, from anywhere, with a PC that has members, with nobody approving: there a
+  device joins by signing in to the account ([Joining through the account](#who-may-admit-a-device)).
+  So the relay tab shows no QR code for such a PC, and the PC makes none: its offer is asked for
+  with the header `x-ovis-no-account-only: 1` (`POST /api/relay/offer`), which a PC in an account
+  answers `409 in_account`, starting no code and leaving the one pending as it was. On a PC in no
+  account the offer carries a code of its own: the one pending when that was made the same way,
+  else a fresh one, never a code another place started (which may be on a screen as digits). That
+  code ends when the PC gets its first member, however it does (a `link` over any pairing, the
+  one a sign-in on the PC opens included): left pending, it would admit one more device after the
+  PC joined. An offer asked for without the header is what it was, on any PC: the first-run
+  guide's QR code, the relay tab where the page has no account, a phone's **Use the relay** and
+  `bun scripts/plugin.ts pair` keep it, without those guards, and a signed-in device that redeems
+  such a code on a PC in no account links itself the same way.
 - **Every admission is announced** on every device connected to the PC: the new device's name and who
   approved it.
 
@@ -352,6 +374,91 @@ removal to be off or unreachable.
 How a person adds a PC to the account in the apps (WhatsApp's linked devices and Tailscale's
 Tailnet Lock follow the same idea: an existing device approves once, and the server only carries
 messages):
+
+**By QR code.** On the new PC, Settings → Devices and PCs → Add a connection → Ovis relay →
+**Show the QR code**, with the relay on. A device that is signed in to the account scans it: it is
+paired with its account key, links itself as the PC's first member, lists the PC in the account's
+directory and enrolls it ([Enrolling a PC](#enrolling-a-pc)). Nothing is typed and nothing is
+approved on the PC, and the PC itself needs no sign-in. Because the code admits whoever holds it
+([Who may admit a device](#who-may-admit-a-device)), the page guards it:
+
+- The QR code is for a PC in no account. On a PC that is in one the tab has no button and no QR
+  code, and asks the PC for no code: it says which account the PC is in (the one this browser is
+  signed in to, another one, or one it cannot tell while signed out) and that a device is added
+  by signing in to that account on it and opening the PC there. A device the PC does not know yet
+  is approved once, by a drive member of the PC picking its digits ([Introductions](#introductions)).
+  The page reads the PC's account as the tab opens and again at the press, and
+  the PC itself refuses the code (`409 in_account`), so a page that read it a moment too early
+  shows no QR code either: the refusal makes it look at the PC at once, and the notice below
+  takes the QR code's place.
+- Nothing is asked of the PC before the press. The QR code comes down, and its six-digit code is
+  ended on the PC (`POST /api/devices/pair/cancel` with that code), when the dialog closes or
+  another tab opens, when the page goes (a reload, a closed tab or window: the request is sent to
+  outlive the page), once the page was hidden for a minute, and 30 minutes after the press, by the
+  clock, so a PC that slept does not keep it longer. **Show a new code** starts again. A browser
+  that is killed, or loses the PC, sends nothing: the code then runs out by itself within its 10
+  minutes. Two windows of one browser showing the QR code share its code: the one that ends it
+  tells the other (a `BroadcastChannel`), which asks for a new one. A **New code** that cannot end
+  the old code says that it may still work until it runs out.
+- After **Keep it** the page watches the PC for 10 minutes more, to tell a later join; a device
+  that pairs at the PC's own address meanwhile came by another code and is not asked about.
+- The QR code is shown alone. No code to type is made for it (`POST /api/relay/code` is not sent):
+  a typed code would have the same power, putting the PC in the account of whoever types it at
+  app.ovis.sh, and is far easier to read off a screen, a recording or a clipboard than a QR code
+  is to scan. Its six-digit code is its own, never one Phones and devices showed as digits, and
+  **New code** ends it and asks for the offer again (no `POST /api/devices/pair/start`). A device
+  without a camera pairs from Phones and devices, or the PC is added by signing in on it (below).
+- While the QR code is up, and while a notice is, the page reads `GET /api/account/status` and the
+  device list every 3 seconds. When the PC goes from no account to one, by a scan or any other
+  way (the PC then also takes the code back), the QR code gives way to which account, by its
+  id's first 12 characters, in one of three forms: **This PC is in your account** when it is the
+  account this browser is signed in to, with **Done** first; **This PC joined another Ovis
+  account (…), not the one this browser is signed in to (…)** when it is not; and, on a page that
+  is not signed in, **This PC joined an Ovis account**, with a line that this browser cannot tell
+  whether that account is yours until it signs in above, and a question the owner can answer
+  without an account id: whether their own device just said that it added this PC. In the last
+  two **Not me: revoke every device** comes first and the other button is **Keep it**: whoever
+  scanned may be a stranger, and the name shown is the scanner's own. Revoking is, after a
+  confirmation, `POST /api/devices/revoke-all`, which leaves the PC with no member and so in no
+  account. Once the notice is answered the tab is the one of a PC in an account (first point).
+- **Added by (the device)** names a member of that account only (`account` on its row, which the
+  account's key signed): the newest member that came since the press, or without one the
+  account's newest member on the PC (a device paired before that linked itself meanwhile). A
+  device that only holds the code is never named as the one that added the PC; when no row is a
+  member, nobody is named. The same rule as `ovis add` in a terminal.
+- Every device that came since the press and is not a member of the PC's account is one nobody
+  vouched for, through the relay or at the PC's own address. It is named and asked about, whether
+  or not the PC joined an account: **Not me: remove it** first (`DELETE /api/devices/:id`), or
+  **Keep it**. The page cannot know which code let a device in (one paired from Phones and
+  devices meanwhile is asked about the same way), so the question says only that it paired while
+  the QR code was up. One that came through the relay is asked about after 10 seconds, the time a
+  signed-in device takes to link itself, counted from when the page first saw it and kept with
+  the press, so a notice drawn again later does not start it over; until then the notice says it
+  is being checked. With the PC still in no account the question says that the device is not
+  signed in, and that keeping it and signing in on it adds the PC. One that paired at the PC's
+  own address is asked about at once.
+- A notice goes only by one of its buttons, and only once nobody is left unanswered: **Done** (and
+  **Keep it** on an account) is not offered while a device is asked about or still in its 10
+  seconds, and when pressed it reads the PC once more, after the code's end was answered, and
+  stays for a device that came since the last read. **Not me: remove it** reads the PC the same
+  way before its notice goes. A notice the dialog was closed over waits: Add a connection opens
+  on its relay tab with it the next time Devices and PCs is opened, where the page has the
+  account, and reads the PC again from the same press, so what changed meanwhile (the device
+  signed in and put the PC in its account) is told then.
+- A device that took the code just before it was ended links only seconds later. So the page goes
+  on reading the PC after the QR code came down, also with the dialog or Settings closed
+  (`src/lib/accountQrWatch.ts`): until the first read after the PC confirmed the code's end shows
+  no new device, and for the code's 10 minutes when it did not confirm. What it finds is told the
+  same way: Add a connection opens again on its relay tab when Devices and PCs is open, or the
+  next time it is. After **Keep it** on a PC still in no account the page watches 10 minutes more
+  for that device putting the PC in an account. A page that was reloaded or closed watches
+  nothing and keeps no notice: the device list on Devices and PCs is then where a device is
+  revoked.
+
+Where Ovis's relay asks for a relay pass, a PC in no account is not online and shows no QR code
+until someone signs in on it; the steps below are then the way.
+
+**By signing in on the PC:**
 
 1. On the new PC, Settings → Devices and PCs → Account (or the first-run welcome): press
    **Sign in and add this PC**. A PC in no account is added by that sign-in, in the same step: the
@@ -771,6 +878,7 @@ with "continue only if you started this on your own PC".
 | `account_unavailable` | 503 | the tombstone file cannot be read; no account record applies |
 | `enrolling` | — | the PC waits for its first member's enrollment; an add waits too (a record outcome) |
 | `removal_pending` | — | the key is held: a waiting remove or an enrollment named it, or the waiting queue cannot be trusted (a record outcome) |
+| `in_account` | 409 | `POST /api/relay/offer` with `x-ovis-no-account-only`: this PC is in an account, so it makes no QR code that would put it in one |
 
 ## What this does not protect against
 

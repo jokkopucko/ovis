@@ -567,11 +567,16 @@ export class RelayService {
     this.pairCodes?.cancel();
   }
 
-  /** `by`: the paired device that asked, null for this PC itself. It holds the code the offer carries, started here or pending already. */
-  offer(by: string | null = null): { url: string; expires_at: string } {
+  /**
+   * `by`: the paired device that asked, null for this PC itself. It holds the code the offer carries, started here or pending already.
+   * `noAccountOnly`: the offer is to put this PC in an account (the relay tab's QR code): none is made for a PC that is
+   * in one (PcInAccountError), and its code ends when the PC joins one (DeviceStore.pairingForNoAccount).
+   */
+  offer(by: string | null = null, options: { noAccountOnly?: boolean } = {}): { url: string; expires_at: string } {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     const devices = this.services.devices;
-    const pairing = devices.activePairing() ?? devices.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by });
+    const pairing = options.noAccountOnly ? devices.pairingForNoAccount(by)
+      : devices.activePairing() ?? devices.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by });
     // before the code leaves this PC: a device revoked by now is handed none (DeviceGoneError)
     if (by !== null) devices.holdPairing(by);
     return {

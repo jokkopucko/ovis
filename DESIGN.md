@@ -4060,8 +4060,25 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   devices** stacks, under a hairline each, the Tailscale address and QR code, the six-digit pairing
   code (`components/CompactPair.tsx`, started when the tab first opens) and Portal where the server
   offers it. **Ovis relay** is the account's: signed out one sentence and **Sign in to Ovis** (which
-  opens the account's sign-in in More settings), signed in how a new device joins, or the relay's
-  switch and **Open the account** while this PC cannot admit one yet. Relay pairing without the
+  opens the account's sign-in in More settings), signed in the relay's switch and **Open the
+  account** while this PC is in no account. Under either, behind a hairline (none where nothing is
+  drawn above it), one part (`.connect-account-qr`) that depends on the PC, not on the sign-in. On a PC in no account it is
+  **Add with a QR code**: one sentence and a neutral **Show the QR code**, which draws the relay's
+  QR code alone (`--qr-size`, its countdown, **New code**; no code to type). The QR code gives way
+  to a notice box (`.connect-account-qr-notice`: `--bg-elevated`, a hairline, `--radius-md`) that
+  says which account the PC joined and which device added it, or asks about a device nobody
+  vouched for. In a notice the `.btn-danger` (**Not me: remove it**, **Not me: revoke every
+  device**) comes first whenever the page cannot call the device or the account its own; the
+  primary **Done** is only for the browser's own account, and no **Done** or **Keep it** shows
+  while a device is unanswered (one still being checked is named in a plain line). Another
+  account's notice takes the `--status-blocked` border on `--danger-tint`. On a PC that is in an
+  account the part has no button and no QR code: its label says which account (the browser's own,
+  another one, or one it cannot tell while signed out), one sentence says to sign in to that
+  account on the device, and a hint says the QR code is only for a PC in no account; the
+  relay's switch stays above while the relay is not online. Linked-device apps draw the same
+  line (WhatsApp shows its linking QR code on the device being added, never on one already
+  linked), and it is deliberate here: a QR code on a PC with members would let in whoever scans
+  it with nobody approving. Relay pairing without the
   account, a code from another PC and Tailscale PCs added through the relay are gone from it. A phone
   opens on Phones and devices, a PC's window on SSH; a tab once opened stays mounted, so its code
   is not minted again. The dialog closes by itself once My devices sees the device a code let in.

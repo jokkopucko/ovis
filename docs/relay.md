@@ -266,6 +266,10 @@ paired device with drive access instead.
 The hosted shell hides the group because mutations
 over the relay answer 403 `local_required`. While the relay is off an offer answers 409
 `relay_off`; while it is in error it answers 409 `relay_offline`, so wait for **Online** before pairing.
+An offer asked for with the header `x-ovis-no-account-only: 1` (the QR code of Add a connection's
+relay tab, which puts the PC in the account of whoever scans it) is made only while the PC is in no
+account: a PC in one answers 409 `in_account`, and the code of such an offer ends when the PC joins
+an account ([account.md](account.md#who-may-admit-a-device)).
 
 **A start that fails.** If a start fails before the PC's relay link exists, the switch stays
 off and the panel shows **The relay did not start: …** with the reason and **Try again**. Nothing

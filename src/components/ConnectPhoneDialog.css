@@ -215,6 +215,52 @@
   align-self: flex-start;
 }
 
+/* the relay tab's QR code behind a press: its own part under the sign-in or the account's line */
+.connect-account-qr,
+.connect-account-qr-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.connect-account-qr {
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+/* signed in, on a PC in an account whose relay is online: nothing is above it, so no hairline under the tabs, and
+   the sign-in's place holds only what a screen reader hears */
+.connect-account-qr[data-first] {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.connect-signin[data-bare] {
+  display: contents;
+}
+
+.connect-account-qr-notice {
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.connect-account-qr .phone-actions {
+  flex-wrap: wrap;
+}
+
+/* what the owner has to answer: a device nobody vouched for, or an account this browser cannot call its own */
+.connect-account-qr-warning {
+  color: var(--text);
+}
+
+/* the PC joined an account that is not this browser's */
+.connect-account-qr-notice[data-account="other"] {
+  border-color: var(--status-blocked);
+  background: var(--danger-tint);
+}
+
 /* on a phone the address goes under the name, so the name, its source and its button keep one line */
 @media (max-width: 480px) {
   .connect-found-row {

@@ -339,6 +339,38 @@ it("ends the relay offer's code, and a typed code, with the paired device that a
   }
 });
 
+it("makes the relay tab's QR code only for a PC in no account, and takes it back when the PC joins one", async () => {
+  const f = await fixture();
+  await f.start();
+  const devices = f.app.context.services.devices;
+  // the relay tab's QR code says so (x-ovis-no-account-only); every other offer is what it was
+  const ask = (noAccountOnly: boolean) => fetch(`${f.base}/api/relay/offer`, { method: "POST",
+    headers: { origin: f.base, "x-herdr-update": "1", ...(noAccountOnly ? { "x-ovis-no-account-only": "1" } : {}) } });
+  const codeOf = async (response: Response) => {
+    expect(response.status).toBe(200);
+    return decodeOffer((await response.json() as { url: string }).url)!.code;
+  };
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const key = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+  // paired long before, and signed in to an account since: it links itself while the QR code is on screen
+  const laptop = devices.pairRelay(devices.startPairing().code, "Laptop", key)!.device;
+  // a code another place shows as digits is never the one the QR code carries
+  devices.startPairing();
+  let started = 0;
+  devices.onPairingStarted(() => { started++; });
+  const qr = await codeOf(await ask(true));
+  expect([started, devices.activePairing()?.code]).toEqual([1, qr]);
+  // asked again, and by the page's other relay QR codes, it is the same code
+  expect([await codeOf(await ask(true)), await codeOf(await ask(false)), started]).toEqual([qr, qr, 1]);
+  expect(devices.linkAccountKey(laptop.id, key, key, "acct_1")).not.toBeNull();
+  // the PC is in an account: the code is taken back, and a page that still shows the QR code is refused a new one
+  expect(devices.activePairing()).toBeNull();
+  const refused = await ask(true);
+  expect([refused.status, await refused.json()]).toEqual([409, { error: { code: "in_account", message: "This PC is already in an Ovis account. Sign in to that account on the device to add it." } }]);
+  expect(devices.activePairing()).toBeNull();
+  expect(await codeOf(await ask(false))).toMatch(/^\d{6}$/);
+});
+
 it("names the PC in the relay offer as Ovis lists it", async () => {
   const f = await fixture();
   await f.start();

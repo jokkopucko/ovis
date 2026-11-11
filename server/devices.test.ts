@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DevicePairedEvent } from "../shared/protocol.ts";
-import { DeviceGoneError, DeviceStore, handleDeviceRequest, newStreamKey, normalizeLabel, PairingRateLimitedError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
+import { DeviceGoneError, DeviceStore, handleDeviceRequest, newStreamKey, normalizeLabel, PairingRateLimitedError, PcInAccountError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
 import { privateStateFs } from "./private-state.ts";
 import { isTaggedNode, parseTailscaleOwner } from "./tailscale.ts";
 
@@ -668,6 +668,103 @@ describe("revoking a device that holds a pairing code", () => {
     expect(store.revoke(paired.device.id)).toBe(true);
     expect(store.activePairing()).toBeNull();
     expect(store.pair(own.code, "Too late", "drive")).toBeNull();
+  });
+});
+
+// The relay tab's QR code (POST /api/relay/offer with x-ovis-no-account-only): whoever scans it signed in becomes the
+// PC's first account member, so it is for a PC in no account only.
+describe("a pairing code made only for a PC in no account", () => {
+  const paired = async (store: DeviceStore, label: string) => {
+    const key = (await relayKeys()).publicKeySpki;
+    return { id: store.pairRelay(store.startPairing().code, label, key)!.device.id, key };
+  };
+
+  it("is not made on a PC in an account, and leaves the code pending there as it was", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-refused-")));
+    const member = await paired(store, "Phone");
+    expect(store.linkAccountKey(member.id, member.key, member.key, "acct_1")).not.toBeNull();
+    const own = store.startPairing();
+    let told = 0;
+    store.onPairingStarted(() => { told++; });
+    expect(() => store.pairingForNoAccount()).toThrow(PcInAccountError);
+    expect([store.activePairing()?.code, told]).toEqual([own.code, 0]);
+    // a refusal is not one of the ten codes a window allows
+    for (let asked = 0; asked < 12; asked++) expect(() => store.pairingForNoAccount()).toThrow(PcInAccountError);
+    // the PC left the account (its only member was revoked): the code is made again
+    expect(store.revoke(member.id)).toBe(true);
+    expect(store.pairingForNoAccount().code).toMatch(/^\d{6}$/);
+  });
+
+  it("is a fresh code, never one another place started, and the same one when asked again", () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-fresh-")));
+    // Phones and devices shows this one as digits
+    store.startPairing();
+    let started = 0;
+    store.onPairingStarted(() => { started++; });
+    const qr = store.pairingForNoAccount();
+    expect(started).toBe(1);
+    expect(store.activePairing()).toEqual(qr);
+    expect(store.pairingForNoAccount()).toEqual(qr);
+    expect(started).toBe(1);
+    // a code started anywhere else replaces it, and the next ask starts over
+    store.startPairing();
+    store.pairingForNoAccount();
+    expect(started).toBe(3);
+  });
+
+  it("is held by the paired device that asked for it, and goes with it", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-held-")));
+    const laptop = await paired(store, "Laptop");
+    const qr = store.pairingForNoAccount(laptop.id);
+    expect(store.revoke(laptop.id)).toBe(true);
+    expect(store.activePairing()).toBeNull();
+    expect(store.pairRelay(qr.code, "Too late", (await relayKeys()).publicKeySpki)).toBeNull();
+    expect(() => store.pairingForNoAccount(laptop.id)).toThrow(DeviceGoneError);
+  });
+
+  it("ends when the PC joins an account another way, so nobody scans it into a PC that has members", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-joined-")));
+    // paired long before; it links itself while the QR code is on screen
+    const laptop = await paired(store, "Laptop");
+    const qr = store.pairingForNoAccount();
+    let told = 0;
+    store.onPairingStarted(() => { told++; });
+    expect(store.linkAccountKey(laptop.id, laptop.key, laptop.key, "acct_1")).not.toBeNull();
+    // taken back, and the typed code bound to it with it (its listeners hear of the end)
+    expect([store.activePairing(), told]).toEqual([null, 1]);
+    expect(store.pairRelay(qr.code, "Stranger", (await relayKeys()).publicKeySpki)).toBeNull();
+    expect(store.pair(qr.code, "Stranger", "drive")).toBeNull();
+    expect(store.list(null).map((device) => device.label)).toEqual(["Laptop"]);
+  });
+
+  it("pairs nobody on a PC in an account even when it is still pending there", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-guard-")));
+    const laptop = await paired(store, "Laptop");
+    const qr = store.pairingForNoAccount();
+    const pending: unknown = Reflect.get(store, "pending");
+    expect(store.linkAccountKey(laptop.id, laptop.key, laptop.key, "acct_1")).not.toBeNull();
+    // the end on join is one guard; the check at redeem is the other, should a code outlive the join
+    Reflect.set(store, "pending", pending);
+    expect(store.pairRelay(qr.code, "Stranger", (await relayKeys()).publicKeySpki)).toBeNull();
+    expect(store.activePairing()).toBeNull();
+    expect(store.list(null).map((device) => device.label)).toEqual(["Laptop"]);
+  });
+
+  it("lets the device that scans it in, which then makes the PC its account's", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-scanned-")));
+    const key = (await relayKeys()).publicKeySpki;
+    const phone = store.pairRelay(store.pairingForNoAccount().code, "Phone", key)!.device;
+    expect(store.linkAccountKey(phone.id, key, key, "acct_1")).not.toBeNull();
+    expect(store.account()).toBe("acct_1");
+    expect(() => store.pairingForNoAccount()).toThrow(PcInAccountError);
+  });
+
+  it("leaves a code made any other way pending when the PC joins an account", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-other-")));
+    const laptop = await paired(store, "Laptop");
+    const own = store.startPairing();
+    expect(store.linkAccountKey(laptop.id, laptop.key, laptop.key, "acct_1")).not.toBeNull();
+    expect(store.activePairing()?.code).toBe(own.code);
   });
 });
 
