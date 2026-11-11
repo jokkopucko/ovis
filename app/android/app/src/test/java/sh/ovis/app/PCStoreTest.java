@@ -356,4 +356,24 @@ public class PCStoreTest {
         assertFalse(PCStore.pairingLink(scope + "?pane=w1%3Ap1"));
         assertFalse(PCStore.pairingLink(scope + "?pair=1#offer=eyJ2IjoxfQ"));
     }
+
+    @Test
+    public void anotherPortOnThePcsHostIsAnotherOrigin() {
+        String pc = "https://pc.example.ts.net";
+        assertTrue(PCStore.sameOrigin(pc + "/files?x=1#top", pc));
+        assertTrue(PCStore.sameOrigin("HTTPS://PC.example.ts.net:443/", pc));
+        assertTrue(PCStore.sameOrigin(pc, "https://pc.example.ts.net:443"));
+        assertTrue(PCStore.sameOrigin("http://pc.example.ts.net:80/", "http://pc.example.ts.net"));
+        assertTrue(PCStore.sameOrigin("http://192.168.1.2:7317/a", "http://192.168.1.2:7317"));
+        assertTrue(PCStore.sameOrigin("http://[::1]:80/", "http://[::1]"));
+        assertFalse(PCStore.sameOrigin(pc + ":7231", pc));
+        assertFalse(PCStore.sameOrigin(pc + ":7231/", pc + ":443"));
+        assertFalse(PCStore.sameOrigin("http://192.168.1.2:3000/", "http://192.168.1.2:7317"));
+        assertFalse(PCStore.sameOrigin("http://pc.example.ts.net", pc));
+        assertFalse(PCStore.sameOrigin("https://pc.example.ts.net:80/", pc));
+        assertFalse(PCStore.sameOrigin("https://other.example.ts.net", pc));
+        assertFalse(PCStore.sameOrigin("https://pc.example.ts.net.evil.com", pc));
+        assertFalse(PCStore.sameOrigin("ovis://pc.example.ts.net", "ovis://pc.example.ts.net"));
+        assertFalse(PCStore.sameOrigin(null, pc));
+    }
 }

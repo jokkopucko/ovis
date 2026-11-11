@@ -1,5 +1,6 @@
 package sh.ovis.app;
 
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
@@ -101,10 +102,11 @@ public class MainActivity extends BridgeActivity {
             config = new CapConfig.Builder(this)
                 .setServerUrl(origin)
                 .setStartPath(PCStore.startPath(PCStore.pendingStart, pc))
-                // No allowNavigation: the PC's own links (its host and scheme, any port) stay in the
-                // WebView already, and Capacitor turns each entry into another bridge origin rule
-                // (https://host, or a host starting with "http" as is: invalid, which again drops the
-                // bridge's origin check). Other links go to the browser.
+                // No allowNavigation: the PC's own pages stay in the WebView already, and Capacitor
+                // turns each entry into another bridge origin rule (https://host, or a host starting
+                // with "http" as is: invalid, which again drops the bridge's origin check). Links to
+                // any other origin, another port on the PC's host included, go to the browser
+                // (shouldOverrideUrlLoading below).
                 .setErrorPath("error.html")
                 .setBackgroundColor("#12100e")
                 .setWebContentsDebuggingEnabled(debuggable)
@@ -175,7 +177,7 @@ public class MainActivity extends BridgeActivity {
                                 return true;
                             }
                         }
-                        // the app's own origin and other schemes stay with Capacitor
+                        // the sign-in's steps in the WebView, judged one by one
                         if (
                             signingIn &&
                             request.isForMainFrame() &&
@@ -194,6 +196,23 @@ public class MainActivity extends BridgeActivity {
                                 followRedirect(origin, url.toString());
                                 return true;
                             }
+                        }
+                        // Capacitor keeps a link in the WebView when only its scheme and host match the PC's,
+                        // so another server on the PC's host (a dev server on another port) would replace Ovis
+                        // with no way back. A page of another origin, port included, goes to the browser.
+                        if (
+                            request.isForMainFrame() &&
+                            ("https".equals(url.getScheme()) || "http".equals(url.getScheme())) &&
+                            !PCStore.sameOrigin(url.toString(), origin) &&
+                            !PCStore.sameOrigin(url.toString(), appOrigin)
+                        ) {
+                            Intent browse = new Intent(Intent.ACTION_VIEW, url).addCategory(Intent.CATEGORY_BROWSABLE);
+                            try {
+                                startActivity(browse);
+                            } catch (ActivityNotFoundException noBrowser) {
+                                // nothing to open it with: the link does nothing, Ovis stays
+                            }
+                            return true;
                         }
                         return super.shouldOverrideUrlLoading(view, request);
                     }

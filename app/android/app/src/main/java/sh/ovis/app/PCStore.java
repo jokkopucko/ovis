@@ -607,8 +607,28 @@ final class PCStore {
         }
     }
 
+    /**
+     * Whether two http(s) addresses are on one origin: scheme, host and port, the scheme's default port
+     * (80, 443) the same as none, as a browser compares them. False when either is not an http(s)
+     * address. Capacitor's own "stays in the WebView" test compares scheme and host only, so another
+     * port on the PC's host passes it.
+     */
+    static boolean sameOrigin(String a, String b) {
+        String first = normalizedOrigin(a);
+        return first != null && first.equals(normalizedOrigin(b));
+    }
+
+    /** origin() of an http(s) address with the scheme's default port (443, 80) dropped, or null. */
+    private static String normalizedOrigin(String text) {
+        String origin = origin(text);
+        if (origin == null) return null;
+        // origin() keeps an explicit port as written: drop the scheme's default one
+        return origin.replaceFirst("^(https://.*):443$", "$1").replaceFirst("^(http://.*):80$", "$1");
+    }
+
     /** scheme://host[:port] of a well-formed http or https address, the host in lowercase, or null: `http://pc:abc/` is refused, not saved for Capacitor to fail on at the next start. */
     static String origin(String text) {
+        if (text == null) return null;
         URI uri;
         try {
             uri = new URI(text).parseServerAuthority();
