@@ -66,7 +66,7 @@ export function useChatCallbacks(deps: ChatCallbacksDeps) {
   // The prompt the chat shows: while it waits, a message from the composer answers it.
   const [chatPrompt, setChatPrompt] = useState<{ pane: string; value: InteractivePrompt; answered: boolean } | null>(null);
   const [promptRefresh, setPromptRefresh] = useState(0);
-  // what the agent suggests typing next (Claude's grey input text), for the composer's placeholder
+  // what the agent suggests typing next (the grey text in Claude's, gjc's or omp's empty input), for the composer's placeholder
   const [chatSuggestion, setChatSuggestion] = useState<{ pane: string; value: string } | null>(null);
   const onChatSuggestion = useCallback((pane: string, value: string | null) => {
     setChatSuggestion((current) => value !== null

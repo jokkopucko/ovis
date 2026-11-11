@@ -95,7 +95,7 @@ export interface ComposerProps {
   answerHint?: string | null;
   /** a typed pick waiting in the card above for Confirm: Enter in the empty box confirms it, Escape cancels it */
   waitingAnswer?: { confirm(): Promise<boolean | string>; cancel(): void } | null;
-  /** what the agent suggests typing next (Claude's grey input text): the placeholder, taken with Tab */
+  /** what the agent suggests typing next (the grey text in Claude's, gjc's or omp's empty input): the placeholder, taken with Tab */
   suggestion?: string | null;
   /** a cancelled send the agent put back in its input box: the empty box takes it again, for editing and resending */
   restored?: string | null;

@@ -104,6 +104,14 @@ Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil Labs, Inc. The M
 below applies. Mapping the tokens onto Ovis's theme roles and drawing the figure as an image are
 Ovis's own.
 
+## oh-my-pi theme dim colors
+
+`server/omp-input.ts` lists the `dim` colors of oh-my-pi's built-in themes (`OMP_DIM_TRUECOLOR`,
+`OMP_DIM_256`), taken from [`can1357/oh-my-pi`](https://github.com/can1357/oh-my-pi)
+`packages/tui/src/theme/defaults.json`, `dark.json` and `light.json` (omp 18.18), under MIT,
+Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil
+Labs, Inc. The MIT license text below applies. Reading the screen with them is Ovis's own.
+
 ## Theme palettes
 
 The CSS theme colors adapt herdr's pinned palettes, with readability adjustments recorded in

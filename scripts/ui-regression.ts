@@ -2383,7 +2383,7 @@ try {
   assert.equal(await mobilePage.getByTitle("Use the suggestion", { exact: true }).count(), 0, "a phone shows no suggestion chip by default");
   // the chip is one of Chat → Composer buttons, a chip each, pressed when on
   await mobilePage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}&settings=chat`);
-  const suggestion = mobilePage.getByRole("button", { name: "Suggestion (Claude Code)", exact: true });
+  const suggestion = mobilePage.getByRole("button", { name: "Suggestion", exact: true });
   await suggestion.click();
   await until(async () => await suggestion.getAttribute("aria-pressed") === "true", "the Suggestion chip is pressed");
   await mobilePage.getByRole("button", { name: "Close settings", exact: true }).click();

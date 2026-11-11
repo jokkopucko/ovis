@@ -256,7 +256,7 @@ export interface ChatViewProps {
   greeted?: boolean;
   /** the agent's waiting prompt, for the composer to answer too */
   onPrompt?: (paneId: string, prompt: InteractivePrompt | null, answered?: boolean) => void;
-  /** with no prompt waiting, the next prompt the agent suggests (Claude's grey input text) */
+  /** with no prompt waiting, the next prompt the agent suggests (the grey text in Claude's, gjc's or omp's empty input) */
   onSuggestion?: (paneId: string, suggestion: string | null) => void;
   /** a cancelled send the agent put back in its input box: the composer fills it again, and it is no sent turn here either */
   onRestored?: (paneId: string, restored: string | null) => void;

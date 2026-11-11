@@ -20,10 +20,10 @@ export const SETTINGS_COMPOSER_ZH: Record<string, string> = {
   "On this device, a drag in a Codex pane goes to Codex, which selects through its whole history and scrolls it while the drag is held past the top or bottom edge. Ctrl+C or Enter copies it, but on herdr that copy does not reach this device's clipboard: Shift+drag (Option+drag on a Mac) still selects, copies and quotes in Ovis, up to the screen's edge.": "在此设备上，Codex 窗格中的拖动交给 Codex，它会在完整历史中选择，并在拖动停在顶部或底部边缘之外时滚动历史。Ctrl+C 或 Enter 复制所选内容，但在 herdr 上该复制不会到达此设备的剪贴板：Shift+拖动（Mac 上为 Option+拖动）仍会在 Ovis 中选择、复制和引用，直到屏幕边缘。",
   "Composer buttons": "输入框按钮",
   "Artifacts (Claude Code)": "工件 (Claude Code)",
-  "Suggestion (Claude Code)": "建议 (Claude Code)",
+  "Suggestion": "建议",
   "Suggestion chip": "建议标签",
   "Artifacts chip": "Artifact 标签",
-  "A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.": "输入框上方的标签会把 Claude Code 建议的下一条提示填入输入框。使用键盘时按 Tab 即可。",
+  "A chip above the message box puts the prompt the agent suggests next (Claude Code, GJC or omp) into the box. With a keyboard, Tab does it.": "输入框上方的标签会把 Agent（Claude Code、GJC、omp）建议的下一条提示填入输入框。使用键盘时按 Tab 即可。",
   "A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.": "在 Claude Code 面板的输入框中显示一个标签，列出该会话用 Artifact 工具发布的页面。",
   "The site in that tab can see and navigate this Ovis tab.": "该标签页中的网站可以查看并跳转这个 Ovis 标签页。",
 };

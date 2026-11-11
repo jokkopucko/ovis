@@ -432,8 +432,8 @@ export async function sessionSnapshot(socketPath?: string, timeoutMs?: number): 
 }
 
 /** One pane's metadata; an unknown pane rejects with herdr's `pane_not_found`. */
-export async function paneGet(paneId: string, socketPath?: string): Promise<PaneInfo> {
-  const result = await herdrRpc<{ pane: PaneInfo }>("pane.get", { pane_id: paneId }, socketPath);
+export async function paneGet(paneId: string, socketPath?: string, timeoutMs?: number): Promise<PaneInfo> {
+  const result = await herdrRpc<{ pane: PaneInfo }>("pane.get", { pane_id: paneId }, socketPath, timeoutMs);
   return result.pane;
 }
 
@@ -728,8 +728,8 @@ export async function paneRead(options: PaneReadOptions, socketPath?: string): P
 export interface PaneTextPoint { row: number; col: number }
 
 /** Where the pane's viewport sits in its scrollback; null when herdr reports none. */
-export async function paneScrollInfo(paneId: string, socketPath?: string): Promise<PaneScrollInfo | null> {
-  const pane = await paneGet(paneId, socketPath);
+export async function paneScrollInfo(paneId: string, socketPath?: string, timeoutMs?: number): Promise<PaneScrollInfo | null> {
+  const pane = await paneGet(paneId, socketPath, timeoutMs);
   return pane.scroll ?? null;
 }
 

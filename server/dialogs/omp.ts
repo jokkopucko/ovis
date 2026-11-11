@@ -355,30 +355,31 @@ const OMP_STATUS_RULE = /^(?:─{4,}(?:[^─].*)?─|-{4,}(?:[^-].*)?-)$/u;
 /** the box's top border: a rule out of each corner, in one glyph set, the status between */
 const OMP_BOX_TOP = /^(?:╭─.*─╮|\+-.*-\+)$/u;
 const OMP_PROMPT = new RegExp(`^❯${CURSOR}$`, "u");
-const OMP_COMPOSERS: readonly (readonly (RegExp | null)[])[] = [
+/** each shape's rows, and which of them is the prompt row (where a draft or a prediction is typed) */
+const OMP_COMPOSERS: readonly { rows: readonly (RegExp | null)[]; prompt: number }[] = [
   // band (the default): the status band (an empty row without one), then the prompt's gutter
-  [null, new RegExp(`^╰─${CURSOR}$`, "u")],
-  [/^$/u, new RegExp(`^╰─${CURSOR}$`, "u")],
+  { rows: [null, new RegExp(`^╰─${CURSOR}$`, "u")], prompt: 1 },
+  { rows: [/^$/u, new RegExp(`^╰─${CURSOR}$`, "u")], prompt: 1 },
   // box: the status in the top border, then the prompt row merged into the bottom border; with IME-safe cursor
   // layout, the prompt row on its own over a whole bottom border
-  [OMP_BOX_TOP, /^(?:╰─? +(?:[▏|] *)?─?╯|\+-? +(?:[▏|] *)?-?\+)$/u],
-  [OMP_BOX_TOP, /^[│|](?: [▏|])?$/u, /^(?:╰─+╯|\+-+\+)$/u],
+  { rows: [OMP_BOX_TOP, /^(?:╰─? +(?:[▏|] *)?─?╯|\+-? +(?:[▏|] *)?-?\+)$/u], prompt: 1 },
+  { rows: [OMP_BOX_TOP, /^[│|](?: [▏|])?$/u, /^(?:╰─+╯|\+-+\+)$/u], prompt: 1 },
   // claude: a top rule, the prompt, a closing rule, the status' left group
-  [OMP_STATUS_RULE, OMP_PROMPT, OMP_RULE, null],
-  [OMP_STATUS_RULE, OMP_PROMPT, OMP_RULE],
+  { rows: [OMP_STATUS_RULE, OMP_PROMPT, OMP_RULE, null], prompt: 1 },
+  { rows: [OMP_STATUS_RULE, OMP_PROMPT, OMP_RULE], prompt: 1 },
   // rule: a top rule, the prompt, a gap, the status' left group
-  [OMP_STATUS_RULE, OMP_PROMPT, /^$/u, null],
-  [OMP_STATUS_RULE, OMP_PROMPT],
+  { rows: [OMP_STATUS_RULE, OMP_PROMPT, /^$/u, null], prompt: 1 },
+  { rows: [OMP_STATUS_RULE, OMP_PROMPT], prompt: 1 },
   // pi: the prompt between two rules, then the status
-  [OMP_RULE, /^[▏|]?$/u, OMP_RULE, null],
-  [OMP_RULE, /^[▏|]?$/u, OMP_RULE],
+  { rows: [OMP_RULE, /^[▏|]?$/u, OMP_RULE, null], prompt: 1 },
+  { rows: [OMP_RULE, /^[▏|]?$/u, OMP_RULE], prompt: 1 },
   // borderless: never without its status, as a bare `❯` is also a shell's prompt
-  [OMP_PROMPT, null],
+  { rows: [OMP_PROMPT, null], prompt: 0 },
   // field (its right cap left off with IME-safe layout), then rail: one filled row, a gap, the status
-  [/^▐(?: +(?:[▏|] *)?▌| [▏|])?$/u, /^$/u, null],
-  [/^▐(?: +(?:[▏|] *)?▌| [▏|])?$/u],
-  [new RegExp(`^▎${CURSOR}$`, "u"), /^$/u, null],
-  [new RegExp(`^▎${CURSOR}$`, "u")],
+  { rows: [/^▐(?: +(?:[▏|] *)?▌| [▏|])?$/u, /^$/u, null], prompt: 0 },
+  { rows: [/^▐(?: +(?:[▏|] *)?▌| [▏|])?$/u], prompt: 0 },
+  { rows: [new RegExp(`^▎${CURSOR}$`, "u"), /^$/u, null], prompt: 0 },
+  { rows: [new RegExp(`^▎${CURSOR}$`, "u")], prompt: 0 },
 ];
 /**
  * the status row as drawn: the band's powerline cap (Nerd Font preset), the space omp pads a segment group with, or with
@@ -386,14 +387,29 @@ const OMP_COMPOSERS: readonly (readonly (RegExp | null)[])[] = [
  */
 const OMP_STATUS_ROW_RE = /^(?:[\ue0b0-\ue0d4] | +|─+|-+< )\S/u;
 
+/** the empty composer that ends the screen: its first row and its prompt row; `raw` holds the rows untrimmed */
+function ompEmptyComposer(lines: string[], raw: string[]): { top: number; prompt: number } | null {
+  const last = findLastIndex(lines, (line) => line !== "");
+  for (const { rows, prompt } of OMP_COMPOSERS) {
+    const top = last - rows.length + 1;
+    if (top > 0 && rows.every((row, index) => row === null ? OMP_STATUS_ROW_RE.test(raw[top + index]!) : row.test(lines[top + index]!))) return { top, prompt: top + prompt };
+  }
+  return null;
+}
+
 /** the last row over omp's composer when the screen ends in one, else the screen's last row; `raw` holds the rows untrimmed */
 function ompAboveComposer(lines: string[], raw: string[]): number {
-  const last = findLastIndex(lines, (line) => line !== "");
-  for (const rows of OMP_COMPOSERS) {
-    const top = last - rows.length + 1;
-    if (top > 0 && rows.every((row, index) => row === null ? OMP_STATUS_ROW_RE.test(raw[top + index]!) : row.test(lines[top + index]!))) return top - 1;
-  }
-  return last;
+  const composer = ompEmptyComposer(lines, raw);
+  return composer === null ? findLastIndex(lines, (line) => line !== "") : composer.top - 1;
+}
+
+/**
+ * The prompt row of the empty omp composer that ends the screen, in any built-in `composer.shape`, or null when the
+ * screen ends in none. `lines` are the rows trimmed, `raw` the same rows untrimmed (the status row is read by its
+ * leading space). A caller that blanked out text drawn in the prompt row learns whether that row is the prompt.
+ */
+export function ompComposerPromptRow(lines: string[], raw: string[]): number | null {
+  return ompEmptyComposer(lines, raw)?.prompt ?? null;
 }
 /** a choice row: the cursor (❯, its Nerd Font icon, or `>`) on the highlighted one, two spaces before the rest */
 const OMP_CHOICE_RE = /^(?:([❯\uf054>])|  )\s?(\S.*)$/u;

@@ -20,10 +20,10 @@ export const SETTINGS_COMPOSER_KO: Record<string, string> = {
   "On this device, a drag in a Codex pane goes to Codex, which selects through its whole history and scrolls it while the drag is held past the top or bottom edge. Ctrl+C or Enter copies it, but on herdr that copy does not reach this device's clipboard: Shift+drag (Option+drag on a Mac) still selects, copies and quotes in Ovis, up to the screen's edge.": "이 기기에서 Codex 패널을 끌면 Codex가 받아 전체 기록에서 선택하고, 위나 아래 가장자리 너머로 끈 채 있으면 기록을 스크롤합니다. Ctrl+C나 Enter로 복사하지만, herdr에서는 그 복사가 이 기기의 클립보드에 닿지 않습니다. Shift+끌기(Mac은 Option+끌기)는 여전히 Ovis에서 화면 가장자리까지 선택하고 복사하고 인용합니다.",
   "Composer buttons": "입력칸 버튼",
   "Artifacts (Claude Code)": "생성한 페이지 목록 (Claude Code)",
-  "Suggestion (Claude Code)": "제안 (Claude Code)",
+  "Suggestion": "제안",
   "Suggestion chip": "제안 칩",
   "Artifacts chip": "아티팩트 칩",
-  "A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.": "입력창 위의 칩을 누르면 Claude Code가 제안한 다음 프롬프트가 입력창에 들어갑니다. 키보드에서는 Tab으로 넣습니다.",
+  "A chip above the message box puts the prompt the agent suggests next (Claude Code, GJC or omp) into the box. With a keyboard, Tab does it.": "입력창 위의 칩을 누르면 에이전트(Claude Code, GJC, omp)가 제안한 다음 프롬프트가 입력창에 들어갑니다. 키보드에서는 Tab으로 넣습니다.",
   "A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.": "Claude Code 패널의 입력창에 세션이 Artifact 도구로 게시한 페이지 목록을 여는 칩을 표시합니다.",
   "The site in that tab can see and navigate this Ovis tab.": "그 탭의 사이트가 이 Ovis 탭을 보고 이동시킬 수 있습니다.",
 };

@@ -35,6 +35,7 @@ import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
 import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
+import { parseGjcSuggestion, parseOmpSuggestion } from "./omp-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
 import { codexQueuedPrompt, queuedQuestionCount, type QueueFront } from "./codex-queue.ts";
 import { OpenCodePromptState } from "./opencode-prompt.ts";
@@ -1438,6 +1439,13 @@ export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], optio
   return shown !== null && draft ? `${shown}\0${JSON.stringify(draft)}` : shown;
 }
 
+/** What each agent suggests typing next, read from its screen (an ANSI read of the viewport), by herdr's agent name. */
+const SUGGESTION_PARSERS: Readonly<Record<string, (ansi: string) => string | null>> = {
+  claude: parseClaudeSuggestion,
+  gjc: parseGjcSuggestion,
+  omp: parseOmpSuggestion,
+};
+
 export async function handlePromptRequest(request: Request, url: URL, options: PromptRequestOptions = {}): Promise<Response | null> {
   if (url.pathname !== "/api/pane/prompt" && url.pathname !== "/api/pane/prompt/answer") return null;
   setRequestRoute(url.pathname);
@@ -1456,20 +1464,30 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       // reaches this PC with its own credential: it only ever narrows the answer
       const watching = options.readOnly || url.searchParams.get("plan") === "0";
       const prompt = watching ? read.prompt : await withPlanFile(read.prompt, options.claudeTranscript?.(paneId));
-      // no menu up: what Claude suggests typing next, for the composer's placeholder, and the chat's
-      // own last message where Claude put it back into the box on a cancel. Only a nicety: it is read
-      // only while Claude waits for the next prompt (a working agent shows none), and a failed or
-      // slow read of it (a herdr without ansi reads, a busy one) leaves the prompt answer as it is,
-      // on time.
-      const box = prompt === null && agent === "claude" && (status === "idle" || status === "done")
+      // no menu up: what the agent suggests typing next (Claude, and gjc and omp with their
+      // suggestions turned on), for the composer's placeholder, and the chat's own last message where
+      // Claude put it back into the box on a cancel. Only a nicety: it is read only while the agent
+      // waits for the next prompt (a working agent shows none), and a failed or slow read of it (a
+      // herdr without ansi reads, a busy one) leaves the prompt answer as it is, on time. gjc's and
+      // omp's box is read only at the bottom of the screen: a viewport scrolled into the history
+      // could end in an older frame of it. The snapshot's scroll is from before the read, so for a
+      // suggestion found there, where the viewport is gets asked again (another device may have
+      // scrolled meanwhile), within the same short deadline as the read; a look herdr does not
+      // answer in time proves nothing, and offers none.
+      const parseSuggestion = Object.hasOwn(SUGGESTION_PARSERS, agent) ? SUGGESTION_PARSERS[agent]! : null;
+      const scrolled = agent !== "claude" && (read.pane.scroll?.offset_from_bottom ?? 0) > 0;
+      const box = prompt === null && parseSuggestion !== null && !scrolled && (status === "idle" || status === "done")
         ? await paneRead({ paneId, source: "visible", format: "ansi", timeoutMs: SUGGESTION_READ_MS })
           .then((read) => read.text, () => null)
         : null;
+      const found = box === null || parseSuggestion === null ? null : parseSuggestion(box);
+      const suggestion = found === null || agent === "claude" ? found
+        : await paneScrollInfo(paneId, undefined, SUGGESTION_READ_MS).then((scroll) => (scroll?.offset_from_bottom ?? 0) > 0 ? null : found, () => null);
       const outcomes = await commandOutcomes(paneId, read.pane, read.prompt, read.screen, readSendId, options.codexHome, read.snapshot);
       return jsonResponse({
         prompt,
-        suggestion: box === null ? null : parseClaudeSuggestion(box),
-        restored: box === null ? null : await restoredOnLiveScreen(paneId, box).catch(() => null),
+        suggestion,
+        restored: box === null || agent !== "claude" ? null : await restoredOnLiveScreen(paneId, box).catch(() => null),
         ...(outcomes.length ? { outcomes: watching ? outcomes.map(({ preview: _preview, result_text: _resultText, ...outcome }) => outcome) : outcomes } : {}),
       } satisfies PanePromptResponse);
     }
