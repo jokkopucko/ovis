@@ -11,6 +11,11 @@ import type { PushService } from "./push.ts";
 import { posixHost, windowsHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { readProcessBirth } from "./process-owner.ts";
+import { tunnelRelays } from "./machine-tunnel.fixture.ts";
+
+// the bridge tokens of the cases already ended: a read one of their PCs still had under way (its move badge) may reach
+// the port its relay let go, now a later case's relay
+const retired = new Set<string>();
 
 // quiet: the live server cannot prove itself at first (no answer, an HTTP error); open: once chosen, it no longer can
 // unanswered other name: a live server of the account's, not answering, whose socket is not the core adapter's name
@@ -122,16 +127,14 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
     spyOn(posixHost, "alive").mockImplementation(async () => !selected || outcome !== "stopped after proof"),
     spyOn(posixHost, "installBundle").mockImplementation(async () => { installs++; }),
     spyOn(posixHost, "start").mockImplementation(async (_ssh, options) => { starts++; startedWith = options; throw new Error("must not start herdr"); }),
-    // the SSH tunnel to a bridge: its relay listens on a port of its own (port 0), never on a number freed for it, which
-    // another process on a busy host may take first
-    spyOn(MachineManager.prototype as unknown as { tunnel(ssh: SshConnection, descriptor: { port: number; token: string }): Promise<{ url: string; token: string }> }, "tunnel").mockImplementation(async (_ssh, { port: remotePort, token }) => {
+    // the SSH tunnel to a bridge (machine-tunnel.fixture.ts)
+    ...tunnelRelays(relays, (remotePort) => {
       const served = remotePort === bridge.port && bridged ? bridge : remotePort === workBridge.port && beside ? workBridge : descriptor;
       expect(remotePort).toBe(served.port);
-      const relay = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) {
-        // a read an earlier case's PC still had under way (its move badge) may reach the port that case's relay let go:
-        // a token of no bridge of this case is refused, as a bridge refuses one it does not know
+      return Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) {
+        // an ended case's token is refused, as a bridge refuses one it does not know; any other must be this bridge's
         const authorization = request.headers.get("authorization");
-        if (![descriptor, bridge, workBridge].some((own) => authorization === `Bearer ${own.token}`)) return new Response(null, { status: 401 });
+        if (authorization?.startsWith("Bearer ") && retired.has(authorization.slice("Bearer ".length))) return new Response(null, { status: 401 });
         expect(authorization).toBe(`Bearer ${served.token}`);
         const path = new URL(request.url).pathname;
         if (path === "/api/bridge" && served !== descriptor) return Response.json({ ...served, socket_id: "fixture:tui", herdr: { protocol: 22, version: "0.9.0", runtime: "herdr" } });
@@ -151,8 +154,6 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
         if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
         return new Response(null, { status: 404 });
       }, websocket: { message() {} } });
-      relays.push(relay);
-      return { url: `http://127.0.0.1:${relay.port}`, token };
     }),
   ];
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
@@ -451,6 +452,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
       expect(retries).not.toHaveBeenCalled();
     }
   } finally {
+    for (const own of [descriptor, bridge, workBridge]) retired.add(own.token);
     manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); relays.forEach((relay) => relay.stop(true)); herdr?.stop(true); tui?.stop(true); adapter.stop(true); rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -579,5 +581,28 @@ it("spells the session's own socket beside the one chosen", async () => {
     expect(await posixHost.inspect(ssh, "work", work)).toMatchObject({ expectedSocket: work, defaultSocket: work });
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// a registration's port and token go into an SSH forward and a request header: one that is no port or no bridge token
+// of this app's opens no tunnel
+it.each([
+  ["port 0", { port: 0 }], ["port past 65535", { port: 65536 }], ["fractional port", { port: 1.5 }], ["port as text", { port: "12345" }],
+  ["short token", { token: "a".repeat(63) }], ["upper-case token", { token: "A".repeat(64) }], ["token with a newline", { token: `${"a".repeat(64)}\n` }], ["no token", { token: undefined }],
+] as const)("opens no tunnel for invalid bridge credentials: %s", async (_name, change) => {
+  const dir = mkdtempSync(join(tmpdir(), "machine-tunnel-credentials-"));
+  const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
+  const forwards: number[] = [];
+  const ssh = { forward: async (_port: number, remotePort: number) => { forwards.push(remotePort); } } as unknown as SshConnection;
+  const tunnel = (manager as unknown as { tunnel(ssh: SshConnection, descriptor: unknown): Promise<{ url: string; token: string }> }).tunnel.bind(manager);
+  try {
+    const valid = { port: 12345, token: "a".repeat(64) };
+    // the same tunnel opens for a valid registration, so the refusal is the change's
+    expect(await tunnel(ssh, valid)).toMatchObject({ url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/), token: valid.token });
+    expect(forwards).toEqual([valid.port]);
+    await expect(tunnel(ssh, { ...valid, ...change })).rejects.toThrow("Invalid bridge credentials");
+    expect(forwards).toEqual([valid.port]);
+  } finally {
+    manager.stop(); rmSync(dir, { recursive: true, force: true });
   }
 });

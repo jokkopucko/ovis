@@ -8,6 +8,7 @@ import { MachineManager } from "./machines.ts";
 import { createPushService } from "./push.ts";
 import { posixHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
+import { tunnelRelays } from "./machine-tunnel.fixture.ts";
 
 it.each([
   { loss: "before", result: "connected", session: "a" },
@@ -53,19 +54,16 @@ it.each([
     spyOn(posixHost, "chosenSocketStatus").mockResolvedValue("usable"),
     spyOn(posixHost, "start").mockImplementation(async () => { oldStarts++; resumed.resolve(); throw new Error("Old bridge unavailable"); }),
     spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
-    // the SSH tunnel to a bridge: its relay listens on a port of its own (port 0), never on a number freed for it, which
-    // another process on a busy host may take first
-    spyOn(MachineManager.prototype as unknown as { tunnel(ssh: SshConnection, descriptor: { port: number; token: string }): Promise<{ url: string; token: string }> }, "tunnel").mockImplementation(async (_ssh, { port: remotePort, token }) => {
+    // the SSH tunnel to a bridge (machine-tunnel.fixture.ts)
+    ...tunnelRelays(relays, (remotePort) => {
       const socket = remotePort === 12345 ? a.herdr_socket : b.herdr_socket;
-      const relay = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) {
+      return Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) {
         const path = new URL(request.url).pathname;
         if (path === "/api/bridge") return Response.json({ ...descriptor(socket), socket_id: socket, herdr: { protocol: 22, version: "0.9.3" } });
         if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [{ id: socket, name: socket }] } });
         if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
         return new Response("absent", { status: 404 });
       }, websocket: { message() {} } });
-      relays.push(relay);
-      return { url: `http://127.0.0.1:${relay.port}`, token };
     }),
   ];
   const manager = new MachineManager(dir, createPushService({ stateDir: dir }), new CompletionTracker(null), async () => { throw new Error("isolated"); }, { now: () => clock });
