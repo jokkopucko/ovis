@@ -7,6 +7,7 @@ import type { AccountAsker as Asker } from "../../shared/account-asker.ts";
 import type { RemotePairingRequest } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { AccountApprovalCard, AccountAsker } from "./AccountApprovalPrompt.tsx";
+import { restsOnAdmission } from "./AccountApprovals.tsx";
 
 function render(asker: Asker, language: string): string {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
@@ -81,5 +82,17 @@ describe("approving a device that asks to join the account", () => {
   it("waits to approve until it knows who is asking, then lets a picked number approve", async () => {
     expect(await approveButton(undefined)).toEqual({ disabled: true, numbersDisabled: true });
     expect(await approveButton({ os: null, country: null, city: null })).toEqual({ disabled: false, numbersDisabled: false });
+  });
+});
+
+// another PC of the account vouched for (pair-intent-pc-vouched) is asked as "pair this PC", so nothing is signed for it,
+// yet its card says who is asking and its approval checks the admission, as an account join's does
+describe("which requests rest on an admission", () => {
+  const request = (extra: Partial<RemotePairingRequest>): RemotePairingRequest => ({ id: "r1", label: "Ovis on Desk", intent: "pc", choices: ["111111", "222222", "333333"], expires_at: "", key: "k", ...extra });
+  it("an account join and another PC of the account vouched for do; any other request for this PC does not", () => {
+    expect(restsOnAdmission(request({ intent: "account" }))).toBe(true);
+    expect(restsOnAdmission(request({ vouched: true }))).toBe(true);
+    expect(restsOnAdmission(request({}))).toBe(false);
+    expect(restsOnAdmission(undefined)).toBe(false);
   });
 });

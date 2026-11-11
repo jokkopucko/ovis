@@ -246,4 +246,11 @@ export const DEVICES_KO: Record<string, string> = {
   "Sign-in will be required for the Ovis relay. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "Ovis 릴레이에는 로그인이 필요해집니다. 같은 Wi-Fi, Tailscale, 직접 운영하는 릴레이는 계정 없이 계속 작동합니다.",
   "This account has reached its PC limit on the Ovis relay. Remove a PC you no longer use, or connect over the same Wi-Fi or Tailscale.": "이 계정이 Ovis 릴레이 PC 한도에 도달했습니다. 더 이상 쓰지 않는 PC를 제거하거나 같은 Wi-Fi 또는 Tailscale로 연결하세요.",
   "This account has reached its relay data limit for new connections. Existing sessions stay open, or connect over the same Wi-Fi or Tailscale.": "이 계정이 새 연결에 대한 릴레이 데이터 한도에 도달했습니다. 열린 세션은 유지되며, 같은 Wi-Fi 또는 Tailscale로 연결할 수 있습니다.",
+  "Your account's PCs": "계정의 PC",
+  "In this app": "이 앱에 있음",
+  "Online": "온라인",
+  "Update Ovis on that PC": "그 PC의 Ovis를 업데이트하세요",
+  "Asking {name}…": "{name}에 요청하는 중…",
+  "Approve on another device of your account": "계정의 다른 기기에서 승인하세요",
+  "That PC could not be added. Try again.": "그 PC를 추가하지 못했습니다. 다시 시도하세요.",
 };

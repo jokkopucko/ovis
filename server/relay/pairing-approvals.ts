@@ -29,6 +29,8 @@ interface Waiting {
   membersOnly: boolean;
   /** asked while this PC's own screen waited to be added to an account: decided on this PC only, never by a member */
   localOnly: boolean;
+  /** another PC of the account vouched for by an admission: members are told, so their app checks it (RemotePairingRequest) */
+  vouched: boolean;
   choices: [string, string, string];
   finish: (decision: PairingDecision) => void;
 }
@@ -228,8 +230,9 @@ export class RelayPairingApprovals {
   }
 
   remoteList(): RemotePairingRequest[] {
-    return [...this.waiting.values()].filter(({ localOnly }) => !localOnly).map(({ request, choices, key }) => ({
+    return [...this.waiting.values()].filter(({ localOnly }) => !localOnly).map(({ request, choices, key, vouched }) => ({
       id: request.id, label: request.label, intent: request.intent, choices, expires_at: request.expires_at, key,
+      ...(vouched ? { vouched: true as const } : {}),
     }));
   }
 
@@ -247,7 +250,7 @@ export class RelayPairingApprovals {
   }
 
   /** Null when MAX_PENDING_APPROVALS are already waiting. `withdraw` ends it unapproved (the phone left, or time ran out). */
-  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean; localOnly?: boolean } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void } | null {
+  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean; localOnly?: boolean; vouched?: boolean } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void } | null {
     if (this.waiting.size >= MAX_PENDING_APPROVALS) return null;
     const id = randomBytes(8).toString("hex");
     const decided = Promise.withResolvers<PairingDecision>();
@@ -262,7 +265,7 @@ export class RelayPairingApprovals {
     // It follows this PC's window, not the other device's screen: a phone that pairs by an ordinary link
     // while the add-me window is still open shows digits to compare, and the prompt's words hold for both.
     this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent, ...(localOnly ? { local_only: true as const } : {}) },
-      expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, choices: decoys(digits), finish });
+      expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, choices: decoys(digits), finish });
     this.changed();
     return { decision: decided.promise, withdraw: () => finish({ approved: false }) };
   }

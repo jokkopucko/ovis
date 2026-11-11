@@ -258,6 +258,7 @@ run_script scripts/preferences-sync-regression.ts
 run_script scripts/machine-dialog-regression.ts
 run_script scripts/machine-conflict-regression.ts
 run_script scripts/relay-pairing-prompt-regression.ts
+run_script scripts/relay-account-pcs-regression.ts
 run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts
 run_script scripts/relay-e2e-regression.ts

@@ -4,10 +4,9 @@ import type { SecureChannel } from "../../shared/relay-e2ee.ts";
 import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { ACCOUNT_FEATURE, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, LARGE_WS_MESSAGES, LIMITS_V1, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, LARGE_WS_MESSAGES, LIMITS_V1, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
-import type { PairingIntent } from "../../shared/machines.ts";
-import { PairingRateLimitedError, type DeviceMatch } from "../devices.ts";
+import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { SIGN_IN_WAIT_MS } from "../account/mailbox.ts";
 import { handleRequest } from "../dispatch.ts";
@@ -95,8 +94,11 @@ export class RelaySession {
   private readonly nonce = randomBytes(32);
   /** This session's channel binding, when the phone offered pairing by comparing digits and this PC selected it. */
   private sasBinding: Uint8Array | undefined;
-  /** What a comparison on this session asks for, as selected in WELCOME; `pc` unless the phone offered `pair-intent-account`. */
-  private intent: PairingIntent = "pc";
+  /**
+   * What a comparison on this session asks for, as selected in WELCOME: `pc` unless the phone offered
+   * `pair-intent-account`, or another PC of the account's server offered `pair-intent-pc-vouched` (`vouched`).
+   */
+  private intent: "pc" | "account" | "vouched" = "pc";
   /** A WELCOME went out: the provisional one before HELLO, or the answer to it. */
   private welcomed = false;
   /** A pairing by comparing digits under way; `ended` once it made a device or counted as a failure. */
@@ -275,13 +277,14 @@ export class RelaySession {
         if (large) this.mux.sendLargeMessages();
         this.serverTime = frame.payload.features.includes(SERVER_TIME_HEADER);
         // an intent is selected only with pair-sas, and only the one offered (docs/account.md, "Negotiation")
-        const intents = frame.payload.features.filter((f) => f === PAIR_INTENT_PC || f === PAIR_INTENT_ACCOUNT);
+        const intents = frame.payload.features.filter((f) => f === PAIR_INTENT_PC || f === PAIR_INTENT_ACCOUNT || f === PAIR_INTENT_VOUCHED);
         if (intents.length > 1) { this.close("protocol_error"); return; }
         const selected = [...this.sasBinding ? [PAIR_SAS_FEATURE, ...intents] : [], ...frame.payload.features.includes(ACCOUNT_FEATURE) ? [ACCOUNT_FEATURE] : []];
         // a feature the phone requires has to be one this PC takes on this channel
         if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) { this.close("unsupported_extension"); return; }
         this.state = "auth";
         if (this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT) this.intent = "account";
+        if (this.sasBinding && intents[0] === PAIR_INTENT_VOUCHED) this.intent = "vouched";
         // after a provisional WELCOME (nothing selected), another goes out only when this one selects something
         if (!this.welcomed || selected.length > 0) this.welcome(selected, false);
         return;
@@ -308,11 +311,12 @@ export class RelaySession {
         if (this.state !== "auth" || !this.sasBinding) { this.close("protocol_error"); return; }
         if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
         // nobody asked for a link lately: refused before any prompt, and not counted, since no person was asked,
-        // unless it is an account join the account service has seen (accountJoin, docs/account.md design 5.3)
+        // unless it is an account join the account service has seen (accountJoin, docs/account.md design 5.3).
+        // Another PC of the account's server is taken only that way, window or not: its admission is its whole invitation
         let membersOnly = false;
         // taken under the PC's own add-me screen: this comparison stays the PC's to decide, whenever its digits show
         const localOnly = this.options.services.relay.approvals.localOnlyOpen();
-        if (!this.options.services.relay.approvals.windowOpen()) {
+        if (this.intent === "vouched" || !this.options.services.relay.approvals.windowOpen()) {
           this.state = "verifying";
           if (!await this.accountJoin(frame.payload.public_key)) { this.close("auth_failed"); return; }
           if (!this.mux.active) return;
@@ -345,7 +349,9 @@ export class RelaySession {
         this.options.services.devices.assertRelayPairing(this.path);
         const asked = this.options.services.relay.approvals.ask(sas.label,
           pairDigits(this.sasBinding, sas.publicKey, phoneNonce, sas.pcNonce), sas.expiresAt,
-          { intent: this.intent, key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly });
+          // a PC vouched for is asked as "pair this PC": it joins this PC alone, and the approver's app signs nothing for it;
+          // marked vouched, so that app shows who is asking and checks the admission, as for an account join
+          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched" });
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;
@@ -414,13 +420,14 @@ export class RelaySession {
   }
 
   /**
-   * An account join outside the pairing window (docs/account.md, design 5.3): only with the account
-   * intent, on a PC in an account with a member to approve, for a key the account service has a fresh
-   * admission for, at most 5 a minute. Never counted as a failed pairing: nobody was asked.
+   * An account join outside the pairing window (docs/account.md, design 5.3), or another PC of the account
+   * vouched for: only with the account or vouched intent, on a PC in an account with a member to approve, for a
+   * key the account service has a fresh admission for, at most 5 a minute between them. Never counted as a
+   * failed pairing: nobody was asked.
    */
   private async accountJoin(key: string): Promise<boolean> {
     const { devices, relay, accountMailbox } = this.options.services;
-    const allowed = () => this.intent === "account" && devices.account() !== null && devices.hasAccountApprover();
+    const allowed = () => (this.intent === "account" || this.intent === "vouched") && devices.account() !== null && devices.hasAccountApprover();
     if (!allowed()) return false;
     // a pull may take a while: the comparison's own deadline starts now
     this.mux.extendSetup(PAIR_APPROVAL_MS + 1_000);
@@ -448,7 +455,7 @@ export class RelaySession {
   }
 
   /** Which failure count this session's comparison spends (server/devices.ts PairingPath). */
-  private get path(): "code" | "account" { return this.intent === "account" ? "account" : "code"; }
+  private get path(): PairingPath { return this.intent === "account" ? "account" : this.intent === "vouched" ? "vouched" : "code"; }
 
   /** A verified AUTH, PAIR or approved comparison becomes this session's one principal. */
   private enter(device: DeviceMatch | null | undefined): void {

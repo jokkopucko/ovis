@@ -663,6 +663,13 @@ export function App() {
       },
       connectPc: (machine) => {
         setSettingsOpen(false);
+        // a relay PC has no setup to fill in (MachineDialog is SSH's): it opens as a pick in the sidebar does, once the
+        // roster has it (a PC just added may not be in it yet), unless another pick came first
+        if (machine.kind === "relay") {
+          const at = picks.current;
+          void load().finally(() => { if (picks.current === at) selectTarget(machine.id, null); });
+          return;
+        }
         setUpdateRemote(false);
         addPcFocusReturn.current = true;
         setMachineDialog(machine);
@@ -684,7 +691,7 @@ export function App() {
       // herdr's layout calls on the selected pane (lib/layoutActions.ts): only those the PC's herdr answers
       ...layoutActions({ selectedPaneId, offer: appLayout, paneSplits: !selectedPane?.own_tab, selection: selectionRef, roster: snapshotRef, load, selectPane, layoutRefused }),
     }),
-    [revealFiles, selectPane, selectedPaneId, selectedPane?.own_tab, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter, selectedSearchable, requestSearch, split, soloSlot, settings.webLinks, settings.sidebarBackgroundWorkspaces, openWebPage],
+    [revealFiles, selectPane, selectTarget, selectedPaneId, selectedPane?.own_tab, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter, selectedSearchable, requestSearch, split, soloSlot, settings.webLinks, settings.sidebarBackgroundWorkspaces, openWebPage],
   );
 
   useShortcuts(actions, locked === false);

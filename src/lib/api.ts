@@ -1635,6 +1635,38 @@ export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("
 export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean }
 /** GET /api/machines/tailnet: those PCs, each asked over Tailscale which Ovis it runs. */
 export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
+/** Another PC of the account as the page read it from the account's directory: its key checked against its id here too. */
+export interface AccountPcEntry { readonly server_id: string; readonly server_public_key: string; readonly relay: string; readonly name: string }
+/** Whether another PC of the account would pair with this one: it answered the relay and takes such a pairing, is an older Ovis, or did not answer. */
+export type AccountPcState = "ready" | "outdated" | "offline";
+/** POST /api/machines/relay/account/check: asks each PC, sending nothing to pair. */
+export const checkAccountPcs = (pcs: readonly AccountPcEntry[]) => machineRequest<{ pcs: { server_id: string; state: AccountPcState }[] }>("/relay/account/check", "POST", { pcs });
+/** POST /api/machines/relay/account/start: the key this PC would hold for that PC, for the admission to name; ApiError `account_pc_outdated` for an older one. */
+export const startAccountPc = (pc: AccountPcEntry) => machineRequest<{ ticket: string; key: string; label: string }>("/relay/account/start", "POST", { pc });
+/**
+ * POST /api/machines/relay/account/pair: compares digits with that PC through the relay, `onDigits` told them once that
+ * PC took the request, and resolves with the PC once a member of the account approved it there. Aborting `signal`
+ * cancels it on this PC's server too. ApiError `account_pc_<failure>` otherwise.
+ */
+export async function pairAccountPc(ticket: string, onDigits: (digits: string) => void, signal: AbortSignal): Promise<Machine> {
+  const url = "/api/machines/relay/account/pair";
+  const response = await apiFetch(url, { method: "POST", signal, headers: { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1" }, body: JSON.stringify({ ticket }) });
+  if (!response.ok || response.body === null) throw await errorFrom(url, response);
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) throw new ApiError(url, 502, "The answer ended early", null);
+    buffer += chunk.value;
+    for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
+      const line = JSON.parse(buffer.slice(0, end)) as { digits?: string; machine?: Machine; error?: { code: string; message: string } };
+      buffer = buffer.slice(end + 1);
+      if (typeof line.digits === "string") onDigits(line.digits);
+      if (line.machine) { void reader.cancel(); return line.machine; }
+      if (line.error) { void reader.cancel(); throw new ApiError(url, 409, line.error.message, line.error.code); }
+    }
+  }
+}
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);

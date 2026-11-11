@@ -742,6 +742,34 @@ describe("approving a device that asks to join the account", () => {
     expect(vouchedAdmission(tied, "pc-x", "k", now)?.label).toBe(vouchedAdmission([...tied].reverse(), "pc-x", "k", now)?.label);
   });
 
+  it("declines another PC of the account vouched for when the account service never saw its key ask at that PC", async () => {
+    const { service, X } = await setUp();
+    const decisions: string[] = [];
+    let admitted = false;
+    const outcome = approveJoin({
+      request: { id: "r1", label: "Ovis on Desk", intent: "pc", vouched: true, choices: ["111111", "222222", "333333"], expires_at: "", key: (await accountKey()).public_spki },
+      digits: "111111", through: X, service, decide: async (decision) => { decisions.push(decision); }, admit: async () => { admitted = true; },
+    });
+    await expect(outcome).rejects.toBeInstanceOf(UnverifiedJoinError);
+    expect(decisions).toEqual(["decline"]);
+    expect(admitted).toBe(false);
+  });
+
+  it("approves another PC of the account vouched for only on that PC: its admission checked, nothing signed", async () => {
+    const { service, X } = await setUp();
+    const desk = await accountKey();
+    await service.postAdmission(X, "Ovis on Desk", desk.public_spki, "linux");
+    const shown = vouchedAdmission(await service.recentAdmissions(), X, desk.public_spki, Date.now())!;
+    const decisions: string[] = [];
+    let admitted = false;
+    await approveJoin({
+      request: { id: "r1", label: "Ovis on Desk", intent: "pc", vouched: true, choices: ["111111", "222222", "333333"], expires_at: "", key: desk.public_spki },
+      digits: "222222", through: X, service, shown, decide: async (decision, digits) => { decisions.push(`${decision}:${digits}`); }, admit: async () => { admitted = true; },
+    });
+    expect(decisions).toEqual(["approve:222222"]);
+    expect(admitted).toBe(false);
+  });
+
   it("approves a request for this PC only without adding the device to the account", async () => {
     const { service, X } = await setUp();
     let admitted = false;

@@ -321,6 +321,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add PCs from your Tailscale on this PC itself, or from a device paired with it directly." } }, 403);
   }
+  // Another PC of the account is paired with this PC's server by a window direct to this PC that drives it (docs/account.md,
+  // "Adding a PC of your account"): a device on the relay, a Portal visitor or an open LAN window must not have this PC
+  // pair itself with whatever PC they name; a watching device is refused in machine-api.ts (read_only)
+  if (pathname.startsWith("/api/machines/relay/account/") && access.level === "full" && (access.via === "open" || access.via === "portal" || access.via === "relay")) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "Add PCs of your account on this PC itself, or from a device paired with it directly." } }, 403);
+  }
   // The SSH tab's list (hosts of this PC's ssh config with their user@hostname, and its Tailscale login's PCs) goes
   // only to clients that may drive this PC with full access: this PC itself, its access token, a device paired with
   // it directly to drive, and another PC on the owner's Tailscale login. Each of those can already open a terminal
@@ -376,7 +383,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // resume on agent.start and then its store check (machine-api.ts slowMachinePath)
       // a move's install there is waited for 200 s (machine-api.ts): this connection is held a little longer still
       const machinePathAsked = pathname.split("/").slice(4).join("/");
-      ctx.timeout(request, pathname === "/api/machines/events" ? 0 : machinePathAsked === "runtime/move/install" ? 210 : slowMachinePath(machinePathAsked) ? 180 : 80);
+      // a PC of the account's comparison waits up to PAIR_APPROVAL_MS for an approval on another device
+      ctx.timeout(request, pathname === "/api/machines/events" ? 0 : machinePathAsked === "runtime/move/install" ? 210 : slowMachinePath(machinePathAsked) || pathname === "/api/machines/relay/account/pair" ? 180 : 80);
       const deviceId = access.level === "full" ? access.device?.id : undefined;
       // a device's enrollment is news to every stream but the new device's own: one the stream's
       // device cookie names, or one this browser asked for itself (its stream key, server/devices.ts),

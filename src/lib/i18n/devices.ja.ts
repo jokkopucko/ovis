@@ -246,4 +246,11 @@ export const DEVICES_JA: Record<string, string> = {
   "Sign-in will be required for the Ovis relay. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "Ovis リレーにはサインインが必要になります。同じ Wi-Fi、Tailscale、自前のリレーはアカウントなしでそのまま使えます。",
   "This account has reached its PC limit on the Ovis relay. Remove a PC you no longer use, or connect over the same Wi-Fi or Tailscale.": "このアカウントは Ovis リレーの PC 上限に達しました。使っていない PC を外すか、同じ Wi-Fi または Tailscale で接続してください。",
   "This account has reached its relay data limit for new connections. Existing sessions stay open, or connect over the same Wi-Fi or Tailscale.": "このアカウントは新規接続のリレーデータ上限に達しました。接続中のセッションはそのまま続くほか、同じ Wi-Fi または Tailscale で接続できます。",
+  "Your account's PCs": "アカウントのPC",
+  "In this app": "このアプリに追加済み",
+  "Online": "オンライン",
+  "Update Ovis on that PC": "そのPCのOvisを更新してください",
+  "Asking {name}…": "{name}に依頼中…",
+  "Approve on another device of your account": "アカウントの別のデバイスで承認してください",
+  "That PC could not be added. Try again.": "そのPCを追加できませんでした。もう一度お試しください。",
 };

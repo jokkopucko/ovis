@@ -4,7 +4,7 @@ import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts";
 import type { SeenFinish } from "../shared/seen.ts";
-import { MachineActionRequired, MachineManager, PcUpdateRefused } from "./machines.ts";
+import { AccountPcError, MachineActionRequired, MachineManager, PcUpdateRefused, type AccountPcFailure } from "./machines.ts";
 import { TypedCodeError, type TypedCodeFailure } from "../shared/relay-code-offer.ts";
 import { TailnetPcError } from "./tailnet-pcs.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
@@ -23,6 +23,11 @@ const fail = (code: string, message: string, status: number) => jsonResponse({ e
 const OWNER_ONLY = "Only the owner's own signed-in or paired devices can change this PC's PCs, from this app's own page.";
 const MOVE_OWNER_ONLY = "Only the owner, from a device signed in or paired to drive this PC, can move another PC";
 const MOVE_FROM_PAGE = "A move must come from this app's own page";
+
+/** POST /api/machines/relay/account/*: the status each refusal answers, as `account_pc_<failure>`. */
+const ACCOUNT_PC_STATUS: Record<AccountPcFailure, number> = {
+  invalid: 400, added: 409, self: 409, outdated: 409, offline: 502, gone: 410, busy: 409, refused: 403, declined: 403, cancelled: 499,
+};
 
 /** POST /api/machines/relay/code: why a typed code found no PC, as `typed_code_<failure>` (the app words each one). */
 const CODE_FAILURES: Record<TypedCodeFailure, [string, number]> = {
@@ -299,6 +304,44 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         const [message, status] = CODE_FAILURES[error.failure];
         return fail(`typed_code_${error.failure}`, message, status);
       }
+    }
+    // Add a connection → Ovis relay: another PC of the account, vouched for by this window's admission (docs/account.md,
+    // "Adding a PC of your account"). Only a window direct to this PC that drives it gets here (dispatch.ts)
+    if (parts[0] === "relay" && parts[1] === "account" && parts.length === 3) {
+      setRequestRoute(`/api/machines/relay/account/${parts[2]}`);
+      if (readOnly) return fail("read_only", "this device can only watch", 403);
+      if (request.method !== "POST") return fail("method_not_allowed", "Use POST", 405);
+      const body: unknown = await request.json().catch(() => null);
+      if (!isJsonObject(body)) return fail("invalid_body", "Expected a PC of the account", 400);
+      const refused = (error: unknown): Response => {
+        if (!(error instanceof AccountPcError)) throw error;
+        return fail(`account_pc_${error.failure}`, error.message, ACCOUNT_PC_STATUS[error.failure]);
+      };
+      if (parts[2] === "check") {
+        try { return jsonResponse({ pcs: await manager.checkAccountPcs(body.pcs) }, 200, { "cache-control": "no-store" }); }
+        catch (error) { return refused(error); }
+      }
+      if (parts[2] === "start") {
+        try { return jsonResponse(await manager.startAccountPc(body.pc)); }
+        catch (error) { return refused(error); }
+      }
+      if (parts[2] === "pair") {
+        // one line when the digits are known, then one with the PC added or why not; closing the request cancels it
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const line = (value: unknown): void => { try { controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`)); } catch { /* the window left */ } };
+            void manager.pairAccountPc(body.ticket, (digits) => line({ digits }), request.signal)
+              .then((machine) => line({ machine }), (error: unknown) => {
+                if (error instanceof AccountPcError) line({ error: { code: `account_pc_${error.failure}`, message: error.message } });
+                else line({ error: { code: "internal_error", message: error instanceof Error ? error.message : String(error) } });
+              })
+              .finally(() => { try { controller.close(); } catch { /* already closed */ } });
+          },
+        });
+        return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store", "x-accel-buffering": "no" } });
+      }
+      return fail("not_found", "not found", 404);
     }
     if (parts[0] === "ssh-candidates" && parts.length === 1) {
       setRequestRoute("/api/machines/ssh-candidates");

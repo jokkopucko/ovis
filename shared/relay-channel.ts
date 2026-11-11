@@ -6,7 +6,7 @@
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
-import { ACCOUNT_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
+import { ACCOUNT_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
 import { hintedRelay } from "./relay-regions.ts";
 import { MuxEngine } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
@@ -119,8 +119,16 @@ export interface RelayChannelOptions {
    * for this PC, so the row it gets is the account's to link (docs/account.md, rule 2).
    */
   readonly accountKey?: { readonly private_key: CryptoKey; readonly public_spki: string };
-  /** What a comparison asks for, shown in the approval prompt: this PC only, or the account; `pc` by default. */
-  readonly intent?: "pc" | "account";
+  /**
+   * What a comparison asks for, shown in the approval prompt: this PC only, or the account; `pc` by default.
+   * `vouched`: a PC's server pairing with another PC of its account (PAIR_INTENT_VOUCHED).
+   */
+  readonly intent?: "pc" | "account" | "vouched";
+  /**
+   * A comparison only: told what the PC selected in its answer to HELLO, before PAIR_REQUEST goes out. A throw
+   * ends the attempt there with that error, and nothing is sent to pair.
+   */
+  readonly beforeRequest?: (server: RelayServerInfo) => void;
   /**
    * Open the channel on one of the PC's direct carriers (`ws://<private IPv4>:<port>`, docs/relay.md
    * "Direct on the same network") instead of through the relay: signing in only, never a pairing.
@@ -193,7 +201,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     const comparing = offer.code === undefined && device.device_id === null && options.compare !== undefined;
     // an older PC selects none of these; a comparison names what it asks for, so the PC's prompt can say it
     const offered: readonly string[] = comparing
-      ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : PAIR_INTENT_PC]
+      ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC]
       : [ACCOUNT_FEATURE];
     // answered in AUTH_OK, never selected in WELCOME, like RELAY_HINTS
     const hinted: readonly string[] = [RELAY_HINTS, ...options.offerDirect ? [DIRECT_CARRIER, ...options.offerTailnet ? [DIRECT_TAILNET] : []] : []];
@@ -277,6 +285,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         welcome = bytes;
         provisionalNonce = frame.payload.provisional ? frame.payload.nonce : undefined;
         if (comparing) {
+          options.beforeRequest?.(server);
           // an older PC pairs only with a code from its QR code
           if (!frame.payload.features.includes(PAIR_SAS_FEATURE)) throw new MuxProtocolError("unsupported_extension", "The PC cannot pair without a code");
           binding = secure ? channelBinding(secure) : undefined;

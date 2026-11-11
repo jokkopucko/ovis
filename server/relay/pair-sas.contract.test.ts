@@ -4,7 +4,7 @@ import {
   channelBinding, exportPublicKey, generateKeyPair, openClientSecureChannel, openDaemonSecureChannel,
 } from "../../shared/relay-e2ee.ts";
 import type { KeyPair, SecureChannel, Transport } from "../../shared/relay-e2ee.ts";
-import { decodeFrame, encodeFrame, FrameType, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_SAS_FEATURE } from "../../shared/relay-mux.ts";
+import { decodeFrame, encodeFrame, FrameType, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE } from "../../shared/relay-mux.ts";
 import type { MuxFrame } from "../../shared/relay-mux.ts";
 import type { MuxClock } from "../../shared/relay-mux-engine.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
@@ -652,6 +652,7 @@ test("a drive account member through the relay admits a device by picking its di
   const remote = (await remoteList(link)).body.pairings?.[0];
   expect(remote).toMatchObject({ id: request.id, label: "New phone", intent: "account" });
   expect(remote).not.toHaveProperty("digits");
+  expect(remote).not.toHaveProperty("vouched");
   expect(new Set(remote?.choices)).toEqual(new Set([digits, ...remote!.choices.filter((choice) => choice !== digits)]));
   expect(new Set(remote?.choices).size).toBe(3);
 
@@ -903,6 +904,88 @@ test("refused requests do not spend the PC's account joins", async () => {
   // the PC's regular pull sees the admission (a miss pulls at most every 10 seconds)
   const admitted = (key: string) => admit(key).then(() => f.app.context.services.accountMailbox.pull());
   expect((await askToJoin(f, admitted)).refused).toBeUndefined();
+});
+
+// Another PC of the account vouched for (docs/account.md, "Adding a PC of your account"): the account join's gates,
+// window or not, shown to members as "pair this PC", a plain row once approved, and its own failure count.
+
+const vouched = (f: Fixture, admitKey?: (key: string) => Promise<unknown>) => askToJoin(f, admitKey, PAIR_INTENT_VOUCHED);
+
+test("a PC vouched for is selected only alongside pair-sas, and alone among the intents", async () => {
+  const f = fixture();
+  expect((await (await direct(f)).p.hello([PAIR_SAS_FEATURE, PAIR_INTENT_VOUCHED])).features).toEqual([PAIR_SAS_FEATURE, PAIR_INTENT_VOUCHED]);
+  expect((await (await direct(f)).p.hello([PAIR_INTENT_VOUCHED])).features).toEqual([]);
+  const { p } = await direct(f);
+  await p.send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
+    payload: { protocol: "ovis-mux", versions: [1], features: [PAIR_SAS_FEATURE, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED], required_features: [] } });
+  expect(await sessionError(p)).toBe("protocol_error");
+});
+
+test("a PC vouched for is refused without a fresh admission for its own key, before any prompt and uncounted, even inside the pairing window", async () => {
+  const { f, admit } = await joinFixture();
+  const otherKey = toBase64Url(new Uint8Array(await crypto.subtle.exportKey("spki", (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])).publicKey)));
+  // the owner's own pairing window invites phones, not another PC: it still needs its admission
+  f.app.context.services.relay.approvals.openWindow();
+  expect((await vouched(f)).refused).toBe("auth_failed");
+  expect((await vouched(f, () => admit(otherKey))).refused).toBe("auth_failed");
+  expect((await vouched(f, (key) => admit(key, "acct_2"))).refused).toBe("auth_failed");
+  expect(f.app.context.services.relay.approvals.list()).toEqual([]);
+  expect(f.app.context.services.relay.approvals.remoteList()).toEqual([]);
+  for (let index = 0; index < 19; index++) f.app.context.services.devices.noteRelayFailure("vouched");
+  expect(() => f.app.context.services.devices.assertRelayPairing("vouched")).not.toThrow();
+});
+
+test("a PC vouched for with an admission older than ten minutes is refused", async () => {
+  const { f, admit } = await joinFixture(() => Date.now() - 11 * 60_000);
+  expect((await vouched(f, (key) => admit(key))).refused).toBe("auth_failed");
+});
+
+test("a PC vouched for is refused by a PC with no drive account member to approve it", async () => {
+  const { f, member, admit } = await joinFixture();
+  f.app.context.services.devices.update(member.id, { role: "watch" });
+  expect((await vouched(f, (key) => admit(key))).refused).toBe("auth_failed");
+});
+
+test("a PC vouched for waits for a member as 'pair this PC', and an approval makes a plain row the approver added, no member", async () => {
+  const { f, member, admit } = await joinFixture();
+  const link = await signedIn(f, member);
+  const prompt = remotePrompt(f);
+  const { p, digits } = await vouched(f, (key) => admit(key));
+  const request = await prompt;
+  // the approver's app is asked to pair this PC only, so it signs no add and introduces nothing
+  expect(request).toMatchObject({ label: "Mac app", intent: "pc", vouched: true, key: p.publicKey });
+  expect(f.app.context.services.relay.approvals.list()).toEqual([]);
+  expect(f.app.context.services.relay.approvals.decide(request.id, true)).toBe(false);
+  expect((await post(link, "/api/relay/pairing", { id: request.id, decision: "approve", digits })).status).toBe(200);
+  await confirm(p);
+  expect((await p.inbox.next()).type).toBe(FrameType.AUTH_OK);
+  const registry = readDeviceRegistry(join(f.stateDir, "devices.json"));
+  const row = registry.kind === "ok" ? registry.devices.find((device) => device.relay_public_key === p.publicKey) : undefined;
+  expect(row).toMatchObject({ label: "Mac app", role: "drive", added_by: member.id });
+  expect(row).not.toHaveProperty("account");
+  expect(row).not.toHaveProperty("account_add");
+});
+
+test("a wrong pick for a PC vouched for counts on its own path only", async () => {
+  const { f, member, admit } = await joinFixture();
+  const link = await signedIn(f, member);
+  for (let failure = 0; failure < 19; failure++) f.app.context.services.devices.noteRelayFailure("vouched");
+  const prompt = remotePrompt(f);
+  const { p, digits } = await vouched(f, (key) => admit(key));
+  const request = await prompt;
+  const decoy = request.choices.find((choice) => choice !== digits)!;
+  expect((await post(link, "/api/relay/pairing", { id: request.id, decision: "approve", digits: decoy })).body.error?.code).toBe("wrong_digits");
+  expect(await sessionError(p)).toBe("auth_failed");
+  expect(f.app.context.services.devices.hasKey(p.publicKey)).toBe(false);
+  expect(() => f.app.context.services.devices.assertRelayPairing("vouched")).toThrow();
+  expect(() => f.app.context.services.devices.assertRelayPairing("account")).not.toThrow();
+  expect(() => f.app.context.services.devices.assertRelayPairing("code")).not.toThrow();
+});
+
+test("PCs vouched for share the account joins' five a minute", async () => {
+  const { f, admit } = await joinFixture();
+  for (let index = 0; index < 5; index++) expect(f.app.context.services.relay.approvals.takeAccountJoin()).toBe(true);
+  expect((await vouched(f, (key) => admit(key))).refused).toBe("auth_failed");
 });
 
 // Machine events over the WebSocket, the default client's path (#2862)

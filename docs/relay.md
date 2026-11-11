@@ -186,7 +186,11 @@ pairing. A comparison that pairs this PC only counts toward the same 20 failures
 a wrong code, after which the PC takes no such pairing for 10 minutes. One that asks to join the
 account (`pair-intent-account`) counts toward 20 of its own, so a flood of those cannot pause
 pairing with a QR code or a code. A relay in the middle can spend both, so it gets about 40 tries
-in 10 minutes, one in twenty-five thousand, before both pause.
+in 10 minutes, one in twenty-five thousand, before both pause. A comparison from another PC of the
+account (`pair-intent-pc-vouched`, [Adding a PC of your account](account.md#adding-a-pc-of-your-account))
+counts toward 20 of its own too, but gives a relay no tries: the PC takes one only for a key that a
+device signed in to the account named in an admission, and the PC asking holds the other's key from
+the account's directory, checked against its id, so a relay cannot stand in for either end.
 **Revoke all** ends every comparison under way, an approved one included, and withdraws its prompt. The prompt lives in memory only. The relay learns nothing new: the comparison travels inside the
 encrypted channel, so it sees only a few more frames and their sizes and timing.
 

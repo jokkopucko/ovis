@@ -27,6 +27,7 @@ import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, openOwnOffer, RelayPairing, statusText } from "./RelayPanel.tsx";
 import { RelaySignIn } from "./RelaySignIn.tsx";
+import { RelayAccountPcs } from "./RelayAccountPcs.tsx";
 import { SettingsQuery, Toggle } from "./SettingsControls.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { usePortal } from "../lib/portal.ts";
@@ -197,7 +198,7 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
             <div className="connect-tab" data-tab-panel="relay" hidden={tab !== "relay"}>
-              <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} accountId={accountId} joinBySignIn={joinBySignIn} account={account} phone={phone} active={tab === "relay"} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} />
+              <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} accountId={accountId} joinBySignIn={joinBySignIn} account={account} phone={phone} active={tab === "relay"} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} machines={machines} onConnectMachine={onConnectMachine} />
             </div>
           )}
         </div>
@@ -348,7 +349,7 @@ function DevicesTab({ plan, pairUrl, readOnly, canPair, phone }: { plan: PhonePl
  * switch's tooltip. With an account, either state ends in AccountQr: the relay's QR code behind a press for a PC in
  * no account, and for a PC that is in one how a device is added instead, with no QR code.
  */
-export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBySignIn, account, phone, active = true, onPairingHeld, onRevokedAll }: {
+export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBySignIn, account, phone, active = true, onPairingHeld, onRevokedAll, machines = [], onConnectMachine }: {
   relay: RelayState; closesGate: boolean; signedIn: boolean; joinBySignIn: boolean; account: RelayAccount | null; phone: boolean;
   /** the account this browser is signed in to; null when signed out, or not known */
   accountId?: string | null;
@@ -356,6 +357,8 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
   active?: boolean;
   onPairingHeld?: (held: boolean) => void;
   onRevokedAll?: () => void;
+  /** the roster and Connect, for the account's other PCs listed once this PC is in the account (RelayAccountPcs) */
+  machines?: readonly Machine[]; onConnectMachine?: (machine: Machine) => void;
 }) {
   const t = useT();
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -422,6 +425,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin" data-bare={bare || undefined}>
         {signInStatus}
+        {joinBySignIn && onConnectMachine && <RelayAccountPcs machines={machines} onConnectMachine={onConnectMachine} />}
         {pcIn !== null ? (
           // in an account: the part below says how a device is added to it; the relay's switch stays while it is not online
           !bare && <>{relaySwitch}{switchFailure}{startFailure}</>

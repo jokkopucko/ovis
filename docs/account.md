@@ -175,7 +175,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
 `GET /api/relay/pairings` lists the waiting requests: with their `digits` on the PC itself, and with
 `choices` (three sets of digits, no `digits`) for an account member through the relay, which also
 hears of every change as `remote-pairings` on its event stream; each entry also carries `key`, the
-new device's P-256 key from its `PAIR_REQUEST`, bound by the commitment and the digits. That member
+new device's P-256 key from its `PAIR_REQUEST`, bound by the commitment and the digits, and
+`vouched: true` for another PC of the account ([Adding a PC of your account](#adding-a-pc-of-your-account)). That member
 answers with `POST /api/relay/pairing` `{ "id", "decision", "digits" }`; `digits` is required to
 approve, and a wrong pick answers 409 `wrong_digits` and ends the request. An approval answers
 `{ "ok": true, "device_id" }`: the id the new device's row takes once its person confirms too,
@@ -204,10 +205,11 @@ account and relay identity, so they never carry over to another account or a new
 At most three requests wait for approval at once on a PC. A wrong pick ends that request and counts
 as a failed pairing.
 
-**Failed pairings are counted on two paths.** Pairing codes, and comparisons that ask to pair this
+**Failed pairings are counted on three paths.** Pairing codes, and comparisons that ask to pair this
 PC only, share the 20 failures in 10 minutes described under [Who gets in](relay.md#who-gets-in).
-Comparisons that ask to join the account have their own 20, so a flood of account requests cannot
-pause pairing by QR code or code.
+Comparisons that ask to join the account have their own 20, and so do other PCs of the account
+vouched for ([Adding a PC of your account](#adding-a-pc-of-your-account)), so a flood of either
+cannot pause pairing by QR code or code, or the other.
 
 ## Negotiation
 
@@ -219,9 +221,10 @@ A client offers features in `HELLO`; a PC that supports them selects them in `WE
 | `account` | the PC has `/api/account/*` and applies records |
 | `pair-intent-pc` | this comparison pairs this PC only |
 | `pair-intent-account` | this comparison adds the device to the account |
+| `pair-intent-pc-vouched` | another PC of the account pairs with this PC only, vouched for by an admission ([Adding a PC of your account](#adding-a-pc-of-your-account)) |
 
 A client offering `pair-sas` offers at most one intent; a PC selects an intent only together with
-`pair-sas`, and only the one offered. A `HELLO` with both intents ends with `protocol_error`. A
+`pair-sas`, and only the one offered. A `HELLO` with more than one intent ends with `protocol_error`. A
 comparison without a selected intent is `pair-intent-pc`.
 
 The approval prompt says what is being approved: **pair this PC**, or **add to the account**; a
@@ -527,6 +530,62 @@ until someone signs in on it; the steps below are then the way.
 
 A wrong number ends that comparison; the person starts again from **Add** on the dashboard. A device without an account
 pairs with a QR code or pairing code behind **Pair with a QR or code** on the sign-in screen.
+
+### Adding a PC of your account
+
+**Add a connection → Ovis relay** on a PC (A) whose page is signed in, with A in that account, lists
+the account's other PCs as the SSH tab lists its PCs: **Connect** for one already in A's machine list,
+**Add** for one that would pair, and "Update Ovis on that PC" or "Offline" with no button. **Add**
+makes A's server a paired device of that PC (B), as **Add a PC through the relay** with a link does,
+and A then lists B like any SSH PC, after a restart too. B's row is a plain drive row: A is never an
+account member, holds no account key and signs nothing ([rule 3](#rules)).
+
+A's page cannot reach a relay (its `connect-src` is itself and the account service), so A's server
+does the relay work, and the page only vouches for it:
+
+1. `POST /api/machines/relay/account/check` `{ "pcs": [{ "server_id", "server_public_key", "relay", "name" }] }`
+   (at most 32) answers each PC's `state`: `ready`, `outdated` or `offline`. A's server opens a relay
+   channel to each, offers `pair-sas` with `pair-intent-pc-vouched`, reads the PC's answer to `HELLO`
+   and closes before `PAIR_REQUEST`: nothing is counted there and no key is kept.
+2. **Add**: `POST /api/machines/relay/account/start` `{ "pc" }` checks the entry (its `server_id`
+   must derive from `server_public_key`, its relay a `wss:` origin, not A itself, not already added),
+   asks the PC as `check` does (409 `account_pc_outdated` for an older one: nothing is posted or
+   sent to pair), and makes the P-256 key A would hold for B, in memory only. It answers
+   `{ "ticket", "key", "label" }`. Until B admits that key, or for 10 minutes from when it was made,
+   another Add of B gets the same key under a new ticket: after a cancelled or declined comparison B
+   already read its admission, and B reads the account's admissions at most once every 10 seconds.
+3. The page posts an admission naming that `key` at B (`POST /v1/admissions`, as a signed-in device
+   that joins does): the account service has seen a device signed in to this account ask.
+4. `POST /api/machines/relay/account/pair` `{ "ticket" }` compares digits with B through the relay
+   with `pair-intent-pc-vouched`, and answers newline-delimited JSON: `{ "digits" }` once B took the
+   request (the page shows them under "Approve on another device of your account"), then
+   `{ "machine" }` once B admitted A and A saved it as `POST /api/machines/relay` does, or
+   `{ "error": { "code", "message" } }`. Closing the request (Cancel, closing the sheet) ends the
+   comparison on B and keeps nothing: the key is written only on B's `AUTH_OK`. A ticket is good for
+   one comparison, for 10 minutes, and one comparison runs per key: another window's Add of B while
+   one runs gets 409 `account_pc_busy`, so B is asked once. A cancel that lands in the moment between B's `AUTH_OK` and A
+   saving the PC leaves B a row for a key A dropped: nobody can sign in with it, B lists it as
+   "Ovis on <host>" (announced as every admission is), and **Revoke** on B removes it.
+
+These routes are A's owner's, from a window direct to A that drives it: a device on the relay, a
+Portal visitor and an open LAN window get 403 `owner_only`, a watching device `read_only`, so none
+of them can have A pair itself with a PC they name. No person checks A's side of the comparison:
+A dials B by B's own key, checked against B's id, so a relay cannot stand in for B. B's side is the
+one a member checks, by picking the digits A's page shows.
+
+On B, `pair-intent-pc-vouched` is taken only under the gates of [joining through the
+account](#who-may-admit-a-device), whether or not B's pairing window is open: B belongs to an
+account, its mailbox holds an admission at most 10 minutes old naming exactly the key of this
+`PAIR_REQUEST`, and B has a drive account member to approve; it shares the 5 joins a minute.
+Anything else is refused before any prompt and not counted. The comparison is shown only to the
+account's members through the relay (`remote-pairings`, digits picked out of three), never to B's own
+windows, as **pair this PC** (`intent: "pc"`) naming A's server ("Ovis on <host>"), marked
+`vouched: true`, so the approver's app signs nothing for it (no `add`, no introduction) but still
+shows who is asking (Who is asking, from `GET /v1/admissions`) and approves only when the account
+service lists the admission for that key at B, as for an account join; signed out, it approves none.
+An approver from before the mark reads a plain request for B alone and signs nothing either. B's row is `added_by` the approver,
+with no `account`. Its failures (declined, a wrong pick, no answer in time) count on a path of their
+own. An older B selects no such intent: A says to update Ovis there and sends nothing more.
 
 ### Introductions
 
@@ -938,6 +997,12 @@ with "continue only if you started this on your own PC".
   about, and the command ends well, naming it as the device that added the PC. What still shows
   it: every admission is announced on every device connected to the PC, and the command prints
   the device's name.
+- **A PC the directory names under a familiar name.** Whoever holds a sign-in to the account can
+  list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). **Add** on
+  its row in the relay tab pairs A with that PC, whose owner approves it there: A's machine list then
+  holds a stranger's PC. It gets no access to A or to the account's PCs by that; what the person then
+  types into its terminals goes to it. The prompt to approve shows on a device of the account only
+  when the PC really is one of the account's: a request approved without that prompt is the sign.
 - **A code a driving device has the PC itself start.** A device that drives (one the QR code of
   `ovis add` let in, say) can have the PC start a pairing code through its loopback address from
   a terminal pane, as the PC's own user: that code is held by no device, so it survives the

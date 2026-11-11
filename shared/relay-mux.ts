@@ -60,6 +60,12 @@ export const ACCOUNT_FEATURE = "account";
 export const PAIR_INTENT_PC = "pair-intent-pc";
 export const PAIR_INTENT_ACCOUNT = "pair-intent-account";
 /**
+ * A PC's server pairing with another PC of its account, vouched for by a signed-in device's admission
+ * (docs/account.md, "Adding a PC of your account"): taken only under the account join's gates, shown to the
+ * account's members as "pair this PC", and it makes a plain row there, never an account member.
+ */
+export const PAIR_INTENT_VOUCHED = "pair-intent-pc-vouched";
+/**
  * The optional mux feature by which a phone says it takes WebSocket messages up to
  * MAX_LARGE_WS_MESSAGE_BYTES (a large session's snapshot, #2773), not only the v1 limit. A phone
  * offers it in HELLO; a PC that reads it sends such messages to that phone, and to no other. It is

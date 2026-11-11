@@ -246,4 +246,11 @@ export const DEVICES_ZH: Record<string, string> = {
   "Sign-in will be required for the Ovis relay. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "Ovis 中继将需要登录。同一 Wi-Fi、Tailscale 和自建中继无需账号即可继续使用。",
   "This account has reached its PC limit on the Ovis relay. Remove a PC you no longer use, or connect over the same Wi-Fi or Tailscale.": "此账号已达到 Ovis 中继的电脑数量上限。请移除不再使用的电脑，或通过同一 Wi-Fi 或 Tailscale 连接。",
   "This account has reached its relay data limit for new connections. Existing sessions stay open, or connect over the same Wi-Fi or Tailscale.": "此账号已达到新连接的中继流量上限。现有会话保持连接，也可通过同一 Wi-Fi 或 Tailscale 连接。",
+  "Your account's PCs": "你账户中的 PC",
+  "In this app": "已在此应用中",
+  "Online": "在线",
+  "Update Ovis on that PC": "请更新那台 PC 上的 Ovis",
+  "Asking {name}…": "正在请求 {name}…",
+  "Approve on another device of your account": "请在你账户的另一台设备上批准",
+  "That PC could not be added. Try again.": "无法添加那台 PC。请重试。",
 };

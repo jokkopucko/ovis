@@ -433,6 +433,12 @@ export interface RemotePairingRequest {
   expires_at: string;
   /** the new device's key (P-256 SPKI, base64url) from PAIR_REQUEST, bound by its commitment and the digits: what the approver signs an `add` for */
   key: string;
+  /**
+   * Another PC of the account vouched for by an admission (`pair-intent-pc-vouched`, docs/account.md "Adding a PC of
+   * your account"): its intent stays `pc`, so nothing is signed for it, and the approver shows who is asking and checks
+   * the admission as for an account join. Absent from an older server, or when false.
+   */
+  vouched?: true;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }

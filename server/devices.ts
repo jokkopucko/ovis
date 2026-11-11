@@ -98,11 +98,11 @@ export interface StoredDevice {
 }
 
 /**
- * The two ways relay pairing failures are counted (docs/account.md, "Who may admit a device"): codes
- * and comparisons for this PC alone, and comparisons asking to join the account, so a flood of the
- * second kind cannot pause the first.
+ * The three ways relay pairing failures are counted (docs/account.md, "Who may admit a device"): codes
+ * and comparisons for this PC alone, comparisons asking to join the account, and another PC of the
+ * account vouched for, so a flood of one kind cannot pause the others.
  */
-export type PairingPath = "code" | "account";
+export type PairingPath = "code" | "account" | "vouched";
 /** The relay's paths, and codes typed on the LAN HTTPS listener (server/lan-https.ts), counted apart so LAN guessing cannot pause relay pairing. */
 export type PairingFailurePath = PairingPath | "lan";
 
@@ -304,7 +304,7 @@ export class DeviceStore {
   private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string> } | null = null;
   private codeIssues: number[] = [];
   private readonly relayFailures: Record<PairingFailurePath, { at: number[]; blockedUntil: number }> = {
-    code: { at: [], blockedUntil: 0 }, account: { at: [], blockedUntil: 0 }, lan: { at: [], blockedUntil: 0 },
+    code: { at: [], blockedUntil: 0 }, account: { at: [], blockedUntil: 0 }, vouched: { at: [], blockedUntil: 0 }, lan: { at: [], blockedUntil: 0 },
   };
   /** First-pair cookies are not devices, and do not close the gate, until one returns. */
   private unconfirmedFirstPairs: UnconfirmedFirstPair[] = [];

@@ -15,7 +15,7 @@ import { base64url, ServerIdentityChangedError } from "../shared/relay-device.ts
 import type { RelayDevice, RelayDeviceStore } from "../shared/relay-device.ts";
 import { MuxStreamError } from "../shared/relay-mux-engine.ts";
 import type { HttpRequest, WsStream } from "../shared/relay-mux-engine.ts";
-import { isDirectCarrier, MAX_DIRECT_CARRIERS, MAX_LARGE_WS_MESSAGE_BYTES, MuxProtocolError, REQUEST_HEADERS } from "../shared/relay-mux.ts";
+import { isDirectCarrier, MAX_DIRECT_CARRIERS, MAX_LARGE_WS_MESSAGE_BYTES, MuxProtocolError, PAIR_INTENT_VOUCHED, REQUEST_HEADERS } from "../shared/relay-mux.ts";
 import type { RelayOffer } from "../shared/relay-offer.ts";
 import { validateOffer } from "../shared/relay-offer.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../shared/terminal-flow.ts";
@@ -27,6 +27,14 @@ export class RelayPcRefused extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "RelayPcRefused";
+  }
+}
+
+/** The other PC answered, and its Ovis cannot pair with another PC of the account (PAIR_INTENT_VOUCHED): nothing was sent to pair. */
+export class RelayPcOutdated extends Error {
+  constructor() {
+    super("Update Ovis on that PC first.");
+    this.name = "RelayPcOutdated";
   }
 }
 
@@ -230,6 +238,12 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   networkCheckMs?: number;
   /** this PC's probe deadline, kept by the caller across its tunnels; a tunnel of its own by default */
   probes?: RouteProbes;
+  /**
+   * A first pairing with another PC of the account (PAIR_INTENT_VOUCHED) instead of a code: `compare` is told the
+   * digits, a PC that does not select the intent is RelayPcOutdated before anything is sent to pair, and `signal`
+   * ends the comparison. The caller never aborts it once the tunnel is open: it would end the admitted channel too.
+   */
+  pairing?: { compare: (digits: string) => Promise<void>; signal: AbortSignal };
 }): Promise<RelayPcTunnel> {
   const readNetwork = options.network ?? networkNow;
   const networkCheckMs = options.networkCheckMs ?? NETWORK_CHECK_MS;
@@ -274,7 +288,12 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       if (moving) { replaced = error; return; }
       lost(error);
     } };
-    if (direct === undefined) return channel = (await openRelayChannelWithFallback(offer, { ...settings, ...(options.socket ? { socket: options.socket } : {}) }, openRelayChannel)).channel;
+    if (direct === undefined) {
+      // only the first channel pairs: every one after it signs in with the key that pairing admitted
+      const pairing = options.pairing !== undefined && !paired ? vouchedPairing(options.pairing) : {};
+      paired = true;
+      return channel = (await openRelayChannelWithFallback(offer, { ...settings, ...pairing, ...(options.socket ? { socket: options.socket } : {}) }, openRelayChannel)).channel;
+    }
     const attempt = new AbortController();
     const stop = (): void => attempt.abort();
     const timer = setTimeout(stop, ms);
@@ -288,6 +307,7 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     // admitted: from here only its own end or this tunnel's close ends it, never the attempt's deadline
     return channel;
   };
+  let paired = false;
   /** the carriers the PC named last, and the one that last carried the channel */
   let learned: readonly string[] = key.direct;
   let worked: string | undefined;
@@ -317,9 +337,9 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   };
   try {
     // a pairing goes through the relay only; a sign-in tries the PC's own network first
-    current = (offer.code === undefined ? await openDirect() : undefined) ?? await openOn(undefined);
+    current = (offer.code === undefined && options.pairing === undefined ? await openDirect() : undefined) ?? await openOn(undefined);
   } catch (error) {
-    throw fatal(error) ? new RelayPcRefused(refusal(error, offer.code !== undefined), { cause: error }) : error;
+    throw fatal(error) ? new RelayPcRefused(refusal(error, offer.code !== undefined || options.pairing !== undefined), { cause: error }) : error;
   }
   const waiting = new Set<() => void>();
   /** HTTP streams under way and sockets not yet accepted by the PC: a move waits for none */
@@ -591,6 +611,40 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     get route() { return current?.direct === undefined ? "relay" : "direct"; },
     close,
   };
+}
+
+/** A comparison that asks to pair this PC with another PC of the account, and only with one that selects that. */
+function vouchedPairing(pairing: { compare: (digits: string) => Promise<void>; signal: AbortSignal }): Partial<RelayChannelOptions> {
+  return {
+    compare: pairing.compare, signal: pairing.signal, intent: "vouched",
+    beforeRequest: (server) => { if (!server.features?.includes(PAIR_INTENT_VOUCHED)) throw new RelayPcOutdated(); },
+  };
+}
+
+/** What another PC of the account answers when asked to pair with this one: nothing is sent to pair, and nothing counted there. */
+export type VouchedSupport = "ready" | "outdated" | "offline";
+
+/**
+ * Whether `offer`'s PC would take a pairing from this one through the account (PAIR_INTENT_VOUCHED): the channel is
+ * opened, the PC's answer to HELLO read, and the channel closed before PAIR_REQUEST, with a key that is never kept.
+ */
+export async function vouchedSupport(offer: RelayOffer, options: { socket?: (url: string) => RelaySocket; pcAnswerMs?: number } = {}): Promise<VouchedSupport> {
+  const { code: _code, ...plain } = offer;
+  class Answered extends Error { constructor(readonly ready: boolean) { super("answered"); } }
+  try {
+    const key = await RelayPcKey.create("", plain, () => false);
+    await openRelayChannelWithFallback(plain, {
+      store: key, label: relayPcLabel(), compare: () => new Promise<void>(() => {}), intent: "vouched",
+      beforeRequest: (server) => { throw new Answered(server.features?.includes(PAIR_INTENT_VOUCHED) === true); },
+      ...(options.socket ? { socket: options.socket } : {}), ...(options.pcAnswerMs === undefined ? {} : { pcAnswerMs: options.pcAnswerMs }),
+    }, openRelayChannel);
+    return "ready";
+  } catch (error) {
+    if (error instanceof Answered) return error.ready ? "ready" : "outdated";
+    // a PC of another relay generation, or one that cannot pair without a code
+    if (error instanceof MuxProtocolError && (error.code === "unsupported_version" || error.code === "unsupported_extension")) return "outdated";
+    return "offline";
+  }
 }
 
 function refusal(error: Error, pairing: boolean): string {
