@@ -2221,6 +2221,64 @@ export function matchCodexFirstExchange(
   return match.candidate.path;
 }
 
+/**
+ * Codex's native status line prints session-id (also called thread-id) as a full UUID item,
+ * separated from its other items by " · ". Only the footer below the last composer counts:
+ * an id in an answer, a tool result, or the input itself is not the pane's identity.
+ */
+export function statusLineThread(screen: string): string | null {
+  const rows = screen.split("\n").map((line) => line.replace(/\r$/, "").trimEnd());
+  let composer = -1;
+  for (let index = rows.length - 1; index >= 0; index--) {
+    if (/^[›»](?:\s|$)/.test(rows[index]!)) { composer = index; break; }
+  }
+  if (composer < 0 || rows[composer + 1]?.trim() !== "") return null;
+  const footer = rows.slice(composer + 1).filter((line) => line.trim() !== "");
+  if (footer.length === 0 || footer.length > 4) return null;
+  const ids: string[] = [];
+  for (const row of footer) {
+    if (!/^ {2,}\S/.test(row)) return null;
+    if (/^(?:← for agents(?: · )?)?\? for shortcuts$/.test(row.trim()) || row.trim() === "← for agents") continue;
+    // A wrapped or clipped UUID is never reconstructed. Keep the whole item boundary.
+    const items = row.trim().replace(/ · (?:← for agents(?: · \? for shortcuts)?|\? for shortcuts)$/, "").split(" · ");
+    const found = items.filter((item) => UUID.test(item));
+    if (found.length === 0 && !FOOTER.test(row.trim())) return null;
+    ids.push(...found);
+  }
+  return ids.length === 1 ? ids[0]!.toLowerCase() : null;
+}
+
+/**
+ * A footer identity is checked on every read, never saved as an answer-based binding: /new and
+ * picker resumes change it even when the terminal's visible tool output stays the same.
+ * undefined means no footer identity; null means the displayed thread could not be verified.
+ */
+async function statusLineRollout(paneId: string, screen: string, processes: string, home: string): Promise<string | null | undefined> {
+  if (process.platform !== "linux" && process.platform !== "darwin") return undefined;
+  const id = statusLineThread(screen);
+  if (id === null) return undefined;
+  try {
+    const loaded = await heldThreadIds(home);
+    const holder = loaded?.get(id);
+    if (holder === undefined || holder.exec) return null;
+    const opened = openCodexStore(home);
+    let path: string | null;
+    try {
+      const rows = opened.db.query<{ rollout_path: string }, [string]>(
+        `SELECT rollout_path FROM threads WHERE lower(id) = ? AND archived = 0 AND agent_role IS NULL${interactive(opened.db)} LIMIT 2`,
+      ).all(id);
+      path = rows.length === 1 ? codexRolloutPath(rows[0]!.rollout_path, home) : null;
+      opened.settled();
+    } finally { opened.db.close(); }
+    if (path === null || string(rolloutHeader(path)?.id).toLowerCase() !== id) return null;
+    // A pane can switch threads or processes while the store is being read.
+    const [now, running] = await Promise.all([
+      paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }), codexProcessesOf(paneId),
+    ]);
+    return running.key === processes && statusLineThread(now.text) === id ? path : null;
+  } catch { return null; }
+}
+
 /** Codex's thread-id title item as 0.163.0 shows it: the whole id, or its first 29 characters and "...". */
 const TITLE_ID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-(?:[0-9a-f]{12}|[0-9a-f]{5}\.\.\.))$/i;
 
@@ -3769,6 +3827,16 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     proofs?.set(only, held.get(only) ?? "");
     return only;
   }
+  const local = !agent.nestedTerminal && !codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")));
+  let screen = local ? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }) : null;
+  if (screen !== null) {
+    const identified = await statusLineRollout(paneId, screen.text, processes, home);
+    if (identified !== undefined) {
+      // A previous screen match must not survive a new explicit thread identity.
+      boundRollouts.delete(paneId);
+      return identified;
+    }
+  }
   const resumed = resumedThread(codexProcesses.map((process) => process.argv ?? []));
 
   let db: Database | undefined;
@@ -3839,7 +3907,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     boundHere = undefined;
     boundNewer = [];
   }
-  const screen = paths.length ? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }) : null;
+  screen ??= paths.length ? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }) : null;
   const candidates = paths.flatMap((path) => {
     try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
   });
@@ -3939,7 +4007,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // Last, after all of this folder's ways: the conversations a Codex process of the store has
   // loaded, from any folder (#896). Not for a TUI of an app server elsewhere (--remote), which has
   // its conversation loaded there, nor for one holding rollouts open itself.
-  if (codexProcesses.length === 0 || open.size > 0
+  if (open.size > 0
     || codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) return null;
   return loadedConversation((screen ?? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true })).text, paths, home);
 }

@@ -21,6 +21,7 @@ let root: string;
 let home: string;
 let path: string;
 let screen: string;
+let screenReads: string[];
 let peerScreens: Map<string, string | Error>;
 let foreground: { pid: number; name?: string; argv?: string[] }[];
 /** A pane's own foreground, where it is not [foreground]. */
@@ -57,6 +58,7 @@ beforeEach(() => {
   db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli')").run(thread, path, root);
   db.close();
   screen = "";
+  screenReads = [];
   title = null;
   unlabelled = false;
   agentFolders = {};
@@ -96,7 +98,7 @@ beforeEach(() => {
         const result = request.method === "pane.get" ? { pane: { pane_id: root, cwd: root } }
           : request.method === "agent.get" ? { agent: { ...agentFolders, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }), ...(reportedSession === null ? {} : { agent_session: reportedSession }) } }
           : request.method === "pane.process_info" ? (own === null ? {} : { process_info: { ...(shellPid === undefined || request.params?.pane_id !== root ? {} : { shell_pid: shellPid }), foreground_processes: own ?? foregrounds.get(request.params?.pane_id ?? "") ?? foreground } })
-          : request.method === "pane.read" ? { read: { text: peerScreen ?? screen } }
+          : request.method === "pane.read" ? { read: { text: peerScreen ?? screenReads.shift() ?? screen } }
           // the session as a background reader asks for it: this pane alone
           : request.method === "session.snapshot" ? { snapshot: { panes: [{ pane_id: root, workspace_id: root, tab_id: root, terminal_id: root, agent: "codex", agent_status: "working", cwd: root, focused: false, revision: 0 }], workspaces: [], tabs: [], layouts: [], agents: [] } }
           : null;
@@ -361,6 +363,7 @@ it("takes no thread herdr reports for a nested pane on the report alone, however
   foreground = [{ pid: 2147483647, argv: ["zsh (kiro-cli-term)"] }];
   shellPid = 2147483647;
   screen = "";
+  screenReads = [];
   const db = new Database(join(home, "state_5.sqlite"));
   db.query("UPDATE threads SET created_at = 1001").run();
   db.close();
@@ -526,6 +529,7 @@ it("does not reuse a nested conversation binding after a process birth changes w
       screen = answer;
       expect(await resolve()).toBe(path);
       screen = "";
+  screenReads = [];
       expect(await resolve()).toBe(path);
       expect(await codexOpenRollout(root, root, home)).toBe(path);
       // Resuming an existing thread need not create a newer database row or change the PID.
@@ -673,6 +677,7 @@ it("binds a conversation with a spaced local file link and keeps it when its scr
   screen = `• ${answer} Daily report (Daily notes/report.md)`;
   expect(await resolve()).toBe(path);
   screen = "";
+  screenReads = [];
   expect(await resolve()).toBe(path);
 });
 
@@ -682,6 +687,7 @@ it.skipIf(process.platform !== "linux")("keeps the screen binding with recovered
   screen = answer;
   expect(await resolve()).toBe(path);
   screen = "";
+  screenReads = [];
   expect(await resolve()).toBe(path);
 });
 
@@ -693,6 +699,7 @@ it.skipIf(process.platform !== "linux")("drops the recovered binding when its pr
   child.kill();
   await child.exited;
   screen = "";
+  screenReads = [];
   expect(await resolve()).toBeNull();
 });
 
@@ -717,6 +724,7 @@ it("gives a background reader the chat's binding only while no newer thread may 
   expect(await codexOpenRollout(root, root, home)).toBeNull();
   expect(await resolve()).toBe(path);
   screen = "";
+  screenReads = [];
   expect(await codexOpenRollout(root, root, home)).toBe(path);
   const db = new Database(join(home, "state_5.sqlite"));
   const now = Math.floor(Date.now() / 1000);
@@ -918,6 +926,7 @@ describe("the thread id a Codex pane's terminal title shows, from another folder
     db.close();
     title = `Another one | elsewhere | ${next.slice(0, 29)}...`;
     screen = "";
+  screenReads = [];
     expect(await codexOpenRollout(root, root, home)).toBeNull();
     expect(await resolve()).toBeNull();
     title = shortened;
@@ -1044,6 +1053,7 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     screen = `• ${otherAnswer}\nOpenAI Codex (v0.164.0)\n\n› hello\n\n• Ready.\n\n› `;
     expect(await resolve()).toBeNull();
     screen = "";
+  screenReads = [];
     expect(await resolve()).toBeNull();
   });
 
@@ -3364,6 +3374,7 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     expect(await resolve()).toBe(path);
     // no turn runs and the screen proves nothing: the long answer's binding holds as it always did
     screen = "";
+  screenReads = [];
     expect(await resolve()).toBe(path);
     expect(await codexOpenRollout(root, root, home)).toBe(path);
   });
@@ -3380,6 +3391,7 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     got.push(await resolve());
     // Then a screen that proves nothing no longer answers B
     screen = "";
+  screenReads = [];
     got.push(await resolve());
     expect(got).toEqual([fileB, path, null]);
   });
@@ -4073,5 +4085,98 @@ describe("a Codex pane keeps its conversation beside a second Codex that only st
     startSecondCodex();
     peerScreens.set("peer", `OpenAI Codex (v0.164.0)\n\n› ${shortPrompt}\n\n• ok\n\n› `);
     expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBe(path);
+  });
+});
+
+
+describe("Codex status-line thread identity", () => {
+  const other = "01a16b22-7e1f-7072-8897-d5e46a0d5f61";
+  const footer = (id: string) => `• Ran a command\n  └ tool output only\n\n› Ask Codex to do anything\n\n  GPT-6.1-Sol medium · ${id} · /repo\n  ← for agents · ? for shortcuts`;
+
+  heldIt("opens chat on a tool-only screen, beside another loaded thread in the same folder", async () => {
+    foreground = [{ pid: 99999999, argv: ["codex"] }];
+    elsewhereThread(other, ["Another conversation"]);
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("UPDATE threads SET cwd = ? WHERE id = ?").run(root, other);
+    db.close();
+    await loaded(thread, other);
+    screen = footer(thread);
+    expect(await resolve()).toBe(path);
+    // A cold read still identifies it; no answer-based binding was created.
+    expect(await codexOpenRollout(root, root, home)).toBeNull();
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("follows a picker resume into another folder and /new without a visible answer", async () => {
+    foreground = [{ pid: 99999999, argv: ["codex"] }];
+    const next = elsewhereThread(other, []);
+    await loaded(thread, other);
+    screen = footer(thread);
+    expect(await resolve()).toBe(path);
+    screen = footer(other);
+    expect(await resolve()).toBe(next);
+  });
+
+  heldIt("clears an earlier screen binding when the footer identifies an unreadable thread", async () => {
+    foreground = [{ pid: 99999999, argv: ["codex"] }];
+    screen = answer;
+    expect(await resolve()).toBe(path);
+    await loaded(thread);
+    screen = footer(other);
+    expect(await resolve()).toBeNull();
+    expect(await codexOpenRollout(root, root, home)).toBeNull();
+  });
+
+  heldIt("rejects a displayed thread that the daemon has not loaded", async () => {
+    foreground = [{ pid: 99999999, argv: ["codex"] }];
+    screen = footer(thread);
+    expect(await resolve()).toBeNull();
+  });
+
+  for (const invalid of ["archived", "subagent", "missing rollout", "outside store", "row points to another thread"] as const) {
+    heldIt(`rejects ${invalid} even with its id in the footer`, async () => {
+      foreground = [{ pid: 99999999, argv: ["codex"] }];
+      screen = footer(thread);
+      const next = elsewhereThread(other, []);
+      const db = new Database(join(home, "state_5.sqlite"));
+      if (invalid === "archived") db.query("UPDATE threads SET archived = 1 WHERE id = ?").run(thread);
+      if (invalid === "subagent") db.query("UPDATE threads SET source = 'exec' WHERE id = ?").run(thread);
+      if (invalid === "missing rollout") rmSync(path);
+      if (invalid === "outside store") {
+        const outside = join(root, "outside.jsonl");
+        writeFileSync(outside, fs.readFileSync(path));
+        db.query("UPDATE threads SET rollout_path = ? WHERE id = ?").run(outside, thread);
+      }
+      if (invalid === "row points to another thread") db.query("UPDATE threads SET rollout_path = ? WHERE id = ?").run(next, thread);
+      db.close();
+      await loaded(thread);
+      expect(await resolve()).toBeNull();
+    });
+  }
+
+  for (const kind of ["shell", "remote", "exec holder"] as const) {
+    heldIt(`does not identify a ${kind} from a local footer`, async () => {
+      foreground = [{ pid: 99999999, argv: kind === "shell" ? ["bash"] : kind === "remote" ? ["codex", "--remote=ssh://other"] : ["codex"] }];
+      screen = footer(thread);
+      if (kind === "exec holder") await loadedByExec(thread); else await loaded(thread);
+      expect(await resolve()).toBeNull();
+    });
+  }
+
+  heldIt("withholds the result when the pane changes thread during lookup", async () => {
+    foreground = [{ pid: 99999999, argv: ["codex"] }];
+    elsewhereThread(other, []);
+    await loaded(thread, other);
+    screen = footer(thread);
+    screenReads = [footer(thread), footer(other)];
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("withholds the result when Codex leaves during lookup", async () => {
+    foreground = [{ pid: 99999999, argv: ["codex"] }];
+    await loaded(thread);
+    screen = footer(thread);
+    processReads = [foreground, []];
+    expect(await resolve()).toBeNull();
   });
 });
