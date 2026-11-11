@@ -1,7 +1,7 @@
 import { expect, it, spyOn } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type SetupJob, type SetupRequest } from "../shared/machines.ts";
@@ -56,9 +56,9 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
   const birth = readProcessBirth(process.pid);
   if (birth.state !== "identified") throw new Error("Test process birth unavailable");
   // birthless: an older server's registration, which recorded no process birth
-  const descriptor = { socket_path: socket, pid: process.pid, ...(outcome === "birthless" ? {} : { birth: birth.birth }), port: 12345, token: "a".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: false };
+  const descriptor = { socket_path: socket, pid: process.pid, ...(outcome === "birthless" ? {} : { birth: birth.birth }), port: 12345, token: randomBytes(32).toString("hex"), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: false };
   // default bridge: this app's bridge already serves the PC's default herdr socket, as on a saved PC that reconnects
-  const bridge = { socket_path: join(dir, ".config/herdr/herdr.sock"), pid: process.pid, port: 23456, token: "b".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true };
+  const bridge = { socket_path: join(dir, ".config/herdr/herdr.sock"), pid: process.pid, port: 23456, token: randomBytes(32).toString("hex"), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true };
   // default herdr: that herdr also answers at its socket, so the PC's own Ovis lists it among the account's sessions
   // (chosen: by its socket on the card of a PC being added; installed: met by the connect an install ends with)
   const beside = outcome.startsWith("default herdr");
@@ -70,7 +70,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
   // an older Ovis there, which names no herdr sessions in its answer
   const older = outcome.startsWith("older peer") || outcome === "default herdr older peer";
   // and this app's bridge serves the account's named session too, for a setup that chooses it
-  const workBridge = { ...bridge, socket_path: join(dir, ".config/herdr/sessions/work/herdr.sock"), port: 34567, token: "c".repeat(64) };
+  const workBridge = { ...bridge, socket_path: join(dir, ".config/herdr/sessions/work/herdr.sock"), port: 34567, token: randomBytes(32).toString("hex") };
   const listedHere = beside ? [bridge, workBridge, descriptor] : bridged ? [bridge, descriptor] : [descriptor];
   const registry = join(dir, ".config/herdr-web-ui/bridges");
   mkdirSync(registry, { recursive: true });
@@ -122,11 +122,17 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
     spyOn(posixHost, "alive").mockImplementation(async () => !selected || outcome !== "stopped after proof"),
     spyOn(posixHost, "installBundle").mockImplementation(async () => { installs++; }),
     spyOn(posixHost, "start").mockImplementation(async (_ssh, options) => { starts++; startedWith = options; throw new Error("must not start herdr"); }),
-    spyOn(SshConnection.prototype, "forward").mockImplementation(async (port, remotePort) => {
+    // the SSH tunnel to a bridge: its relay listens on a port of its own (port 0), never on a number freed for it, which
+    // another process on a busy host may take first
+    spyOn(MachineManager.prototype as unknown as { tunnel(ssh: SshConnection, descriptor: { port: number; token: string }): Promise<{ url: string; token: string }> }, "tunnel").mockImplementation(async (_ssh, { port: remotePort, token }) => {
       const served = remotePort === bridge.port && bridged ? bridge : remotePort === workBridge.port && beside ? workBridge : descriptor;
       expect(remotePort).toBe(served.port);
-      relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
-        expect(request.headers.get("authorization")).toBe(`Bearer ${served.token}`);
+      const relay = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) {
+        // a read an earlier case's PC still had under way (its move badge) may reach the port that case's relay let go:
+        // a token of no bridge of this case is refused, as a bridge refuses one it does not know
+        const authorization = request.headers.get("authorization");
+        if (![descriptor, bridge, workBridge].some((own) => authorization === `Bearer ${own.token}`)) return new Response(null, { status: 401 });
+        expect(authorization).toBe(`Bearer ${served.token}`);
         const path = new URL(request.url).pathname;
         if (path === "/api/bridge" && served !== descriptor) return Response.json({ ...served, socket_id: "fixture:tui", herdr: { protocol: 22, version: "0.9.0", runtime: "herdr" } });
         if (path === "/api/bridge") {
@@ -144,7 +150,9 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
         if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [{ id: "core-work", name: "Existing core work" }] } });
         if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
         return new Response(null, { status: 404 });
-      }, websocket: { message() {} } }));
+      }, websocket: { message() {} } });
+      relays.push(relay);
+      return { url: `http://127.0.0.1:${relay.port}`, token };
     }),
   ];
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });

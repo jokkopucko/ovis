@@ -10,6 +10,10 @@ import { posixHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { herdrMachineId } from "./herdr-profile-state.ts";
 
+// the SSH tunnel to a bridge: its relay listens on a port of its own (port 0), never on a number freed for it, which
+// another process on a busy host may take first
+const tunnel = MachineManager.prototype as unknown as { tunnel(ssh: SshConnection, descriptor: { port: number; token: string }): Promise<{ url: string; token: string }> };
+
 it.each(["socket success", "socket failure", "session success", "session failure", "stale independent socket"])("keeps the old connection and workspaces until %s settles", async (outcome) => {
   const dir = mkdtempSync(join(tmpdir(), "machine-herdr-move-"));
   const id = "12345678-1234-1234-1234-123456789abe";
@@ -34,15 +38,17 @@ it.each(["socket success", "socket failure", "session success", "session failure
     spyOn(posixHost, "chosenSocketStatus").mockResolvedValue("usable"),
     spyOn(posixHost, "start").mockRejectedValue(new Error("B could not start")),
     spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
-    spyOn(SshConnection.prototype, "forward").mockImplementation(async (port, remotePort) => {
+    spyOn(tunnel, "tunnel").mockImplementation(async (_ssh, { port: remotePort, token }) => {
       const socket = remotePort === 12345 ? a.herdr_socket : b.herdr_socket;
-      relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
+      const relay = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) {
         const path = new URL(request.url).pathname;
         if (path === "/api/bridge") return Response.json({ ...descriptor(socket), socket_id: socket, herdr: { protocol: 22, version: "0.9.3" } });
         if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [{ id: socket, name: socket }] } });
         if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
         return new Response("absent", { status: 404 });
-      }, websocket: { message() {} } }));
+      }, websocket: { message() {} } });
+      relays.push(relay);
+      return { url: `http://127.0.0.1:${relay.port}`, token };
     }),
   ];
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
@@ -106,14 +112,16 @@ it.each(["manual", "catalog socket", "catalog new", "manual default", "catalog d
     spyOn(posixHost, "alive").mockResolvedValue(true),
     // a chosen socket the PC verifies as this account's and answering
     spyOn(posixHost, "chosenSocketStatus").mockResolvedValue("usable"),
-    spyOn(SshConnection.prototype, "forward").mockImplementation(async (port) => {
-      relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
+    spyOn(tunnel, "tunnel").mockImplementation(async (_ssh, { token }) => {
+      const relay = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) {
         const path = new URL(request.url).pathname;
         if (path === "/api/bridge") return Response.json({ ...descriptor, socket_id: "fixture:1", herdr: { protocol: 22, version: "0.9.3" } });
         if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [] } });
         if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
         return new Response("absent", { status: 404 });
-      }, websocket: { message() {} } }));
+      }, websocket: { message() {} } });
+      relays.push(relay);
+      return { url: `http://127.0.0.1:${relay.port}`, token };
     }),
   ];
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
@@ -230,14 +238,16 @@ it.each(["refused", "gone", "usable"] as const)("reuses a live bridge for a chos
     spyOn(posixHost, "alive").mockResolvedValue(true),
     spyOn(posixHost, "chosenSocketStatus").mockImplementation(async (_ssh, _inspection, path) => { checked.push(path); return status; }),
     spyOn(posixHost, "foundSessions").mockResolvedValue({ gone: true, sessions: [] }),
-    spyOn(SshConnection.prototype, "forward").mockImplementation(async (port) => {
-      relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
+    spyOn(tunnel, "tunnel").mockImplementation(async (_ssh, { token }) => {
+      const relay = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) {
         const path = new URL(request.url).pathname;
         if (path === "/api/bridge") return Response.json({ ...descriptor, socket_id: "fixture:1", herdr: { protocol: 22, version: "0.9.3" } });
         if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [] } });
         if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
         return new Response("absent", { status: 404 });
-      }, websocket: { message() {} } }));
+      }, websocket: { message() {} } });
+      relays.push(relay);
+      return { url: `http://127.0.0.1:${relay.port}`, token };
     }),
   ];
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
