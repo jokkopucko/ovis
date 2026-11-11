@@ -50,7 +50,9 @@ jobs:
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
-  deploy:
+  # Whether the built commit is still main's head, in a job with no environment: a run that main has moved past
+  # skips the deploy job instead of recording a deployment it never made, and ends with a notice, not red.
+  current:
     if: >-
       always() && github.ref == 'refs/heads/main' &&
       needs.build.result == 'success' &&
@@ -68,12 +70,58 @@ jobs:
     runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
     permissions:
       contents: read
+    outputs:
+      stale: ${{ steps.current.outputs.stale }}
+    steps:
+      - name: Check the built commit is main's head
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          BUILT_SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$BUILT_SHA" != "$EXPECTED_SHA" ]]; then
+            echo "Built SHA $BUILT_SHA does not match validated SHA $EXPECTED_SHA" >&2
+            exit 1
+          fi
+          latest_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
+          if [[ ! "$latest_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "GitHub returned an invalid main SHA: $latest_sha" >&2
+            exit 1
+          fi
+          if [[ "$latest_sha" != "$EXPECTED_SHA" ]]; then
+            echo "::notice title=Deployment skipped::This run built $EXPECTED_SHA, and main is now $latest_sha, so it deploys nothing."
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "stale=false" >> "$GITHUB_OUTPUT"
+  deploy:
+    if: >-
+      always() && needs.current.result == 'success' && needs.current.outputs.stale == 'false' &&
+      github.ref == 'refs/heads/main' &&
+      needs.build.result == 'success' &&
+      (needs.validate.result == 'success' ||
+      (needs.validate.result == 'skipped' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success')) &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
+    needs: [validate, build, current]
+    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
+    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
+    permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # checked again right before deploying: main can move on after the current job read it
       - name: Verify deployment SHA is current
         env:
           GH_TOKEN: ${{ github.token }}
