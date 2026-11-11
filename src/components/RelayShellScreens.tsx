@@ -135,7 +135,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
   const signingIn = account?.kind === "signing-in";
   const signInError = account?.kind === "signed-out" ? account.error : null;
   const signIn = (account?.kind === "signed-out" || signingIn) && onSignIn
-    ? <AccountSignIn onSignIn={onSignIn} error={signInError} busy={signingIn} busyProvider={signingIn ? (account.provider ?? null) : null} failedProvider={account.kind === "signed-out" ? (account.provider ?? null) : null} {...(accountProviders ? { providers: accountProviders } : {})} /> : null;
+    ? <AccountSignIn onSignIn={onSignIn} error={signInError} notice={account?.kind === "signed-out" ? (account.notice ?? null) : null} busy={signingIn} busyProvider={signingIn ? (account.provider ?? null) : null} failedProvider={account.kind === "signed-out" ? (account.provider ?? null) : null} {...(accountProviders ? { providers: accountProviders } : {})} /> : null;
   const name = state.kind === "confirm" || state.kind === "code-compare" ? state.offer.name ?? null
     : state.kind === "list" || state.kind === "empty" || state.kind === "code-entry" || state.kind === "code-looking" ? null : state.name;
   const pc = name ?? t("this PC");

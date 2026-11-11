@@ -413,6 +413,17 @@ export class AccountService {
     await this.call("DELETE", `/v1/identities/${provider}`);
   }
 
+  /**
+   * Deletes the signed-in account and everything the service keeps under it, for good. Like a change
+   * to the sign-in methods it wants a sign-in made in the last ten minutes (403 `reauth_required`), and
+   * the service refuses it while a subscription still renews (409 `subscription_active`). What this device
+   * keeps of the deleted sign-in is forgotten by its caller (deleteAccount.ts), with `forSignIn` so that a
+   * sign-in made meanwhile is never the one deleted.
+   */
+  async deleteAccount(): Promise<void> {
+    await this.call("DELETE", "/v1/account");
+  }
+
   /** Leaves a signed record in the mailbox of each listed PC of the account (at most 32 at a time). */
   async postRecord(serverIds: readonly string[], record: AccountRecord): Promise<number> {
     if (serverIds.length === 0) return 0;

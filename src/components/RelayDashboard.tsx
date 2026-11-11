@@ -26,6 +26,12 @@ export interface RelayDashboardProps {
   onCheckPcs?: () => void; onCheckPc?: (serverId: string) => void; onRefreshAccount?: () => void | Promise<void>; onAddPc: () => void; onPairByQr?: () => void;
   onOpenSheet: (pc: MyPc, mode: "new" | "join") => void; onForgetPc?: (serverId: string) => Promise<void> | void;
   onSignIn?: () => void; onSignOut?: () => void; onLeave?: () => void;
+  /** deletes the signed-in account at the account service, after the person confirmed it here */
+  onDeleteAccount?: () => void;
+  /** why Delete account was refused, said on Devices alone (`error` is the directory's) */
+  deleteError?: string;
+  /** which sign-in `account` is (its sign_in_id): Devices' questions asked under one are dropped under the next */
+  signedInAs?: string;
 }
 
 type Place = { view: DashboardView; href: string; Icon: LucideIcon; label: string; current: boolean; count?: number };
@@ -47,9 +53,10 @@ function SidebarFoot({ account, onSignIn, onSignOut }: Pick<RelayDashboardProps,
   return <div className="relay-dash-foot"><p className="relay-dash-who"><ProviderMark provider={account.provider} /><span>{t("Signed in with {provider}", { provider: PROVIDER_NAMES[account.provider] })}</span></p>{onSignOut && <button type="button" className="account-link" onClick={onSignOut}>{t("Sign out")}</button>}</div>;
 }
 
-function DevicesSection({ meLabel, account, onSignIn, onSignOut, onLeave }: Pick<RelayDashboardProps, "meLabel" | "account" | "onSignIn" | "onSignOut" | "onLeave">) {
+function DevicesSection({ meLabel, account, deleteError, onSignIn, onSignOut, onLeave, onDeleteAccount }: Pick<RelayDashboardProps, "meLabel" | "account" | "onSignIn" | "onSignOut" | "onLeave" | "onDeleteAccount" | "deleteError">) {
   const t = useT();
   const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   return (
     <div className="relay-dash-view-stack">
       <section className="relay-dash-panel" aria-labelledby="relay-dash-this-device-title">
@@ -69,6 +76,18 @@ function DevicesSection({ meLabel, account, onSignIn, onSignOut, onLeave }: Pick
               {onLeave && <button type="button" className={confirming ? "btn btn-danger" : "btn"} data-action="remove-device" data-confirm={confirming ? "remove-device" : undefined} onClick={() => { if (confirming) onLeave(); else setConfirming(true); }}>{confirming ? t("Remove this device?") : t("Remove this device from your account")}</button>}
               {confirming && <button type="button" className="btn btn-ghost" onClick={() => setConfirming(false)}>{t("Cancel")}</button>}
             </div>
+            {onDeleteAccount && (
+              <>
+                {/* what goes and what stays, before the press that does it (the same button, as Remove this device) */}
+                {deleting && <p className="account-fineprint" role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</p>}
+                <div className="relay-dash-account-actions">
+                  <button type="button" className={deleting ? "btn btn-danger" : "btn"} data-action="delete-account" data-confirm={deleting ? "delete-account" : undefined} onClick={() => { if (deleting) { setDeleting(false); onDeleteAccount(); } else setDeleting(true); }}>{deleting ? t("Delete account for good?") : t("Delete account")}</button>
+                  {deleting && <button type="button" className="btn btn-ghost" onClick={() => setDeleting(false)}>{t("Cancel")}</button>}
+                </div>
+                {/* why the last delete was refused (reauth_required, subscription_active), where it was pressed */}
+                {deleteError !== undefined && <p className="account-error" role="alert">{deleteError}</p>}
+              </>
+            )}
           </div>
         )}
       </section>
@@ -97,7 +116,7 @@ function SettingsSection() {
 
 export function RelayDashboard({
   pcs, account, defaultRelay, meLabel, error = null, pcStatus, observedVersions,
-  onCheckPcs, onCheckPc, onRefreshAccount, onAddPc, onPairByQr, onOpenSheet, onForgetPc, onSignIn, onSignOut, onLeave,
+  onCheckPcs, onCheckPc, onRefreshAccount, onAddPc, onPairByQr, onOpenSheet, onForgetPc, onSignIn, onSignOut, onLeave, onDeleteAccount, signedInAs, deleteError,
 }: RelayDashboardProps) {
   const t = useT(), phone = useMediaQuery(PHONE_QUERY), narrow = useMediaQuery(NARROW_DETAILS_QUERY), narrowSplitTable = useMediaQuery(NARROW_SPLIT_TABLE_QUERY);
   const mode: "account" | "local" = account ? "account" : "local";
@@ -258,7 +277,7 @@ export function RelayDashboard({
             <div className="relay-dash-top-text"><h1 ref={titleRef} className="relay-dash-title" tabIndex={-1}>{viewTitles[route.view]}</h1></div>
             {!phone && <button type="button" className={pcs?.length === 0 && (route.view === "overview" || route.view === "pcs") ? "btn" : "btn btn-primary"} data-action="add-pc" onClick={onAddPc}><Plus aria-hidden="true" />{t("Add a PC")}</button>}
           </header>
-          {route.view === "devices" ? <DevicesSection meLabel={meLabel} account={account} {...(onSignIn ? { onSignIn } : {})} {...(onSignOut ? { onSignOut } : {})} {...(onLeave ? { onLeave } : {})} />
+          {route.view === "devices" ? <DevicesSection key={signedInAs ?? ""} meLabel={meLabel} account={account} {...(deleteError !== undefined ? { deleteError } : {})} {...(onSignIn ? { onSignIn } : {})} {...(onSignOut ? { onSignOut } : {})} {...(onLeave ? { onLeave } : {})} {...(onDeleteAccount ? { onDeleteAccount } : {})} />
             : route.view === "settings" ? <SettingsSection />
             : renderFleetView()}
         </div>

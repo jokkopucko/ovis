@@ -52,7 +52,9 @@ export interface RelayShellProps {
   onJoin?: (pc: MyPc, options?: { typed?: boolean; sheet?: "new" | "join" }) => void;
   /** on a PC's own page: the join the dashboard's sheet started for this PC, which the sheet takes up again over the pairing screens */
   sheetJoin?: { mode: "new" | "join"; server_id: string; returnHash?: string } | null;
-  onSignOut?: () => void; onLeave?: () => void;
+  onSignOut?: () => void; onLeave?: () => void; onDeleteAccount?: () => void;
+  /** which sign-in the signed-in account view speaks of (AccountSession.sign_in_id): a question asked under one is dropped under the next */
+  accountSignIn?: string;
   /** the sign-ins the account service offers (accountProvidersOf); GitHub alone by default */
   accountProviders?: readonly AccountProvider[];
   /** the relay each PC of the account's directory named (DirectoryPc.relay), for the dashboard's rows */
@@ -159,7 +161,7 @@ export function ReadyCheckpoint({ open, cancel, state, retry }: { readonly open:
  * sheet over the dashboard frame across a scoped join, and the pairing/recovery screens.
  */
 export function RelayShell(props: RelayShellProps) {
-  const { state, pcStatus, onCheckPcs, onCheckPc, onRefreshAccount, observedVersions, scoped, onPair, onRetry, onCancel, onBack, onForgetPc, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, continuedAccount, onSignIn, onJoin, sheetJoin = null, onSignOut, onLeave, directoryRelays = [], defaultRelay = GLOBAL_RELAY, meLabel } = props;
+  const { state, pcStatus, onCheckPcs, onCheckPc, onRefreshAccount, observedVersions, scoped, onPair, onRetry, onCancel, onBack, onForgetPc, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, continuedAccount, onSignIn, onJoin, sheetJoin = null, onSignOut, onLeave, onDeleteAccount, accountSignIn, directoryRelays = [], defaultRelay = GLOBAL_RELAY, meLabel } = props;
   const t = useT();
   const [cachedAccount, setCachedAccount] = useState<AccountView | null>(null);
   const rawAccount: AccountView | null = (state.kind === "list" || state.kind === "empty") && onSignIn ? state.account ?? null : null;
@@ -192,6 +194,7 @@ export function RelayShell(props: RelayShellProps) {
         defaultRelay={defaultRelay}
         meLabel={meLabel ?? t("This device")}
         error={signedIn?.error ?? null}
+        {...(signedIn?.deleteError !== undefined ? { deleteError: signedIn.deleteError } : {})}
         {...(pcStatus ? { pcStatus } : {})}
         {...(observedVersions ? { observedVersions } : {})}
         {...(onCheckPcs ? { onCheckPcs } : {})}
@@ -204,6 +207,8 @@ export function RelayShell(props: RelayShellProps) {
         {...(signedIn ? {} : { onSignIn: () => setSignedOutView("sign-in") })}
         {...(signedIn && onSignOut ? { onSignOut } : {})}
         {...(signedIn && onLeave ? { onLeave } : {})}
+        {...(signedIn && onDeleteAccount ? { onDeleteAccount } : {})}
+        {...(signedIn && accountSignIn !== undefined ? { signedInAs: accountSignIn } : {})}
       />
     );
     return (

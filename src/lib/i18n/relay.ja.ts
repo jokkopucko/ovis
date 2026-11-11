@@ -71,6 +71,8 @@ export const RELAY_JA: Record<string, string> = {
   "Code from the PC": "PC に表示されたコード",
   "Looking for the PC…": "PC を探しています…",
   "This device could not leave the account. Try again.": "このデバイスをアカウントから外せませんでした。もう一度お試しください。",
+  "To delete your account, sign out, sign in again, then delete it within ten minutes.": "アカウントを削除するには、サインアウトしてもう一度サインインし、10 分以内に削除してください。",
+  "You signed in to another account. Nothing was deleted.": "別のアカウントでサインインしました。何も削除していません。",
   "This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}": "このデバイスをアカウントから外しました。アカウントにない次の PC にはまだ残っているので、そこで取り消してください: {pcs}",
   "It adds the devices of your account a few minutes after they join. Try again in a moment.": "アカウントに参加したデバイスは数分以内に追加されます。少ししてからもう一度お試しください。",
   "Continue without an account ({count} PCs)": "アカウントなしで続ける（PC {count} 台）",

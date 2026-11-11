@@ -517,6 +517,71 @@ describe("RelayDashboard frame and routes", () => {
     expect(signedOut).toBe(1);
   });
 
+  it("offers Delete account in Devices only, says what it erases before the second press, and Cancel takes it back", async () => {
+    let deleted = 0;
+    await mount(baseProps({ onDeleteAccount: () => { deleted += 1; } }));
+    expect(textOf(renderer!.root.findByProps({ className: "relay-dash-foot" }))).not.toContain("Delete account");
+
+    await navigateHash("#devices");
+    const button = () => renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "delete-account");
+    expect(textOf(button())).toBe("Delete account");
+    expect(String(button().props.className)).not.toContain("btn-danger");
+    expect(textOf(renderer!.root)).not.toContain("for good");
+
+    await act(async () => { button().props.onClick(); });
+    expect(deleted).toBe(0);
+    expect(String(button().props.className)).toContain("btn-danger");
+    expect(button().props["data-confirm"]).toBe("delete-account");
+    expect(textOf(button())).toBe("Delete account for good?");
+    const said = textOf(renderer!.root.find((n) => n.props["data-testid"] === "delete-account-says"));
+    expect(said).toContain("your sign-in methods, your list of PCs and your plan");
+    expect(said).toContain("stay paired");
+
+    const cancel = renderer!.root.findAll((n) => n.type === "button" && textOf(n) === "Cancel").at(-1)!;
+    await act(async () => { cancel.props.onClick(); });
+    expect(textOf(button())).toBe("Delete account");
+    expect(deleted).toBe(0);
+
+    await act(async () => { button().props.onClick(); });
+    await act(async () => { button().props.onClick(); });
+    expect(deleted).toBe(1);
+  });
+
+  it("drops an asked Delete account when another sign-in is shown, so its second press never reaches that one", async () => {
+    let deleted = 0;
+    const shown = (signedInAs: string) => baseProps({ signedInAs, onDeleteAccount: () => { deleted += 1; } });
+    await mount(shown("sign-in-one"));
+    await navigateHash("#devices");
+    const button = () => renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "delete-account");
+    await act(async () => { button().props.onClick(); });
+    expect(textOf(button())).toBe("Delete account for good?");
+    await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayDashboard, shown("sign-in-two")) })); });
+    expect(textOf(button())).toBe("Delete account");
+    await act(async () => { button().props.onClick(); });
+    expect(deleted).toBe(0);
+  });
+
+  it("says on Devices why a delete was refused, and there only", async () => {
+    await mount(baseProps({ deleteError: "Cancel your subscription first, then delete the account.", onDeleteAccount: () => {} }));
+    await navigateHash("#devices");
+    const alert = renderer!.root.findAll((n) => n.props.role === "alert" && textOf(n).includes("Cancel your subscription first"));
+    expect(alert.length).toBeGreaterThan(0);
+    await navigateHash("#overview");
+    expect(textOf(renderer!.root)).not.toContain("Cancel your subscription first");
+  });
+
+  it("draws no directory failure under Delete account", async () => {
+    await mount(baseProps({ error: "The account service could not be reached.", onDeleteAccount: () => {} }));
+    await navigateHash("#devices");
+    expect(textOf(renderer!.root)).not.toContain("could not be reached");
+  });
+
+  it("offers no Delete account without an account", async () => {
+    await mount(baseProps({ account: null, onDeleteAccount: () => {} }));
+    await navigateHash("#devices");
+    expect(renderer!.root.findAll((n) => n.type === "button" && n.props["data-action"] === "delete-account")).toHaveLength(0);
+  });
+
   it("persists theme, density and language through SettingsProvider in the Settings view", async () => {
     window.location.hash = "#settings";
     await mount();

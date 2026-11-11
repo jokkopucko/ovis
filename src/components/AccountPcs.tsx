@@ -63,6 +63,7 @@ function providerLabel(provider: AccountProvider, t: ReturnType<typeof useT>): s
 export function AccountSignIn({
   onSignIn,
   error,
+  notice = null,
   providers = ["github"],
   busy = false,
   busyProvider = null,
@@ -70,6 +71,8 @@ export function AccountSignIn({
 }: {
   readonly onSignIn: (provider: AccountProvider) => void;
   readonly error: string | null;
+  /** something that went as asked and left the person signed out (the account was deleted): said plainly, with nothing to try again */
+  readonly notice?: string | null;
   readonly providers?: readonly AccountProvider[];
   readonly busy?: boolean;
   readonly busyProvider?: AccountProvider | null;
@@ -108,6 +111,7 @@ export function AccountSignIn({
           );
         })}
       </div>
+      {notice !== null && error === null && <p className="account-fineprint account-notice" role="status">{notice}</p>}
       {error !== null && (
         <div className="account-error-block" role="alert">
           <p className="account-error">{error} {t("The PCs this device is paired with still work.")}</p>

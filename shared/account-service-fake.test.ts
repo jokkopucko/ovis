@@ -286,6 +286,22 @@ describe("signing in to the fake account service", () => {
     expect((await poll()).error?.code).toBe("expired_token");
   });
 
+  test("a sign-in made with a device code cannot delete the account, before and after a refresh (web_sign_in_required)", async () => {
+    let now = 0;
+    const service = new FakeAccountService(() => now);
+    const started = await (await service.fetch(post("/v1/signin/github/device", {}))).json() as { device_code: string; user_code: string };
+    service.approveDevice(started.user_code, "acct_head");
+    now += 60_000;
+    const session = await (await token(service, { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: started.device_code })).json() as { access_token: string; refresh_token: string };
+    const del = (access: string) => service.fetch(new Request(`${BASE}/v1/account`, { method: "DELETE", headers: { authorization: `Bearer ${access}` } }));
+    const refused = await del(session.access_token);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("web_sign_in_required");
+    const refreshed = await (await token(service, { grant_type: "refresh_token", refresh_token: session.refresh_token })).json() as { access_token: string };
+    expect((await del(refreshed.access_token)).status).toBe(403);
+    expect(service.deleted("acct_head")).toBe(false);
+  });
+
   test("a device sign-in started with a challenge says so, and redeems only with its verifier", async () => {
     let now = 0;
     const service = new FakeAccountService(() => now);

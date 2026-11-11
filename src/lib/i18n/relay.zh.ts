@@ -71,6 +71,8 @@ export const RELAY_ZH: Record<string, string> = {
   "Code from the PC": "电脑上显示的代码",
   "Looking for the PC…": "正在查找电脑…",
   "This device could not leave the account. Try again.": "未能将此设备移出账户。请重试。",
+  "To delete your account, sign out, sign in again, then delete it within ten minutes.": "要删除账户，请先退出登录并重新登录，然后在 10 分钟内删除。",
+  "You signed in to another account. Nothing was deleted.": "你登录的是另一个账户。未删除任何内容。",
   "This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}": "此设备已离开账户。账户未列出的以下 PC 上仍保留它，请在那里撤销：{pcs}",
   "It adds the devices of your account a few minutes after they join. Try again in a moment.": "账户中的新设备会在几分钟内被添加。请稍后重试。",
   "Continue without an account ({count} PCs)": "不使用账户继续（{count} 台 PC）",

@@ -78,9 +78,9 @@ export type PcUpdate =
  * or the account's PCs (null while they load). Null on a PC's own page, which has no account part.
  */
 export type AccountView =
-  | { kind: "signed-out"; error: string | null; provider?: AccountProvider }
+  | { kind: "signed-out"; error: string | null; provider?: AccountProvider; /** what just ended the sign-in as asked (the account was deleted): no failure, nothing to retry */ notice?: string }
   | { kind: "signing-in"; provider?: AccountProvider }
-  | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null };
+  | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null; /** why Delete account was refused, said on Devices alone (`error` is the directory's) */ deleteError?: string };
 
 /** Counts only devices this enrollment confirmed, never every member of the account. */
 export interface EnrollmentCompletion { readonly state: "complete"; readonly admitted?: number }

@@ -71,6 +71,8 @@ export const RELAY_KO: Record<string, string> = {
   "Code from the PC": "PC에 표시된 코드",
   "Looking for the PC…": "PC를 찾는 중…",
   "This device could not leave the account. Try again.": "이 기기를 계정에서 빼지 못했습니다. 다시 시도하세요.",
+  "To delete your account, sign out, sign in again, then delete it within ten minutes.": "계정을 삭제하려면 로그아웃했다가 다시 로그인한 뒤 10분 안에 삭제하세요.",
+  "You signed in to another account. Nothing was deleted.": "다른 계정으로 로그인했습니다. 아무것도 삭제하지 않았습니다.",
   "This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}": "이 기기를 계정에서 뺐습니다. 계정 목록에 없는 이 PC들에는 아직 남아 있으니 거기서 취소하세요: {pcs}",
   "It adds the devices of your account a few minutes after they join. Try again in a moment.": "계정에 새 기기가 들어오면 몇 분 안에 추가됩니다. 잠시 뒤 다시 시도하세요.",
   "Continue without an account ({count} PCs)": "계정 없이 계속 (PC {count}대)",

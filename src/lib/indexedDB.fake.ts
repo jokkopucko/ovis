@@ -2,7 +2,7 @@
  * Test support, never shipped: the part of IndexedDB the hosted shell uses (lib/relay/device.ts and
  * public/sw.js) and the account store (lib/account/store.ts): open with a version and an upgrade,
  * object stores keyed by `server_id` or by the key `put` names, and one
- * transaction's get, put and delete, each answered asynchronously as a browser's is. Values are
+ * transaction's get, put, delete and clear, each answered asynchronously as a browser's is. Values are
  * structured-cloned in and out, so a test sees what a later reader would.
  */
 
@@ -41,6 +41,7 @@ export function fakeIndexedDB(): FakeIndexedDB {
           // an out-of-line key (the account store's `put(value, name)`), else the row's server_id
           put: (value: Row, key?: string) => request(() => { const id = key ?? value.server_id; rows.set(id, structuredClone(value)); return id; }),
           delete: (key: string) => request(() => { rows.delete(key); return undefined; }),
+          clear: () => request(() => { rows.clear(); return undefined; }),
         };
       },
     };

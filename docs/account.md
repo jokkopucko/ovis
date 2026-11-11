@@ -739,6 +739,37 @@ typed by someone it was phished from, so a PC's own page adds methods only throu
 app or another redirect sign-in. The client keeps the session the link answers with only when it
 is for its own account, and ends the one it had (`POST /v1/signout`).
 
+#### Deleting the account
+
+| request | body | answer |
+|---|---|---|
+| `DELETE /v1/account` | | `204`: the account and everything the service keeps under it are gone. 403 `reauth_required` unless this sign-in was made in the last 10 minutes; 403 `web_sign_in_required` for a sign-in made with a device code or on the link page (a code can be typed for someone else's PC, so such a sign-in never ends the account), its refreshes included; 409 `subscription_active` while a subscription still renews; 502 `billing_failed` when the payment provider did not answer |
+
+The service erases, in one write, the account's sign-in methods, every sign-in of it (with its push
+subscription), its PC directory, the records and admissions still waiting for its PCs, its relay
+slots and usage, its plan and its own limit counters. Nothing is kept and there is no grace period:
+the same provider user later signs in to a new, empty account. A subscription cancelled at its
+period end does not refuse the delete; the time left on it goes with the account.
+
+Deleting revokes nothing on a PC (rule 1): `devices.json` still lists every device the account
+brought in, so each stays paired, as one paired by QR code does, until it is revoked on that PC.
+A device that should lose its access leaves the account first (**Remove this device from your
+account**), while the account can still carry its `remove`. A PC of a deleted account keeps naming
+that account in `devices.json`: its mailbox pulls find nothing, it gets no relay pass, and it joins
+another account only once its rows of the deleted one are revoked there.
+
+The client (`src/lib/account/deleteAccount.ts`) deletes for the sign-in the person acted on, never
+one stored meanwhile, then forgets that sign-in and its account key; a pairing keeps its own copy
+of the key. It is offered behind a second press on the same button that says what goes and what
+stays, wherever the sign-in is one the service lets delete: **Settings → Devices and PCs → Account**
+in the desktop app, and **Devices → Account** in the hosted shell and the phone apps. A PC's own page
+in a browser signs in with a device code or the link page, so its Account section offers no delete
+and names those places instead. On `reauth_required` the desktop app signs in again and repeats the
+delete; the phone apps sign in again in place with the same method and delete only when that is the
+same account; a browser on the hosted shell is told to sign out and in again. A sign-in again is
+stored only in the place of the sign-in being deleted, while that delete is still on: a sign-out or
+another sign-in made meanwhile ends it.
+
 The client makes `state` (at least 128 bits) and `code_verifier` (32 random bytes, base64url) fresh
 for each sign-in, keeps them with that sign-in only, and drops a callback whose `state` is missing or
 not the one it sent.

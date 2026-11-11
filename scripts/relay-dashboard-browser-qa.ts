@@ -587,6 +587,34 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return "asks first, Cancel reverts, nothing deleted";
   });
 
+  // the account's Delete account: the same button asks first and says what goes; the second press deletes at the service and signs out
+  for (const width of [390, 1440] as const) {
+    await check(`account-delete-${width}`, async () => {
+      const { page, account } = await open({ fleet: "FREADY", width });
+      await go(page, "#devices", "devices");
+      await shot(page, `account-delete-${width}-1-devices`, true);
+      const button = page.locator('[data-action="delete-account"]');
+      await button.click();
+      await page.locator('[data-confirm="delete-account"]').waitFor();
+      const said = await page.locator('[data-testid="delete-account-says"]').innerText();
+      expect(said.includes("for good") && said.includes("stay paired"), `the question says what goes and what stays: ${said}`);
+      expect(!account.some((line) => line.startsWith("DELETE")), "the first press only asks");
+      const overflow = await noOverflow(page);
+      await shot(page, `account-delete-${width}-2-asking`, true);
+      await page.locator("#relay-dash-device .relay-dash-account-actions").last().getByRole("button", { name: "Cancel" }).click();
+      expect(await page.locator('[data-confirm="delete-account"]').count() === 0, "Cancel takes the question back");
+      await button.click();
+      await page.locator('[data-confirm="delete-account"]').click();
+      const told = page.locator('[data-account-state="signed-out"] .account-notice');
+      await told.waitFor();
+      expect((await told.innerText()).trim() === "Your account was deleted.", `the signed-out page says the account was deleted, and no more: ${await told.innerText()}`);
+      expect(await page.locator('[data-account-state="signed-out"] [role=alert]').count() === 0, "a delete that went through is no failure: nothing to try again");
+      expect(account.filter((line) => line === "DELETE /v1/account").length === 1, `one delete reached the service: ${JSON.stringify(account.filter((line) => line.startsWith("DELETE")))}`);
+      await shot(page, `account-delete-${width}-3-deleted`, true);
+      return `asks first, Cancel reverts, one DELETE /v1/account, signed out with the notice; ${overflow}`;
+    });
+  }
+
   // ---- large fleets (todo 7) ----
 
   // from 200 rows each row's box skips rendering off screen (content-visibility: auto); 50 rows stay fully rendered

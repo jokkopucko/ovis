@@ -94,6 +94,11 @@ export class FakeAccountService {
   private readonly challenges = new Map<string, { server_id: string; expected: string; expires: number }>();
   private readonly admissionList: FakeAdmission[] = [];
   private readonly accountLimits = new Map<string, Record<string, unknown>>();
+  /** accounts whose subscription still renews: their delete is refused */
+  private readonly subscribed = new Set<string>();
+  private readonly deletedAccounts = new Set<string>();
+  /** sign-ins made with a device code or on the link page, refreshes included: they cannot delete the account */
+  private readonly deviceFamilies = new Set<string>();
   /** Where the service sees every request come from (Cloudflare's `request.cf`); unknown unless a test says. */
   requestPlace: AccountPlace = { country: null, city: null };
   /** False acts as an account service from before "Who is asking", whose link page start refuses `label` and `os`. */
@@ -121,6 +126,12 @@ export class FakeAccountService {
 
   /** Who the next sign-in with `provider` turns out to be; unset, `acct_<provider>`. */
   signInAs(provider: SignInProvider, account: string): void { this.signIns.set(provider, account); }
+
+  /** The account has a subscription that still renews (`false`: cancelled, or none). */
+  subscribe(account: string, renews = true): void { if (renews) this.subscribed.add(account); else this.subscribed.delete(account); }
+
+  /** Whether `DELETE /v1/account` erased that account. */
+  deleted(account: string): boolean { return this.deletedAccounts.has(account); }
 
   /** What `GET /v1/providers` answers: the sign-ins this service is set up for. */
   offer(providers: SignInProvider[], device: SignInProvider[]): void { this.offered = { providers, device }; }
@@ -184,10 +195,11 @@ export class FakeAccountService {
 
   revokeToken(token: string): void { this.tokens.delete(token); }
 
-  private grant(account: string, provider: SignInProvider, family?: string) {
+  private grant(account: string, provider: SignInProvider, family?: string, device = false) {
     if (family === undefined) {
       family = randomHex(16);
       this.signedInAt.set(family, this.now());
+      if (device) this.deviceFamilies.add(family);
     }
     const access = randomHex(32);
     const refresh = randomHex(32);
@@ -279,10 +291,27 @@ export class FakeAccountService {
         if (entry.account === null) return problem(400, "authorization_pending", "Waiting for the sign-in at the provider");
         this.deviceSignIns.delete(body.device_code as string);
         this.addIdentity(entry.account, entry.provider);
-        return this.grant(entry.account, entry.provider);
+        return this.grant(entry.account, entry.provider, undefined, true);
       }
       default: return problem(400, "unsupported_grant_type", "Use authorization_code, refresh_token or apple_id_token");
     }
+  }
+
+  /** Everything kept under `account` goes, at once: the provider that signed in to it then signs in to none. */
+  private erase(account: string): void {
+    for (const held of [...this.tokens.values()]) if (held.account === account) this.revokeFamily(held.family);
+    for (const [token, refresh] of this.refreshTokens) if (refresh.account === account) { this.revokedFamilies.add(refresh.family); this.refreshTokens.delete(token); }
+    for (const [provider, signsInTo] of this.signIns) if (signsInTo === account) this.signIns.delete(provider);
+    for (const [family, push] of this.pushes) if (push.account === account) this.pushes.delete(family);
+    for (const [token, link] of this.linkTokens) if (link.account === account) this.linkTokens.delete(token);
+    for (const [code, held] of this.codes) if (held.account === account) this.codes.delete(code);
+    for (const key of [...this.mailboxes.keys()]) if (key.endsWith(`\0${account}`)) this.mailboxes.delete(key);
+    for (const key of [...this.counters.keys()]) if (key.endsWith(`:${account}`)) this.counters.delete(key);
+    for (let index = this.admissionList.length - 1; index >= 0; index--) if (this.admissionList[index]?.account === account) this.admissionList.splice(index, 1);
+    this.identityList.delete(account);
+    this.directories.delete(account);
+    this.accountLimits.delete(account);
+    this.deletedAccounts.add(account);
   }
 
   private revokeFamily(family: string): void {
@@ -391,6 +420,14 @@ export class FakeAccountService {
     const recent = this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) <= REAUTH_MS;
     if ((path === "/v1/identities/link" && request.method === "POST") || (path.startsWith("/v1/identities/") && request.method === "DELETE")) {
       if (!recent) return problem(403, "reauth_required", "Sign in again first");
+    }
+    if (path === "/v1/account" && request.method === "DELETE") {
+      // a device code can be typed for someone else's PC: its sign-in must not end the account
+      if (this.deviceFamilies.has(session.family)) return problem(403, "web_sign_in_required", "Sign in on this device first");
+      if (!recent) return problem(403, "reauth_required", "Sign in again first");
+      if (this.subscribed.has(account)) return problem(409, "subscription_active", "Cancel the subscription in the billing portal first");
+      this.erase(account);
+      return new Response(null, { status: 204 });
     }
     if (path === "/v1/identities/link" && request.method === "POST") {
       const body = await request.json() as { provider?: unknown };
