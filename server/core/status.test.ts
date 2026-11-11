@@ -193,6 +193,9 @@ describe("native OpenCode ownership verified during a snapshot", () => {
   });
 });
 
+const realStoppedAgentJob = conversation.stoppedAgentJob;
+let procs = 0;
+
 describe("native OpenCode ownership without a status event", () => {
   it.each([
     { label: "herdr's label changes", left: { agent: null, agent_status: "idle" } },
@@ -312,6 +315,80 @@ describe("native OpenCode ownership without a status event", () => {
     }
   });
 
+  it.each([
+    { case: "the user resumes it with fg while its job is looked for", fg: true, kept: true },
+    { case: "another OpenCode stopped in the same shell is all that is left", fg: false, kept: false },
+  ])("decides a verified pane with the shell alone in front by its own OpenCode when $case", async ({ fg, kept }) => {
+    // Given a pane verified as OpenCode v2 running as pid 41002, tracked by the real collector.
+    jest.useFakeTimers();
+    const h = hub();
+    closeOpenCodeNative();
+    const pane: HerdrPane = { ...claude, ...opencode("ses_parent"), agent_status: "unknown", focused: false, revision: 0, terminal_id: "native-front" };
+    const lookup = spyOn(service, "openCodeService").mockResolvedValue({
+      version: "2.0.32", config: { baseUrl: "http://127.0.0.1:1", port: 1, pid: process.pid, password: "fixture" },
+    });
+    const session = spyOn(service, "openCodeHasSession").mockResolvedValue(true);
+    const roots = spyOn(conversation, "paneProcessRoots").mockResolvedValue({ omo: null, environ: null, pid: 41002, cwd: null });
+    let closed = false;
+    const events = spyOn(service, "subscribeOpenCodeEvents").mockImplementation(() => ({ close() { closed = true; } }));
+    h.herdrSays(pane);
+    let reconciled = Promise.withResolvers<void>();
+    const collector = originalCollector({
+      onBaseline: handlers.onBaseline,
+      onReconciled: (panes) => { handlers.onReconciled(panes); reconciled.resolve(); },
+      onStatus: handlers.onStatus,
+      onPaneEnded: handlers.onPaneEnded,
+      onStructureChange() {},
+    }, {
+      snapshot: collectorSnapshot,
+      subscribe: (_subs, callbacks) => { queueMicrotask(() => callbacks.onStarted?.()); return { close() {} }; },
+    });
+    const untrack = trackVerifiedOpenCodePanes(collector.trackPane, collector.refresh);
+    // /proc as Linux lays it out: the shell 41000 holds another OpenCode, 41001, as a stopped job
+    const proc = join(root, `proc-${procs++}`);
+    for (const [pid, children] of [[41000, [41001]], [41001, []]] as const) {
+      mkdirSync(join(proc, String(pid), "task", String(pid)), { recursive: true });
+      writeFileSync(join(proc, String(pid), "task", String(pid), "children"), children.map((id) => `${id} `).join(""));
+    }
+    writeFileSync(join(proc, "41001", "stat"), "41001 (opencode) T 41000 41001 41000 34816 41000 4194304");
+    writeFileSync(join(proc, "41001", "cmdline"), "/usr/bin/opencode\0");
+    let resumed = false;
+    const stopped = spyOn(conversation, "stoppedAgentJob").mockImplementation(async (shellPid, agent, options) => {
+      if (fg) { resumed = true; return false; }
+      return realStoppedAgentJob(shellPid, agent, { ...options, proc });
+    });
+    const shellAlone = { pane_id: pane.pane_id, shell_pid: 41000, foreground_process_group_id: 41000, foreground_processes: [{ pid: 41000, name: "bash", argv: ["/bin/bash"] }] };
+    const inFront = { pane_id: pane.pane_id, shell_pid: 41000, foreground_process_group_id: 41002, foreground_processes: [{ pid: 41002, name: "opencode", argv: ["/usr/bin/opencode"] }] };
+    let info: { mockRestore(): void } | undefined;
+    try {
+      await collector.ready;
+      reconciled = Promise.withResolvers<void>();
+      expect(await openCodePaneService(pane)).not.toBeNull();
+      await reconciled.promise;
+      // When herdr keeps the label and names the shell alone in front: OpenCode stopped with Ctrl+Z and
+      // resumed with fg right after herdr's answer, or it exited while another OpenCode stays stopped.
+      h.herdrSays(pane);
+      info = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => resumed ? inFront : shellAlone);
+      reconciled = Promise.withResolvers<void>();
+      jest.advanceTimersByTime(PANE_VERIFIED_MS);
+      await reconciled.promise;
+      // Then only the pane's own OpenCode, back in front or stopped, keeps its hold on the stream.
+      expect(openCodeNativeState()).toEqual(kept ? { stream: true, panes: [pane.pane_id] } : { stream: false, panes: [] });
+      expect(closed).toBe(!kept);
+    } finally {
+      untrack();
+      collector.stop();
+      closeOpenCodeNative();
+      jest.useRealTimers();
+      stopped.mockRestore();
+      info?.mockRestore();
+      events.mockRestore();
+      roots.mockRestore();
+      session.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+
   it("ends a verified pane gone from herdr's snapshot while each read outlasts the recheck", async () => {
     // Given a pane verified as OpenCode v2 and tracked by the real collector, on a host where every snapshot
     // takes longer than PANE_VERIFIED_MS to answer.
@@ -329,6 +406,11 @@ describe("native OpenCode ownership without a status event", () => {
     let gone = false;
     let slow = false;
     let slowReads = 0;
+    // herdr names OpenCode in front of the pane to every process read (the verification's, omo's): no call here fails
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => {
+      if (method !== "pane.process_info") throw new Error(`herdr is not stood in for ${method}`);
+      return { process_info: { foreground_processes: [{ pid: 41001, name: "opencode", argv: ["/usr/bin/opencode"] }] } } as never;
+    });
     /** the slow reads in the order they were asked, each answered when the test says */
     const asked = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
     const answers: (() => void)[] = [];
@@ -386,6 +468,7 @@ describe("native OpenCode ownership without a status event", () => {
       closeOpenCodeNative();
       jest.useRealTimers();
       events.mockRestore();
+      rpc.mockRestore();
       session.mockRestore();
       lookup.mockRestore();
     }

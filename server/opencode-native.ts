@@ -49,7 +49,7 @@ export const PANE_VERIFIED_MS = 5_000;
  * service with its session there. A pane's end, its agent changing, or a verification that now fails
  * releases it; the stream closes when no verified pane uses its service.
  */
-const verifiedPanes = new Map<string, { sessionID: string; key: string; until: number; generation: number }>();
+const verifiedPanes = new Map<string, { sessionID: string; key: string; until: number; generation: number; pid: number | null }>();
 let verificationGeneration = 0;
 /** A collector snapshot can release only ownership verified before its read began. */
 export function openCodeVerificationCheckpoint(): number { return verificationGeneration; }
@@ -256,6 +256,11 @@ export function openCodeNativeState(): { stream: boolean; panes: string[] } {
   return { stream: stream !== null, panes: [...verifiedPanes.keys()] };
 }
 
+/** The OpenCode process a verified pane was last verified with, as herdr named it in front; null when unknown. */
+export function openCodePanePid(paneId: string): number | null {
+  return verifiedPanes.get(paneId)?.pid ?? null;
+}
+
 /** The verified service a pane's exact session lives in, or null (scan rows and screen paths stay). */
 export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent_session"> & { pane_id?: string }, signal?: AbortSignal, stateDir?: string): Promise<{ service: OpenCodeService; sessionID: string } | null> {
   const label = resolveAgent(pane).agent;
@@ -272,8 +277,11 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   let held: boolean;
   let service: OpenCodeService | null;
   let sessionID: string;
+  let pid: number | null = null;
   try {
-    const roots = paneId ? typingRoots(await paneProcessRoots(paneId, label)) : null;
+    const found = paneId ? await paneProcessRoots(paneId, label) : null;
+    pid = found?.pid ?? null;
+    const roots = found ? typingRoots(found) : null;
     if (verification.cancelled || resolveAgent(pane, roots).agent !== "opencode") return null;
     const id = opencodeSessionId(pane);
     if (!id) return null;
@@ -297,7 +305,7 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   // a verified OpenCode v2 pane keeps its service's event stream open, so a later send's events are not missed
   const live = ensureStream(service!);
   verifiedPanes.delete(paneId);
-  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration });
+  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid });
   // a pane closed without an exit frame ends only if its collector tracks it
   for (const [track, { handed }] of paneTrackers) handOver(track, handed, paneId);
   scheduleRecheck();

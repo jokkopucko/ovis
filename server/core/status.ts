@@ -22,7 +22,7 @@ import { coreConnection } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import { Finishes, herdrLifetime } from "../finishes.ts";
 import { claudePanePid, claudePaneSession, forgetPaneTranscriptState, stoppedAgentJob } from "../conversation.ts";
-import { openCodeNativeState, openCodeVerificationCheckpoint, releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
+import { openCodeNativeState, openCodePanePid, openCodeVerificationCheckpoint, releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import { opencodeDatabasePath } from "../opencode.ts";
 import { OpencodeSubagentStatus } from "../opencode-subagents.ts";
 import { openCodeServiceOptions, readOpenCodeService } from "../opencode-service.ts";
@@ -746,16 +746,22 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // Windows reports only the shell even while its agent runs; it supplies no foreground proof.
     if (process.platform !== "win32") {
       const verified = new Set(openCodeNativeState().panes);
+      // `exec opencode` keeps the shell's pid, but not its process identity.
+      const shell = /(?:^|\/)-?(?:sh|bash|dash|zsh|fish|ksh|mksh|csh|tcsh|ash|nu)$/u;
+      const shellAlone = (info: Awaited<ReturnType<typeof paneProcessInfo>>): info is NonNullable<typeof info> & { shell_pid: number } => {
+        const front = info?.foreground_processes?.[0];
+        return info?.shell_pid != null && info.foreground_processes?.length === 1 && front?.pid === info.shell_pid
+          && shell.test(front.name) && shell.test(front.argv?.[0] ?? front.argv0 ?? front.name);
+      };
       await Promise.all(snapshot.panes.map(async (pane) => {
         if (!verified.has(pane.pane_id) || (pane.agent ? pane.agent !== "opencode" : pane.agent_status !== "unknown")) return;
         const info = await paneProcessInfo(pane.pane_id).catch(() => undefined);
-        const front = info?.foreground_processes?.[0];
-        // `exec opencode` keeps the shell's pid, but not its process identity.
-        const shell = /(?:^|\/)-?(?:sh|bash|dash|zsh|fish|ksh|mksh|csh|tcsh|ash|nu)$/u;
-        if (info?.shell_pid != null && info.foreground_processes?.length === 1 && front?.pid === info.shell_pid
-          && shell.test(front.name) && shell.test(front.argv?.[0] ?? front.argv0 ?? front.name)
-          // OpenCode stopped with Ctrl+Z leaves the shell alone in front too, and herdr's label stays: it has not left
-          && !(await stoppedAgentJob(info.shell_pid, "opencode"))) shellSnapshots.add(pane);
+        // OpenCode stopped with Ctrl+Z leaves the shell alone in front too, and herdr's label stays: it has not left.
+        // Only the OpenCode the pane was verified with counts, when known: another one stopped there holds nothing.
+        if (!shellAlone(info) || await stoppedAgentJob(info.shell_pid, "opencode", { pid: openCodePanePid(pane.pane_id) })) return;
+        // an `fg` after herdr's answer finds no stopped job: herdr must still name the shell alone in front
+        const again = await paneProcessInfo(pane.pane_id).catch(() => undefined);
+        if (shellAlone(again) && again.shell_pid === info.shell_pid) shellSnapshots.add(pane);
       }));
     }
     return snapshot;

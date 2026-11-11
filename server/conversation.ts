@@ -1670,25 +1670,45 @@ export function agentProcesses<T extends { argv?: readonly string[] | null; argv
   return [...native, ...interpreted.filter((entry) => !native.includes(entry))];
 }
 
+/** How far stoppedAgentJob looks below the shell: a launcher (npx, a wrapper script) is a few levels deep at most. */
+const JOB_DEPTH = 6;
+const JOB_PROCESSES = 256;
+
 /**
- * Whether the shell `shellPid` holds `agent` as a stopped job (Ctrl+Z): a child of the shell in state T. herdr
+ * Whether the shell `shellPid` holds `agent` as a stopped job (Ctrl+Z): a process below the shell in state T. herdr
  * names only the foreground process group, the shell's own while a job is stopped, as after the agent's exit
- * (live-checked, herdr 0.9.5), so this reads Linux's /proc: the children of each of the shell's threads, and
- * each child's state and command line. Without /proc (macOS), or a process gone meanwhile, nothing is found.
+ * (live-checked, herdr 0.9.5), so this reads Linux's /proc: the children of each thread of the shell and of each
+ * process below it (JOB_DEPTH levels, JOB_PROCESSES processes, each once), and each one's state and command line.
+ * Ctrl+Z stops the job's whole process group, so the agent itself is stopped even when a launcher (`npx opencode`,
+ * `sh -c 'opencode; …'`) is the shell's child. `pid`, when known, is the agent process the pane was verified with:
+ * only it counts, not another stopped copy of the agent. Without /proc (macOS), or a process gone meanwhile,
+ * nothing is found.
  */
-export async function stoppedAgentJob(shellPid: number, agent: string, proc = "/proc"): Promise<boolean> {
-  const threads = await readdir(`${proc}/${shellPid}/task`).catch(() => []);
-  const lists = await Promise.all(threads.map((thread) => readFile(`${proc}/${shellPid}/task/${thread}/children`, "utf8").catch(() => "")));
-  for (const pid of new Set(lists.join(" ").split(/\s+/u).filter(Boolean))) {
-    const stat = await readFile(`${proc}/${pid}/stat`, "utf8").catch(() => "");
-    // `pid (comm) state …`: the command name may itself hold ") ", the state follows its last one
-    const open = stat.indexOf("(");
-    const close = stat.lastIndexOf(")");
-    if (open < 0 || close < open || stat[close + 2] !== "T") continue;
-    const name = stat.slice(open + 1, close);
-    const argv = (await readFile(`${proc}/${pid}/cmdline`, "utf8").catch(() => "")).split("\0").filter(Boolean);
-    // its process name too, which herdr labels the pane by: a script named after the agent runs under its shell
-    if (programName(name) === agent || agentProcesses([{ argv, name }], agent).length > 0) return true;
+export async function stoppedAgentJob(shellPid: number, agent: string, { pid = null, proc = "/proc" }: { pid?: number | null; proc?: string } = {}): Promise<boolean> {
+  const seen = new Set([String(shellPid)]);
+  let level = [String(shellPid)];
+  for (let depth = 0; depth < JOB_DEPTH && level.length > 0; depth++) {
+    const next: string[] = [];
+    for (const parent of level) {
+      const threads = await readdir(`${proc}/${parent}/task`).catch(() => []);
+      const lists = await Promise.all(threads.map((thread) => readFile(`${proc}/${parent}/task/${thread}/children`, "utf8").catch(() => "")));
+      for (const child of lists.join(" ").split(/\s+/u).filter(Boolean)) {
+        if (seen.has(child) || seen.size > JOB_PROCESSES) continue;
+        seen.add(child);
+        next.push(child);
+        if (pid !== null && child !== String(pid)) continue;
+        const stat = await readFile(`${proc}/${child}/stat`, "utf8").catch(() => "");
+        // `pid (comm) state …`: the command name may itself hold ") ", the state follows its last one
+        const open = stat.indexOf("(");
+        const close = stat.lastIndexOf(")");
+        if (open < 0 || close < open || stat[close + 2] !== "T") continue;
+        const name = stat.slice(open + 1, close);
+        const argv = (await readFile(`${proc}/${child}/cmdline`, "utf8").catch(() => "")).split("\0").filter(Boolean);
+        // its process name too, which herdr labels the pane by: a script named after the agent runs under its shell
+        if (programName(name) === agent || agentProcesses([{ argv, name }], agent).length > 0) return true;
+      }
+    }
+    level = next;
   }
   return false;
 }

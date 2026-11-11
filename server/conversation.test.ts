@@ -100,6 +100,22 @@ describe("an agent the shell stopped as a job", () => {
   shell(42000, { "42000": [41002, 41003, 41005] });
   shell(43000, { "43000": [], "43001": [41004] });
   shell(45000, { "45000": [41006] });
+  // a wrapper the shell started, which runs the agent as its own child: the job's whole group is stopped
+  child(46001, "sh", "T", ["sh", "-c", "opencode; echo done"]);
+  child(46002, "opencode", "T", ["/usr/bin/opencode"]);
+  shell(46000, { "46000": [46001] });
+  shell(46001, { "46001": [46002] });
+  // npx: node runs npm's launcher, whose child runs OpenCode's package, whose child is the native binary
+  child(47001, "npm exec opencode", "T", ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js", "opencode"]);
+  child(47002, "node", "T", ["node", "/home/u/.npm/_npx/1/node_modules/.bin/opencode"]);
+  child(47003, "opencode", "T", ["/home/u/.npm/_npx/1/node_modules/opencode-linux-x64/bin/opencode"]);
+  shell(47000, { "47000": [47001] });
+  shell(47001, { "47001": [47002] });
+  shell(47002, { "47002": [47003] });
+  // children lists that loop back to the shell (read while pids were reused): the walk still ends
+  child(48001, "sh", "T", ["sh"]);
+  shell(48000, { "48000": [48001] });
+  shell(48001, { "48001": [48000, 48001] });
   afterAll(() => rmSync(proc, { recursive: true, force: true }));
 
   it.each([
@@ -108,9 +124,20 @@ describe("an agent the shell stopped as a job", () => {
     { shell: 43000, found: true, case: "another thread started it, under an interpreter" },
     { shell: 44000, found: false, case: "the shell is gone" },
     { shell: 45000, found: true, case: "a script named after it runs under a shell" },
+    { shell: 46000, found: true, case: "a wrapper shell runs it as its child" },
+    { shell: 47000, found: true, case: "npx runs it a few processes down" },
+    { shell: 48000, found: false, case: "the children lists loop back to the shell" },
   ])("finds the agent as a stopped job of the shell when $case", async ({ shell: pid, found }) => {
     // When / Then
-    expect(await stoppedAgentJob(pid, "opencode", proc)).toBe(found);
+    expect(await stoppedAgentJob(pid, "opencode", { proc })).toBe(found);
+  });
+
+  it.each([
+    { pid: 41001, found: true, case: "the stopped OpenCode is that process" },
+    { pid: 41009, found: false, case: "the stopped OpenCode is another one than that process" },
+  ])("counts only the pane's own OpenCode process once it is known, when $case", async ({ pid, found }) => {
+    // When / Then
+    expect(await stoppedAgentJob(41000, "opencode", { proc, pid })).toBe(found);
   });
 });
 
