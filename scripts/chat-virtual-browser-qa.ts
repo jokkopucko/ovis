@@ -718,6 +718,15 @@ try {
     assert.ok(await page.locator(".chat-view").evaluate((node) => node.scrollWidth <= node.clientWidth), "production terminal hierarchy has no horizontal overflow");
 
     await page.evaluate(() => window.chatQa.page(-1));
+    // The reader's place is read once the list has drawn the rows the PageUp uncovered: on a loaded
+    // runner it draws them a frame or more after the scroll, and until then the view's top is blank.
+    // Those rows come in at their estimated heights and the list holds them, so the first row drawn
+    // before them is not a place it keeps.
+    await page.waitForFunction(() => {
+      const view = document.querySelector<HTMLElement>(".chat-view")!;
+      const top = view.getBoundingClientRect().top;
+      return [...view.querySelectorAll<HTMLElement>("[data-chat-row]")].some((row) => { const box = row.getBoundingClientRect(); return box.top <= top + 1 && box.bottom > top; });
+    });
     const away = await metrics(page);
     assert.ok(away.bottom > 1 && away.anchor);
     revision = 101;
