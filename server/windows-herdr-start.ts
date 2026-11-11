@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { realpathSync } from "node:fs";
 
 export const WAITING_FOR_WINDOWS_LOGIN = "Waiting for Windows sign-in on this PC.";
 
@@ -90,8 +91,10 @@ try {
 
 /** A launch-only task escapes the bridge job without taking herdr into Session 0. */
 export async function startInteractiveWindowsHerdr(exe: string, args: string[], log: string): Promise<"started" | "waiting_login"> {
+  // PowerShell's .NET writes can reject the legacy registry junction as an untrusted mount point.
+  const directory = realpathSync(dirname(log));
   const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(interactiveScript, "utf16le").toString("base64")], { stdin: "pipe", stdout: "pipe", stderr: "pipe", windowsHide: true });
-  child.stdin.write(JSON.stringify({ exe, args, log, directory: dirname(log), cwd: homedir(), env: process.env, bun: process.execPath, launcher: desktopLauncher }));
+  child.stdin.write(JSON.stringify({ exe, args, log, directory, cwd: homedir(), env: process.env, bun: process.execPath, launcher: desktopLauncher }));
   child.stdin.end();
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   if (code !== 0) throw new Error(`herdr could not be started in the Windows desktop session: ${stderr.trim()}`);

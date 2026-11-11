@@ -252,10 +252,16 @@ export function windowsBridgeFiles(session?: string): { log: string; launcher: s
 }
 
 const WINDOWS_BUNDLE = `${WINDOWS_BUNDLE_BASE}\\remote-v${REMOTE_BUNDLE_VERSION}`;
-const WINDOWS_REGISTRY = "$env:USERPROFILE\\.config\\herdr-web-ui\\bridges";
+// Windows PowerShell's .NET file APIs can reject the migration junction as an untrusted mount point.
+const WINDOWS_REGISTRY = `$(
+  $registryRoot = "$env:USERPROFILE\\.config\\herdr-web-ui"
+  $registryItem = Get-Item -LiteralPath $registryRoot -Force -ErrorAction SilentlyContinue
+  if ($registryItem.LinkType -eq 'Junction') { $registryRoot = @($registryItem.Target)[0] }
+  Join-Path $registryRoot 'bridges'
+)`;
 // a script's exit code follows its last statement: a listing of a registry not there yet must
 // not count as a failure, so the directory is checked first
-const WINDOWS_DESCRIPTORS = `if (Test-Path ${WINDOWS_REGISTRY}) { Get-ChildItem ${WINDOWS_REGISTRY} -Filter *.json | ForEach-Object { Write-Output (Get-Content $_.FullName -Raw) } }; Write-Output ''`;
+const WINDOWS_DESCRIPTORS = `if (Test-Path -LiteralPath "${WINDOWS_REGISTRY}") { Get-ChildItem -LiteralPath "${WINDOWS_REGISTRY}" -Filter *.json | ForEach-Object { Write-Output (Get-Content -LiteralPath $_.FullName -Raw) } }; Write-Output ''`;
 
 export const windowsHost: RemoteHost = {
   kind: "windows",
@@ -382,7 +388,7 @@ export const windowsHost: RemoteHost = {
   stop: async (ssh, pid) => {
     await ssh.runPowerShell([
       `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`,
-      `if (Test-Path ${WINDOWS_REGISTRY}) { Get-ChildItem ${WINDOWS_REGISTRY} -Filter *.json | Where-Object { try { (Get-Content $_.FullName -Raw | ConvertFrom-Json).pid -eq ${pid} } catch { $false } } | Remove-Item -Force }`,
+      `if (Test-Path -LiteralPath "${WINDOWS_REGISTRY}") { Get-ChildItem -LiteralPath "${WINDOWS_REGISTRY}" -Filter *.json | ForEach-Object { try { if ((Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json).pid -eq ${pid}) { Remove-Item -LiteralPath $_.FullName -Force } } catch {} } }`,
       "Write-Output ''",
     ].join("\n"));
   },
@@ -399,6 +405,7 @@ export const windowsHost: RemoteHost = {
       `set "OVIS_WINDOWS_HEADLESS_START=${headless ? "1" : ""}"`,
       `set "OVIS_HERDR_BIN=${cmdValue(herdrPath)}"`,
       `set "HERDR_WEB_HERDR_BIN=${cmdValue(herdrPath)}"`,
+      `cd /d "${cmdValue(inspection.home)}" || exit /b 1`,
       `"${cmdValue(`${inspection.runtimeDir}\\bin\\bun.exe`)}" "${cmdValue(`${inspection.runtimeDir}\\server\\remote-entry.ts`)}" >> "${cmdValue(`${inspection.registryDir}\\${files.log}`)}" 2>&1`,
     ];
     await ssh.runPowerShell([
@@ -410,7 +417,8 @@ export const windowsHost: RemoteHost = {
       // clears it only once it has loaded, after the manager's first status read
       `Remove-Item -LiteralPath "$dir\\${files.status}" -Force -ErrorAction SilentlyContinue`,
       // not Start-Process: that child belongs to the SSH session's job and dies with it
-      `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "cmd.exe /d /c \`"$dir\\${files.launcher}\`""; CurrentDirectory = $env:USERPROFILE }`,
+      // Keep the resolved path out of cmd's command line: even quoted %NAME% would expand.
+      `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${psQuote(`cmd.exe /d /c ".\\${files.launcher}"`)}; CurrentDirectory = $dir }`,
       "if ($r.ReturnValue -ne 0) { throw \"Could not start the bridge (Win32_Process.Create returned $($r.ReturnValue))\" }",
     ].join("\n"));
   },
