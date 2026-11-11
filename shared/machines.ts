@@ -266,6 +266,12 @@ export interface HerdrCoreLayout {
  * no name to change, and a helper whose parent is shown cannot go there (server/herdr-core/adapter.ts).
  */
 export const HC_OTHER_WORKSPACE_ID = "hc-other";
+/**
+ * A runtime a server can be asked to serve: herdr's TUI server, herdr-core (the Herdr app's core), or
+ * `alt-runtime`. `alt-runtime` is never picked from what the PC has, only by OVIS_RUNTIME or a choice
+ * saved from Settings, and a saved choice of it that cannot start falls back to herdr.
+ */
+export type RuntimeName = "herdr" | "herdr-core" | "alt-runtime";
 /** where this server's runtime came from: OVIS_RUNTIME, the choice saved from Settings, or what the PC has */
 export type RuntimeSource = "env" | "saved" | "detected";
 /** why Settings cannot switch the runtime: OVIS_RUNTIME decides, the server was not started by Ovis's launcher, or herdr-core is not served on this OS */
@@ -273,16 +279,17 @@ export type RuntimeLock = "env" | "unmanaged" | "platform";
 /**
  * Which runtime this server serves and what Settings may switch it to (GET /api/health, a driving
  * owner only). `switch_to`: the other runtime when this PC has it and nothing locks the choice.
- * `fallback`: the saved choice was herdr-core, but no herdr-core answered, so herdr is served.
+ * `fallback`: the saved choice was herdr-core, but no herdr-core answered (`no_herdr_core`), or it was
+ * alt-runtime, which could not start (`no_alt_runtime`), so herdr is served.
  */
 export interface HerdrRuntimeFacts {
-  serving: "herdr" | "herdr-core";
+  serving: RuntimeName;
   source: RuntimeSource;
   tui: { installed: boolean; running: boolean };
   app_installed: boolean;
-  switch_to: "herdr" | "herdr-core" | null;
+  switch_to: RuntimeName | null;
   locked: RuntimeLock | null;
-  fallback?: "no_herdr_core";
+  fallback?: "no_herdr_core" | "no_alt_runtime";
 }
 /**
  * What this PC has of herdr-core, the Herdr app's runtime, whichever runtime the server serves
@@ -448,7 +455,7 @@ export interface RemotePairingsEvent { type: "remote-pairings"; pairings: Remote
  * serves. `accepted`: its launcher took it as its own past the startup check (absent when no launcher
  * runs it). All three absent from older servers.
  */
-export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary; web_ui?: { boot_id: string }; runtime?: "herdr" | "herdr-core"; accepted?: boolean; /** a driving owner only, as on the whole answer */ herdr_runtime?: HerdrRuntimeFacts }
+export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary; web_ui?: { boot_id: string }; runtime?: RuntimeName; accepted?: boolean; /** a driving owner only, as on the whole answer */ herdr_runtime?: HerdrRuntimeFacts }
 export interface BridgeIdentity {
   /** Only on an authenticated /api/bridge?discover=herdr request. */
   found_herdr_sessions?: FoundHerdrSession[];

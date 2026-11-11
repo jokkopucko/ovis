@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findHc } from "./discovery.ts";
-import { coreConnection, HC_MOVED, hcBin, hcRecovery, startRuntime } from "./runtime.ts";
+import { coreConnection, HC_MOVED, hcBin, hcRecovery, NoAltRuntimeError, startRuntime } from "./runtime.ts";
 import { capabilities, HERDR, HERDR_CORE } from "../runtime/capabilities.ts";
 import { socketAddress } from "../herdr/client.ts";
 
@@ -194,6 +194,19 @@ it("rejects herdr-core on an OS it is not served on before creating state", asyn
   expect(existsSync(state)).toBe(false);
   // a start that failed serves nothing: the gates still read herdr
   expect(capabilities()).toBe(HERDR);
+});
+
+it("refuses alt-runtime with its own error, and never serves herdr in its place", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-alt-runtime-"));
+  cleanup = () => rmSync(dir, { recursive: true, force: true });
+  const state = join(dir, "state");
+  process.env["OVIS_RUNTIME"] = "alt-runtime";
+  process.env["HERDR_SOCKET"] = "default-socket";
+  // the error a saved choice falls back to herdr from (server/index.ts), not a start that ran and failed
+  await expect(startRuntime(state, standIn)).rejects.toBeInstanceOf(NoAltRuntimeError);
+  expect(existsSync(state)).toBe(false);
+  expect(capabilities()).toBe(HERDR);
+  expect(process.env["HERDR_SOCKET"]).toBe("default-socket");
 });
 
 it("names herdr-core as the runtime served while it runs, and herdr again once it stops", async () => {

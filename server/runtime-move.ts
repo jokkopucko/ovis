@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import type { PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, SessionSnapshot } from "../shared/herdr-api.generated.ts";
-import type { HerdrRuntimeFacts } from "../shared/machines.ts";
+import type { HerdrRuntimeFacts, RuntimeName } from "../shared/machines.ts";
 import type { MoveNode, MovePane, MovePlan, MoveUnavailable, MoveVerdict, MoveWorkspace } from "../shared/runtime-move.ts";
 import type { SessionHistoryAgent } from "../shared/session-history.ts";
 import { isSessionHistoryAgent, listSessions, type SessionHistoryOptions } from "./session-history.ts";
@@ -148,7 +148,7 @@ export async function planMove(snapshot: SessionSnapshot, facts: MoveFacts): Pro
 }
 
 /** Why this server offers no move to herdr-core, or null when it does. */
-export function moveUnavailable(serving: "herdr" | "herdr-core", facts: HerdrRuntimeFacts | undefined, platform: NodeJS.Platform = process.platform): MoveUnavailable | null {
+export function moveUnavailable(serving: RuntimeName, facts: HerdrRuntimeFacts | undefined, platform: NodeJS.Platform = process.platform): MoveUnavailable | null {
   if (serving !== "herdr") return "not_herdr";
   // Windows switches to herdr-core in Settings, but the move ends panes through Unix process groups
   // and its lock refuses Windows (runtime-move-lock.ts): as locked there as before Settings switched

@@ -28,7 +28,7 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
-import { coreConnection, coreSeenMarker, hcBin, hcMachine, NoHerdrCoreError, runtime, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
+import { coreConnection, coreSeenMarker, hcBin, hcMachine, NoAltRuntimeError, NoHerdrCoreError, runtime, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
 import { capabilities } from "./runtime/capabilities.ts";
 import { chooseRuntime, runtimeService, type RuntimeChoice, type RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { moveService, type HcInstaller } from "./runtime-move-service.ts";
@@ -617,7 +617,7 @@ if (import.meta.main) {
   const startEnv = { ...process.env };
   let herdrCore: Awaited<ReturnType<typeof startRuntime>>;
   let choice: RuntimeChoice;
-  let fallback: "no_herdr_core" | undefined;
+  let fallback: "no_herdr_core" | "no_alt_runtime" | undefined;
   try {
     choice = await chooseRuntime({ stateDir, port: Number(startEnv["PORT"] || DEFAULT_PORT), env: startEnv });
     setRuntime(choice.runtime);
@@ -625,13 +625,15 @@ if (import.meta.main) {
     try {
       herdrCore = await startRuntime(stateDir);
     } catch (err) {
-      // a choice saved from Settings whose core is gone falls back to herdr, where Settings can switch again;
-      // OVIS_RUNTIME says what to serve, and its failure stays an error
-      // only a missing hc: any other failure (a state folder, another Ovis) is the launcher's to roll back
-      if (choice.source !== "saved" || choice.runtime !== "herdr-core" || !(err instanceof NoHerdrCoreError)) throw err;
-      console.error(`The herdr-core chosen in Settings cannot start (${err instanceof Error ? err.message : String(err)}); serving herdr.`);
+      // a choice saved from Settings whose core is gone, or an alt-runtime this Ovis cannot start, falls back to
+      // herdr, where Settings can switch again; OVIS_RUNTIME says what to serve, and its failure stays an error
+      // only a missing runtime: any other failure (a state folder, another Ovis) is the launcher's to roll back
+      const missing = choice.runtime === "herdr-core" && err instanceof NoHerdrCoreError ? "no_herdr_core"
+        : choice.runtime === "alt-runtime" && err instanceof NoAltRuntimeError ? "no_alt_runtime" : null;
+      if (choice.source !== "saved" || missing === null) throw err;
+      console.error(`The ${choice.runtime} chosen in Settings cannot start (${err instanceof Error ? err.message : String(err)}); serving herdr.`);
       choice = { ...choice, runtime: "herdr" };
-      fallback = "no_herdr_core";
+      fallback = missing;
       setRuntime("herdr");
       herdrCore = null;
     }

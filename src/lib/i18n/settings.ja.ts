@@ -300,6 +300,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Restarting Ovis on the Herdr app…": "Herdr アプリで Ovis を再起動しています…",
   "Restarting Ovis on herdr TUI…": "herdr TUI で Ovis を再起動しています…",
   "The Herdr app was chosen here, but no herdr-core answered, so herdr TUI is shown.": "ここで Herdr アプリが選ばれていますが、応答する herdr-core がないため herdr TUI を表示しています。",
+  "alt-runtime was chosen here, but this Ovis cannot start it, so herdr TUI is shown.": "ここで alt-runtime が選ばれていますが、この Ovis はまだ起動できないため herdr TUI を表示しています。",
   "OVIS_RUNTIME in Ovis's environment decides which terminals this PC shows; change it there to switch.": "この PC で表示するターミナルは Ovis の起動環境の OVIS_RUNTIME が決めます。切り替えるにはそこを変更してください。",
   "Show the Herdr app's terminals?": "Herdr アプリのターミナルを表示しますか？",
   "Show herdr TUI's terminals?": "herdr TUI のターミナルを表示しますか？",

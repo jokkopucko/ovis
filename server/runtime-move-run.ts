@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import type { RuntimeName } from "../shared/machines.ts";
 import type { MoveNode, MovePane, MovePlan, MoveStatus } from "../shared/runtime-move.ts";
 import { writePrivateState } from "./private-state.ts";
 import { EXIT_COMMANDS } from "./runtime-move.ts";
@@ -114,7 +115,7 @@ export function journalStatus(journal: MoveJournal | null): MoveStatus | null {
  * one `committed` before a switch that came up on herdr-core is `done`; one `committed` on a server
  * that serves herdr means the switch never came up: the agents run on herdr-core, said so.
  */
-export function settleJournal(stateDir: string, port: number, serving: "herdr" | "herdr-core"): MoveJournal | null {
+export function settleJournal(stateDir: string, port: number, serving: RuntimeName): MoveJournal | null {
   const journal = readJournal(stateDir, port);
   if (!journal) return null;
   // a finished move seen from herdr again (the person switched back): kept aside, and a new move may go

@@ -7,13 +7,12 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { RuntimeName as Runtime } from "../../shared/machines.ts";
 
 /** the choice's file for the server on `port` */
 export function runtimeFile(port: number): string {
   return `runtime-${port}.json`;
 }
-
-type Runtime = "herdr" | "herdr-core";
 
 export interface SavedRuntime {
   runtime: Runtime;
@@ -31,7 +30,7 @@ export function readSavedRuntime(stateDir: string, port: number): SavedRuntime |
   try { value = JSON.parse(readFileSync(join(stateDir, runtimeFile(port)), "utf8")); } catch { return null; }
   if (value === null || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  const known = (input: unknown): Runtime | null => input === "herdr" || input === "herdr-core" ? input : null;
+  const known = (input: unknown): Runtime | null => input === "herdr" || input === "herdr-core" || input === "alt-runtime" ? input : null;
   const runtime = known(record["runtime"]);
   if (runtime === null) return null;
   return { runtime, previous: known(record["previous"]), ...(typeof record["id"] === "string" ? { id: record["id"] } : {}), ...(record["previous_detected"] === true ? { previous_detected: true } : {}) };

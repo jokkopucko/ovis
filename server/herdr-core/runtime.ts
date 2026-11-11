@@ -8,14 +8,16 @@ import { coreSocket, findHc, type FoundHc } from "./discovery.ts";
 import { adapterAddress } from "./pipe.ts";
 import { opencodeDatabasePath, opencodeSessionsTitled } from "../opencode.ts";
 import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
+import type { RuntimeName } from "../../shared/machines.ts";
 
 /**
  * Which runtime this PC's terminals run on. `OVIS_RUNTIME=herdr-core` serves the terminals of
  * herdr-core (`hc`), the core the Herdr desktop app runs on, in place of herdr's TUI server; unset,
  * or `herdr`, keeps herdr; without it, the choice saved from Settings or what the PC has decides
- * (runtime-choice.ts). Settled once per process: a server does not change runtime while it runs.
+ * (runtime-choice.ts). `alt-runtime` is known, but this Ovis cannot start it yet (startRuntime).
+ * Settled once per process: a server does not change runtime while it runs.
  */
-export type Runtime = "herdr" | "herdr-core";
+export type Runtime = RuntimeName;
 
 /** the runtime the server chose as it started (runtime-choice.ts); unset, OVIS_RUNTIME decides */
 let chosen: Runtime | null = null;
@@ -28,8 +30,8 @@ export function runtime(): Runtime {
   if (chosen !== null) return chosen;
   const value = process.env["OVIS_RUNTIME"];
   if (value === undefined || value === "" || value === "herdr") return "herdr";
-  if (value === "herdr-core") return "herdr-core";
-  throw new Error(`OVIS_RUNTIME=${value} is not a runtime Ovis knows: use herdr (the default) or herdr-core`);
+  if (value === "herdr-core" || value === "alt-runtime") return value;
+  throw new Error(`OVIS_RUNTIME=${value} is not a runtime Ovis knows: use herdr (the default), herdr-core or alt-runtime`);
 }
 
 /** the hc startRuntime found (server/herdr-core/discovery.ts); null before it ran */
@@ -76,6 +78,14 @@ export class NoHerdrCoreError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NoHerdrCoreError";
+  }
+}
+
+/** alt-runtime was chosen, but this Ovis cannot start it: a choice saved in Settings falls back from it as from NoHerdrCoreError. */
+export class NoAltRuntimeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoAltRuntimeError";
   }
 }
 
@@ -133,6 +143,8 @@ export function coreConnection(): HcConnection {
  * where no hc answers as herdr-core's: nothing is started, and nothing else is run as hc.
  */
 export async function startRuntime(stateDir: string, find: (onRefused?: (bin: string, reason: string) => void) => Promise<FoundHc | null> = (onRefused) => findHc(onRefused ? { onRefused } : {})): Promise<HerdrCoreAdapter | null> {
+  // never serve herdr in its place under its name: the server says which runtime it serves
+  if (runtime() === "alt-runtime") throw new NoAltRuntimeError("this Ovis cannot start alt-runtime yet");
   if (runtime() !== "herdr-core") return null;
   const platform = process.platform;
   if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {

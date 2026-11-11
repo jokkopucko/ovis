@@ -7,6 +7,8 @@
  * A server that has not come back by the deadline is reported once (the `lost` state). Each ask is
  * bounded too, so one request that never settles cannot hold the deadline off.
  */
+import type { RuntimeName } from "../../shared/machines.ts";
+
 export interface FollowRestartOptions {
   /** the boot id that answered before the switch: any other one is the restarted server */
   from: string | null;
@@ -44,7 +46,7 @@ export function followRestart(options: FollowRestartOptions): void {
 }
 
 /** The switch the page waits on: which runtime, and whether the server stayed away past the deadline. */
-export type RestartState = { to: "herdr" | "herdr-core"; lost: boolean } | null;
+export type RestartState = { to: RuntimeName; lost: boolean } | null;
 
 let state: RestartState = null;
 const listeners = new Set<() => void>();
@@ -60,7 +62,7 @@ export function subscribeRestart(listener: () => void): () => void {
 }
 
 /** Starts waiting for the server a switch to `to` restarts, for the page's lifetime. */
-export function awaitRestart(to: "herdr" | "herdr-core", options: Omit<FollowRestartOptions, "onLost">): void {
+export function awaitRestart(to: RuntimeName, options: Omit<FollowRestartOptions, "onLost">): void {
   set({ to, lost: false });
   followRestart({
     ...options,

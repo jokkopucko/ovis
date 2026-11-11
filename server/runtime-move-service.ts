@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { HerdrRuntimeFacts } from "../shared/machines.ts";
+import type { HerdrRuntimeFacts, RuntimeName } from "../shared/machines.ts";
 import type { PaneProcessInfo, SessionSnapshot } from "../shared/herdr-api.generated.ts";
 import type { MovePlan, MovePlanResponse, MoveStatus, MoveStopAllOffer } from "../shared/runtime-move.ts";
 import { agentLaunch } from "./agent-launch.ts";
@@ -26,7 +26,7 @@ const FORCE_AFTER_MS = 3_000;
 export interface MoveServiceOptions {
   stateDir: string;
   port: number;
-  serving: () => "herdr" | "herdr-core";
+  serving: () => RuntimeName;
   facts: () => HerdrRuntimeFacts | undefined;
   stores: SessionHistoryOptions;
   holdsPending: (paneId: string) => boolean;

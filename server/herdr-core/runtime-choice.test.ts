@@ -144,6 +144,29 @@ it("takes OVIS_RUNTIME first, then the choice saved in Settings, then the PC's f
   expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
 });
 
+it("takes alt-runtime only from OVIS_RUNTIME or the saved choice, never from the PC's facts", async () => {
+  const { home, state, env } = scratch();
+  // a PC whose facts choose herdr-core: the Herdr app and a verified hc, no herdr TUI
+  mkdirSync(join(home, ".local", "share", "herdr-app"), { recursive: true });
+  const find = async () => core;
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "herdr-core", source: "detected" });
+  expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, OVIS_RUNTIME: "alt-runtime" }, home, platform: "linux", find })).toMatchObject({ runtime: "alt-runtime", source: "env" });
+  saveRuntime(state, 7, { runtime: "alt-runtime", previous: "herdr-core" });
+  expect(readSavedRuntime(state, 7)).toEqual({ runtime: "alt-runtime", previous: "herdr-core" });
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "alt-runtime", source: "saved" });
+});
+
+it("knows alt-runtime as a switch target, and refuses it while this Ovis cannot start it", () => {
+  const { home, state, env, touch } = scratch();
+  touch(join(home, ".config", "herdr", "config.toml"));
+  const service = runtimeService({ stateDir: state, port: 7, serving: "herdr", source: "detected", env, core: () => ({ version: "0.1.17", session: "test", running: false }), restart: () => { throw new Error("no restart"); }, platform: "linux", managed: true, systemAppDirs: [] });
+  expect(service.facts().switch_to).toBe("herdr-core");
+  // a runtime Ovis knows, so no 400: the PC cannot have it yet
+  expect(service.request("alt-runtime")).toMatchObject({ ok: false, status: 409, code: "runtime_unavailable" });
+  expect(readSavedRuntime(state, 7)).toBeNull();
+  expect(service.switching?.()).toBe(false);
+});
+
 it("keeps each port's choice to itself, and a failed switch from the PC's facts goes back to the facts", async () => {
   const { home, state, env, touch } = scratch();
   touch(join(home, ".config", "herdr", "config.toml"));

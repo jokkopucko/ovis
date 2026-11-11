@@ -38,7 +38,7 @@ import { UI_FONT_MAX, UI_FONT_MIN, UI_FONT_PRESET_FAMILY, uiFontPreset, type UiF
 import { canListInstalledFonts, filterFamilies, isMonospaceFamily, queryInstalledFonts } from "../lib/installedFonts.ts";
 import type { UpdatesModel } from "../lib/updates.ts";
 import type { UserError } from "../lib/userError.ts";
-import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
+import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings, type RuntimeName } from "../../shared/machines.ts";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { alertFiltersChanged, updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
 import { fetchMachines, fetchRemoteAccess, requestRelayOffer, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
@@ -1716,6 +1716,7 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
   const target = facts?.switch_to ?? null;
   // under the fact, not beside it: the fact keeps its one line on a phone
   const hint = facts?.fallback === "no_herdr_core" ? t("The Herdr app was chosen here, but no herdr-core answered, so herdr TUI is shown.")
+    : facts?.fallback === "no_alt_runtime" ? t("alt-runtime was chosen here, but this Ovis cannot start it, so herdr TUI is shown.")
     : facts?.locked === "env" ? t("OVIS_RUNTIME in Ovis's environment decides which terminals this PC shows; change it there to switch.")
     // where the OS does not serve herdr-core, setting OVIS_RUNTIME=herdr-core would stop Ovis: no how-to
     : target !== null || onCore || !core?.version || facts?.locked === "platform" ? null
@@ -1726,9 +1727,9 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
   // others it found installed. With two installed the choice between them is right on the first line.
   const coreInstalled = core?.version != null;
   const tuiInstalled = facts?.tui.installed ?? !onCore;
-  const name = (runtime: "herdr" | "herdr-core") => (runtime === "herdr-core" ? "herdr-core" : "herdr");
-  const versionOf = (runtime: "herdr" | "herdr-core") => (runtime === served ? known ?? (onCore ? core?.version ?? null : null) : runtime === "herdr-core" ? core?.version ?? null : null);
-  const titled = (runtime: "herdr" | "herdr-core") => [name(runtime), versionOf(runtime)].filter(Boolean).join(" ");
+  const name = (runtime: RuntimeName) => runtime;
+  const versionOf = (runtime: RuntimeName) => (runtime === served ? known ?? (onCore ? core?.version ?? null : null) : runtime === "herdr-core" ? core?.version ?? null : null);
+  const titled = (runtime: RuntimeName) => [name(runtime), versionOf(runtime)].filter(Boolean).join(" ");
   // the switch names both runtimes with their versions; another one installed gets its own line only when there is no switch
   const others = (["herdr", "herdr-core"] as const).filter((runtime) => runtime !== served && runtime !== target && (runtime === "herdr-core" ? coreInstalled : tuiInstalled));
   return (

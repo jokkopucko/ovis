@@ -300,6 +300,7 @@ export const SETTINGS_KO: Record<string, string> = {
   "Restarting Ovis on the Herdr app…": "Herdr 앱으로 Ovis를 다시 시작하는 중…",
   "Restarting Ovis on herdr TUI…": "herdr TUI로 Ovis를 다시 시작하는 중…",
   "The Herdr app was chosen here, but no herdr-core answered, so herdr TUI is shown.": "여기서 Herdr 앱을 골랐지만 응답하는 herdr-core가 없어 herdr TUI를 보여 줍니다.",
+  "alt-runtime was chosen here, but this Ovis cannot start it, so herdr TUI is shown.": "여기서 alt-runtime을 골랐지만 이 Ovis는 아직 그것을 시작할 수 없어 herdr TUI를 보여 줍니다.",
   "OVIS_RUNTIME in Ovis's environment decides which terminals this PC shows; change it there to switch.": "이 PC가 보여 줄 터미널은 Ovis 실행 환경의 OVIS_RUNTIME이 정합니다. 바꾸려면 그 값을 바꾸세요.",
   "Show the Herdr app's terminals?": "Herdr 앱의 터미널을 볼까요?",
   "Show herdr TUI's terminals?": "herdr TUI의 터미널을 볼까요?",
