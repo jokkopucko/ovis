@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1004,43 +1004,51 @@ process.stdin.on("data", (chunk) => {
     }
   });
 
-  it("answers the catalog and a cold @ send within budget while opencode.json is a FIFO", async () => {
+  it("answers the catalog and a cold @ send without opening an opencode.json that is a FIFO", async () => {
     const fifo = join(nativeRoot, "opencode.json");
     expect(await Bun.spawn(["mkfifo", fifo]).exited).toBe(0);
-    // a writer only after 5 s: a blocking read of the FIFO would hold the whole server until then
-    const writer = Bun.spawn(["sh", "-c", `sleep 5; printf '{}' > '${fifo}'`]);
+    // A writer waits at the FIFO from the start: its open returns only once something opens the FIFO to read,
+    // and that first reader is handed its text. A server that read opencode.json would be handed it at once,
+    // so nothing here waits on the FIFO and no time is counted: who got the text is the proof.
+    const text = crypto.randomUUID();
+    const writer = Bun.spawn(["sh", "-c", 'echo ready; printf %s "$2" > "$1"', "sh", fifo, text], { stdout: "pipe" });
+    // It waits there before anything below asks the server: it says so, and then sleeps in its open (where
+    // the system tells a process's state). A read made before it waited would find no writer and go unseen.
+    expect(new TextDecoder().decode((await writer.stdout.getReader().read()).value)).toBe("ready\n");
+    for (const until = Date.now() + 5_000; existsSync(`/proc/${writer.pid}/stat`);) {
+      const stat = readFileSync(`/proc/${writer.pid}/stat`, "utf8");
+      if (stat.charAt(stat.lastIndexOf(") ") + 2) === "S") break;
+      if (Date.now() > until) throw new Error("the FIFO's writer never waited in its open");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     const { ws, frame } = await socket();
     const before = typed().length;
-    const first = Promise.withResolvers<number>();
-    let sentAt = 0;
     try {
-      const started = performance.now();
       const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/commands?pane_id=${encodeURIComponent(nativePane)}`);
       expect(response.status).toBe(200);
-      const routeMs = performance.now() - started;
       // a cold send to a hung service must not scan opencode.json or invent a skill record
       closeOpenCodeNative();
       forgetOpenCodeService();
       extraSessions.add("ses_contractFifo01");
       await reportSession("ses_contractFifo01", nativePane);
       hangAll = true;
-      onTyped = () => first.resolve(performance.now() - sentAt);
-      sentAt = performance.now();
       ws.send(JSON.stringify({ type: "submit", id: 10, pane_id: nativePane, text: "@effect past the fifo", payload: "@effect past the fifo" }));
       expect(await frame((message) => message.type === "submit-result" && message.id === 10)).toMatchObject({ ok: true });
-      const gap = await first.promise;
-      console.log(`fifo: catalog ${Math.round(routeMs)} ms, first key ${Math.round(gap)} ms`);
-      // under the 5 s writer, so a blocked thread still fails; above the 1.5 s provider budget, so a slow host does not
-      expect(routeMs).toBeLessThan(4_000);
-      expect(gap).toBeLessThan(2_000);
       expect(await typedSince(before)).toContain("@effect past the fifo");
       const outcome = (await outcomesAt(server.port, nativePane)).find((entry) => entry.text === "@effect past the fifo");
       expect(outcome).toBeUndefined();
+      // The first to open the FIFO is this read (O_NONBLOCK: it waits for no writer): the writer was still
+      // waiting, and its text comes here. After any earlier open the writer has left and there is none.
+      const fd = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+      try {
+        await writer.exited;
+        const handed = Buffer.alloc(text.length + 1);
+        expect(handed.subarray(0, readSync(fd, handed)).toString()).toBe(text);
+      } finally { closeSync(fd); }
     } finally {
       writer.kill();
       rmSync(fifo, { force: true });
       hangAll = false;
-      onTyped = undefined;
       for (const release of withheld) release();
       withheld.clear();
       ws.close();

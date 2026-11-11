@@ -591,14 +591,19 @@ function parity(host: "node" | "rust") {
       } finally { ended.session.kill(); }
     }, 15_000);
 
-    // that wait ends the moment the command has exited: a plain exit is not held for it (timing is the
-    // behaviour here, bounded well past a host's start and well under the 200 ms wait plus a quiet one)
+    // that wait ends the moment the command has exited: a plain exit is not held for it. Time is the behaviour
+    // here, and it is counted from the command's own last act, not from the host's start: the start is most of
+    // a run, and it is what a busy machine stretches. The act is a file the command leaves, not output: the
+    // Node host reads a last byte together with the hangup, and ends that pty another way. The file's own time
+    // is the start of the count, the system's word for when the command wrote it: whatever this process does
+    // late only makes the span longer, never shorter. From the file the exit is about 20 ms away on the Node
+    // host, and 200 ms more when the wait is run out.
     it.skipIf(process.platform === "win32")("ends a plain exit without waiting out the hold for a closed terminal", async () => {
-      const started = performance.now();
-      const ended = run("sh", ["-c", "exit 7"]);
+      const leaving = join(mkdtempSync(join(fixtures, "leaving-")), "now");
+      const ended = run("sh", ["-c", ': > "$1"; exit 7', "sh", leaving]);
       try {
         expect(await ended.exited).toBe(7);
-        expect(performance.now() - started).toBeLessThan(150);
+        expect(Date.now() - statSync(leaving).mtimeMs).toBeLessThan(150);
       } finally { ended.session.kill(); }
     }, 15_000);
 
