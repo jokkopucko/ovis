@@ -708,6 +708,49 @@ it("holds nothing typed after a first message held from the start went by its Se
   expect(d.calls.at(-1)).toBe("immediate");
 });
 
+it.each(["immediate", "queue"] as const)("sends a %s message as before once a first message held for typing went by its Send now to the reported omp", async (delivery) => {
+  const d = omp();
+  const message = await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  await d.type();
+  await d.eventually("the hold", () => d.listed()[0]?.state === "held");
+  d.report();
+  await d.delivery.pendingFrames["pending-action"](d.owner as never, { type: "pending-action", id: 9, pane_id: "p", pending_id: message.id, action: "steer" } as never);
+  await d.settled();
+  expect(d.typed()).toEqual(["typed in the terminal", PASTE, "Enter"]);
+  // its Enter submitted omp's box, typed words and all, as its sender chose: what comes next goes as on main
+  d.advance(5_000);
+  await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 5, pane_id: "p", text: "second words", payload: delivery === "immediate" ? "second words" : "unused", delivery } as never);
+  await d.settled();
+  expect(d.result("submit-result", 5)?.["pending"]).toBeUndefined();
+  expect(d.typed().length).toBeGreaterThan(3);
+});
+
+it.each(["a screen read before the paste", "the paste's write"] as const)("types nothing behind the typed words after a Send now to the reported omp failed at %s: the start is not over", async (failAt) => {
+  const d = omp();
+  const message = await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  await d.type();
+  await d.eventually("the hold", () => d.listed()[0]?.state === "held");
+  d.report();
+  // herdr does not answer the Send now's third read of the screen, or does not write its paste
+  let reads = 0;
+  if (failAt === "a screen read before the paste") d.hooks.read = () => { if (++reads >= 3) throw new herdr.HerdrError("herdr_unavailable", "herdr did not answer"); };
+  const write = spyOn(herdr, "paneSendText");
+  const written = write.getMockImplementation()!;
+  if (failAt === "the paste's write") write.mockImplementation(async () => { throw new herdr.HerdrError("herdr_unavailable", "herdr did not answer"); });
+  await d.delivery.pendingFrames["pending-action"](d.owner as never, { type: "pending-action", id: 9, pane_id: "p", pending_id: message.id, action: "steer" } as never);
+  await d.settled();
+  expect(d.result("pending-result", 9)).toMatchObject({ ok: false });
+  d.hooks.read = undefined;
+  write.mockImplementation(written);
+  // the typed words are still in omp's box: a queue request is not pasted and entered behind them
+  await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 11, pane_id: "p", text: "second words", payload: "unused", delivery: "queue" } as never);
+  await d.settled();
+  expect(d.result("submit-result", 11)?.["typed_now"]).toBeUndefined();
+  expect(d.typed().filter((call) => call.includes("second words"))).toEqual([]);
+});
+
 it("holds a first message for what was typed just before omp's start is given up on, at the wait's look past it", async () => {
   const d = omp();
   await d.first();
@@ -717,6 +760,21 @@ it("holds a first message for what was typed just before omp's start is given up
   await d.eventually("the hold or the send", () => d.listed()[0]?.state === "held" || d.calls.includes("Enter"));
   expect(d.typed()).toEqual(["typed in the terminal"]);
   expect(d.listed()[0]).toMatchObject({ state: "held", error: { code: "typed_while_waiting" } });
+});
+
+it("holds a first message for what was typed just before omp's start is given up on, though a chat message comes before the wait's next look", async () => {
+  const d = omp();
+  await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  await d.type();
+  d.advance(30_001);
+  await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 5, pane_id: "p", text: "second words", payload: "second words", delivery: "immediate" } as never);
+  /** the first message as the page was last told it */
+  const firstRow = () => d.frames.filter((frame) => frame.type === "pending-messages").flatMap((frame) => (frame["messages"] ?? []) as Row[])
+    .filter((row) => row.text === "first words").at(-1);
+  await d.eventually("the hold or the send", () => firstRow()?.state === "held" || d.calls.includes("Enter"));
+  expect(d.typed()).toEqual(["typed in the terminal"]);
+  expect([firstRow()?.error?.code, (d.result("submit-result", 5)?.["pending"] as Row | undefined)?.error?.code]).toEqual(["typed_while_waiting", "typed_while_waiting"]);
 });
 
 it("holds a queued message for what was typed while herdr did not say whether its omp is starting", async () => {

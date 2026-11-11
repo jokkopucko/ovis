@@ -725,7 +725,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // waits here for the session herdr's omp integration reports, as the immediate send does (composer.ts
       // untilOmpReported), within its own deadline and its sender's leave to type. What was read before a wait is read
       // again: by the report the omp may be at work, changed or gone
-      let waitedForOmp = false;
+      let waitedForOmp = false, endsOmpStart = false;
       if (context.identity.agent === "omp" && automatic) {
         // one the queue makes by itself never waits here, with the pane's lane held and every key typed there behind
         // it: it waited before it was taken up (awaitsOmp). Found starting after all (that look was not answered),
@@ -744,8 +744,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             if (row.withdrawn?.()) throw new HerdrError("pending_discarded", "This message was discarded while it waited for omp; nothing was typed");
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
           }, options, { strict: true, waiting: () => { waitedForOmp = true; row.waiting?.(true); } });
-          // omp takes input: with nothing typed meanwhile its start is over, and what comes after goes as before
-          if (!typedSinceStart(paneId)) forgetOmpStart(paneId);
+          // omp takes input: with nothing typed meanwhile, or once it reported and this send's own Enter submits its box
+          // as its sender chose, its start is over once that Enter has gone, and what comes after goes as before. A send
+          // that fails before it leaves the start as it was: what was typed is still in the box
+          endsOmpStart = waited.agent_session?.source === "herdr:omp" || !typedSinceStart(paneId);
           if (waited !== context.pane) {
             mark = pending.mark(paneId);
             context = await pendingContext(owner, paneId, lease, identity);
@@ -895,6 +897,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       let refused = false;
       await paneSendKeys(paneId, [steering && beforeEnter.identity.agent === "claude" ? "ctrl+enter" : "Enter"], undefined, () => allowed() && !(refused = resumed()))
         .catch((error: unknown) => { if (refused) refuseResumed(); throw error; });
+      if (endsOmpStart) forgetOmpStart(paneId);
       // This proves only that Ovis committed Enter to Pi, not that Pi accepted, queued or recorded
       // the message. Keep a non-resendable receipt until the bound JSONL active branch appends it.
       if (receiptText !== undefined) {
@@ -1041,7 +1044,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   function typedWhileOmpStarted(paneId: string): boolean {
     const start = ompStarts.get(paneId);
     if (!start) return false;
-    if (Date.now() >= start.until) { forgetOmpStart(paneId); return false; }
+    // past its end, a wait still on for it reads the typing at its next look (typedSinceStart), and holds for it
+    if (Date.now() >= start.until) {
+      if (ompWaits.has(paneId) && typedSinceStart(paneId)) return true;
+      forgetOmpStart(paneId);
+      return false;
+    }
     return typedSinceStart(paneId);
   }
   /** typedWhileOmpStarted, also past the start's end: a wait that runs to that end still holds for what was typed before it */
