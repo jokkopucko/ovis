@@ -850,7 +850,7 @@ describe("managed source updates with real Git repositories and builds", () => {
   it("takes a bridge by its own answer, or by the whole one when it predates the bridge-scope boot id, and tells it", async () => {
     // runSupervisor in a stand-in child, as above: the bridge is a fake whose health answers say what
     // a bridge of this revision says (its boot id and runtime in ?scope=bridge) or an older one (none)
-    const asked = async (older: boolean, herdrSocket?: string) => {
+    const asked = async (older: boolean, herdrSocket?: string, runtime = "herdr") => {
       const root = mkdtempSync(join(directory, "launch-root-"));
       const stateDir = mkdtempSync(join(directory, "launch-state-"));
       const record = join(stateDir, "launch-record.json");
@@ -874,7 +874,7 @@ describe("managed source updates with real Git repositories and builds", () => {
         globalThis.fetch = (async (url: string) => {
           urls.push(new URL(url).search);
           const bridge = new URL(url).search === "?scope=bridge";
-          return { ok: true, json: async () => bridge ? (${older} ? { ok: true } : { ok: true, web_ui: { boot_id: bootId }, runtime: "herdr" }) : { web_ui: { boot_id: bootId } } };
+          return { ok: true, json: async () => bridge ? (${older} ? { ok: true } : { ok: true, web_ui: { boot_id: bootId }, runtime: ${JSON.stringify(runtime)} }) : { web_ui: { boot_id: bootId } } };
         }) as unknown as typeof fetch;
         await (await import(${JSON.stringify(join(import.meta.dir, "supervisor.ts"))})).runSupervisor(${JSON.stringify(root)});
         writeFileSync(${JSON.stringify(record)}, JSON.stringify({ urls, sent }));
@@ -899,6 +899,8 @@ describe("managed source updates with real Git repositories and builds", () => {
     const older = await asked(true);
     expect(older.urls).toEqual(["?scope=bridge", ""]);
     expect(older.sent.filter((message) => message.type === "bridge-accepted")).toHaveLength(1);
+    // a runtime the bridge starts itself must answer, whichever it is: none is taken on the bridge's word alone
+    for (const runtime of ["herdr-core", "alt-runtime"]) expect((await asked(false, undefined, runtime)).urls).toEqual(["?scope=bridge", ""]);
     if (process.platform === "win32") return; // herdr's socket is a named pipe there: no unix socket file is left behind
     // a socket file a killed herdr left behind refuses the connect: herdr is stopped, as with no socket (#2670)
     const stale = join(mkdtempSync(join(directory, "stale-")), "herdr.sock");

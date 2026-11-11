@@ -244,7 +244,6 @@ describe("runtime gates", () => {
     "server/runtime-move-run.ts": "the move goes from herdr to herdr-core",
     "server/runtime-move-service.ts": "the move goes from herdr to herdr-core",
     "server/index.ts": "a saved choice of herdr-core falls back to herdr when no hc is found",
-    "server/supervisor.ts": "the launcher reads which runtime the server it started says it serves",
     "server/machines.ts": "a remote PC's own Ovis is taken by the runtime its identity names",
     "server/conversation.ts": "the name of hc's program in an attach client's argv",
     "server/agents-routes.ts": "herdr itself starts two agent kinds without a manifest",
