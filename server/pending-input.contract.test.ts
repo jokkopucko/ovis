@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, mock, spyOn } fro
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { createServer } from "./index.ts";
+import { createServer, TYPED_SETTLE_MS } from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import { herdrRpc, paneRead, paneScrollInfo, sessionSnapshot } from "./herdr/client.ts";
 import { noteSubmitted, parseInteractivePrompt } from "./prompt.ts";
@@ -581,6 +581,8 @@ describe("Ovis-origin Pi transcript receipts", () => {
       && frame.messages.some((item: PendingMessage) => item.text === "after the switch" && item.error?.code === "pi_transcript_pending"), from);
     const receipt = sent.messages.find((item: PendingMessage) => item.text === "after the switch" && item.error?.code === "pi_transcript_pending");
     expect(receipt.id).not.toBe(message.id);
+    // the receipt follows herdr's answer to the Enter, but the recorder in the pane may not have logged it yet
+    await f.waitBytes(`${paste("after the switch")}\r`);
     expect(f.bytes()).toBe(`${paste("/model sonnet")}\r${paste("after the switch")}\r`);
     const receipts = f.socket.seen.slice(from).flatMap((frame) => frame.type === "pending-messages" ? frame.messages as PendingMessage[] : []);
     expect(receipts.filter((item) => item.text === "/model sonnet" && item.error?.code?.includes("transcript"))).toEqual([]);
@@ -640,6 +642,8 @@ describe("Ovis-origin Pi transcript receipts", () => {
     expect((await other.result(911)).ok).toBe(true);
     await other.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.text === "other owner"));
 
+    // the receipt follows herdr's answer to the Enter, but the recorder in the pane may not have logged it yet
+    await f.waitBytes(`${paste("other owner")}\r`);
     const before = f.bytes();
     f.socket.send({ type: "submit", id: 912, pane_id: f.pane, text: "over limit", payload: "over limit", delivery: "immediate" });
     expect(await f.socket.result(912)).toMatchObject({ ok: false, code: "pending_limit" });
@@ -1714,11 +1718,33 @@ describe("connection-owned pending input", () => {
 
   for (const stop of [false, true]) it(`checks a new blocked state after the ${stop ? "composer's Stop" : "typed ESC"}'s settling gap, before pasting`, async () => {
     const f = await setup(stop ? "stop-gap-intent" : "stop-gap"); const message = await f.queue(1, "must not paste");
-    f.socket.send(stop ? { type: "input", pane_id: f.pane, text: "\u001b", stop: true } : { type: "input", pane_id: f.pane, text: "\u001b" });
-    f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: message.id, action: "steer" });
-    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.id === message.id && item.state === "sending"));
-    await f.state("blocked");
-    expect(await f.socket.action(10)).toMatchObject({ ok: false, code: "agent_blocked" });
+    // The state comes up as the gap ends. herdr is told at the first status read that starts after the claim and no
+    // sooner than the gap after the ESC, and that read waits for herdr's answer. Every read before it says the agent
+    // works, so a bridge that checks before the gap, or waits out none, pastes. Told to herdr only when the "sending"
+    // frame had arrived here, the state raced the gap, which runs from the ESC: on a busy PC the gap was over first
+    // and the message was pasted.
+    const claim = pendingInput.PendingInputs.prototype.claim;
+    const snapshot = herdrClient.sessionSnapshot;
+    let typedAt = Infinity, claimed = false;
+    let blocked: Promise<unknown> | undefined;
+    const claiming = spyOn(pendingInput.PendingInputs.prototype, "claim").mockImplementation(function (this: pendingInput.PendingInputs<unknown, unknown>, item, automatic) {
+      const taken = claim.call(this, item, automatic);
+      if (taken && item.message.id === message.id) claimed = true;
+      return taken;
+    });
+    const reading = spyOn(herdrClient, "sessionSnapshot").mockImplementation(async (...args) => {
+      // timers count whole milliseconds: the gap's may fire up to a millisecond before Date.now() says it is due
+      if (claimed && Date.now() - typedAt >= TYPED_SETTLE_MS - 1) await (blocked ??= herdrRpc("pane.report_agent", { pane_id: f.pane, source: "manual", agent: "claude", state: "blocked" }));
+      return snapshot(...args);
+    });
+    try {
+      typedAt = Date.now();
+      f.socket.send(stop ? { type: "input", pane_id: f.pane, text: "\u001b", stop: true } : { type: "input", pane_id: f.pane, text: "\u001b" });
+      f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: message.id, action: "steer" });
+      await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.id === message.id && item.state === "sending"));
+      expect(await f.socket.action(10)).toMatchObject({ ok: false, code: "agent_blocked" });
+      await f.socket.wait((frame) => frame.type === "pane-status" && frame.pane_id === f.pane && frame.agent_status === "blocked");
+    } finally { claiming.mockRestore(); reading.mockRestore(); }
     await f.waitBytes("\u001b"); expect(f.bytes()).toBe("\u001b");
   }, 30_000);
 
