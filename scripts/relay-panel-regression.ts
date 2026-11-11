@@ -441,7 +441,10 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await devicesGroup.locator("details.settings-details").count(), 0, "no explanation folds above the list");
     const more = dialog.locator('.settings-fold[data-fold="more"]');
     assert.equal(await more.getByText("Revoke every device", { exact: true }).count(), 1, "revoking every device is in More settings");
-    assert.equal(await dialog.locator('[data-section="account"]').evaluateAll((groups) => groups.every((group) => group.closest('.settings-fold[data-fold="more"]') !== null)), true, "the account is in More settings");
+    // this context offers the account and is signed in: one group, or the check below would pass on none
+    const accountGroup = dialog.locator('[data-section="account"]');
+    assert.equal(await accountGroup.count(), 1, "the Account group is drawn");
+    assert.equal(await accountGroup.evaluate((group) => group.closest("details") === null), true, "the account is on the page itself, not folded into More settings");
     await page.unroute("**/api/devices");
 
     // serve-only: no switch anywhere, the reason in More settings, and no reset

@@ -570,6 +570,8 @@ Signing in links your devices once instead of pairing each phone with each PC. I
 
 **Ways to sign in.** **Settings → Devices and PCs → Account** lists your account's sign-in methods. In the desktop app, **Add Google** (or **Add GitHub**) adds one on purpose, and **Remove** takes one away, except the one this device signed in with. An account is never joined to another because their email addresses match.
 
+**The account's other PCs.** On a PC's own page, **Settings → Devices and PCs** lists the account's PCs that this app has not added, with one link under them: a browser opens them at `app.ovis.sh`, signed in to the account. A PC the account has not heard from for two days (reinstalled, given away, never finished adding) has **Remove** on its row. That only takes it off the account's list on every device: it revokes nothing, and a PC that is used again is listed again when a device of your account opens it. A PC in use has no Remove, since it would be listed again at once.
+
 Who gets into a PC is still decided by that PC alone, in **Settings → Devices and PCs**, where **Revoke** always works. The account service at `account.ovis.sh` lists your PCs and carries signed messages between your devices; it can't read your sessions or add a device by itself ([how it works](account.md)). It keeps no email, name or username. [The privacy policy](https://ovis.sh/privacy/) says what it stores and for how long.
 
 ### Through Tailscale

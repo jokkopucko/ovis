@@ -667,6 +667,15 @@ Clients:
 | `POST /v1/admissions` | `{ "server_id", "label", "key", "os"? }` | `{ "id" }`: the signed-in device says it waits at that PC with its account key (`key`); rings the account's other clients (push), and reaches that PC's mailbox for 10 minutes |
 | `POST /v1/signout` | | `204`: ends this sign-in's tokens |
 
+`DELETE /v1/pcs/{server_id}` is no lasting removal for a PC in use: a member device lists the PC
+again on its next connection to it (`enrollOwned`), and so does the PC's own waiting Add this PC
+screen. A PC the directory does not list gets no [relay pass](relay.md#relay-pass) (`not_listed`)
+and none of the account's later records. So the apps offer it only in a PC's own Settings →
+Devices and PCs, as **Remove from list**, and only for a PC the directory has not heard from for
+two days (`unusedPc` in [`src/components/AccountPcs.tsx`](../src/components/AccountPcs.tsx): its
+`last_seen_at`, or its `added_at` when it never pulled), with a confirm that says it revokes
+nothing and that the PC is listed again if it is used again.
+
 Push (the doorbell), per signed-in device:
 
 | request | body | answer |

@@ -188,9 +188,11 @@ let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc>
  * welcome): they share the wait their tab keeps, whichever of them began it, one that stops it stops the
  * other, and the PC is listed again once for both.
  */
-export function AddThisPc({ relayAbove = true, service, signedInHere }: {
+export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }: {
   /** Settings has the relay's switch above; the welcome does not */
   relayAbove?: boolean;
+  /** this PC was just listed in the account, or a wait for it was taken up: the account's list is no longer the one read before */
+  onListed?: () => void;
   /** the account service the PC is listed with; the stored sign-in's when left out */
   service?: () => AccountService;
   /**
@@ -330,6 +332,8 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
   }, [idle, accountService]);
   // one object from the press (or the reload) until the wait ends: what it keeps for a reload changes in the effect alone
   const begun = state.kind === "waiting" ? state : null;
+  const listed = useEffectEvent(() => onListed?.());
+  useEffect(() => { if (begun !== null) listed(); }, [begun !== null]);
   useEffect(() => {
     if (begun === null) return;
     const until = begun.until;
@@ -758,6 +762,10 @@ export function probeUntilReachable(probe: (live: () => boolean) => Promise<bool
 /** What Settings → Devices and PCs needs of the account: signed in or not, and the account's PCs for My devices. */
 export interface AccountState {
   signedIn: boolean; account: string | null; pcs: MyPc[] | null;
+  /** what the account signed in with; null signed out */
+  provider: AccountProvider | null;
+  /** the account's list was read and holds no PC (a list that could not be read is empty too, beside its error: not this) */
+  noPcs: boolean;
   /** false once the account service did not answer: the relay tab then offers the relay's own pairing (ConnectPhoneDialog) */
   reachable: boolean;
 }
@@ -869,7 +877,9 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   });
   useEffect(() => { recheckAccount(); }, [offered, load, recheck]);
   useEffect(() => {
-    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null, reachable: !unreachable });
+    const signedIn = view.kind === "signed-in" ? view : null;
+    onAccount?.({ signedIn: signedIn !== null, account: signedIn?.account ?? null, pcs: signedIn?.pcs ?? null, provider: signedIn?.provider ?? null,
+      noPcs: signedIn !== null && signedIn.pcs !== null && signedIn.pcs.length === 0 && signedIn.error === null, reachable: !unreachable });
   }, [onAccount, view, unreachable]);
   // closing Settings ends a device sign-in still waiting: its session is then never kept
   useEffect(() => () => { deviceSignIn.current?.abort(); loads.current++; }, []);
@@ -1174,7 +1184,8 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
               )}
             </div>
           )}
-          <AddThisPc signedInHere={takeSignedInHere} />
+          {/* the page's "No PC in this account yet" would outlive the listing otherwise */}
+          <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} />
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
           {view.error !== null && <p className="settings-condition" role="alert">{view.error}</p>}
         </>

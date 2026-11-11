@@ -490,6 +490,8 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
   const service = "https://account.ovis.sh";
   for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) {
     const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+    /** the PCs this context took out of the account's directory */
+    const removed: string[] = [];
     try {
       await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, theme }));
       // the PC's server names the account service its page signs in with (server/static.ts)
@@ -500,11 +502,19 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       await context.route(`${service}/**`, (route) => {
         const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE" };
         if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
-        if (new URL(route.request().url()).pathname !== "/v1/pcs") return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
+        const path = new URL(route.request().url()).pathname;
+        // the directory's own removal: the PC is gone from the next read
+        if (route.request().method() === "DELETE" && path.startsWith("/v1/pcs/")) {
+          removed.push(path.slice("/v1/pcs/".length));
+          return route.fulfill({ status: 204, headers: cors });
+        }
+        if (path !== "/v1/pcs") return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
         return route.fulfill({ headers: cors, json: { pcs: [
+          // heard from just now: in use
           { server_id: "a".repeat(32), label: "home-server", added_at: "2026-11-01T00:00:00Z", last_seen_at: new Date().toISOString() },
-          { server_id: "b".repeat(32), label: "office-mac", added_at: "2026-11-01T00:00:00Z", last_seen_at: "2026-11-01T00:00:00Z" },
-        ] } });
+          // not heard from for longer than two days
+          { server_id: "b".repeat(32), label: "office-mac", added_at: "2026-10-01T00:00:00Z", last_seen_at: new Date(Date.now() - 9 * 24 * 3_600_000).toISOString() },
+        ].filter((pc) => !removed.includes(pc.server_id)) } });
       });
       const page = await context.newPage();
       const errors: string[] = [];
@@ -534,16 +544,54 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       });
       assert.deepEqual(style, { listStyle: "none", display: "flex", border: "solid" }, `the account's PCs are styled rows in My devices (${width}px, ${theme})`);
       assert.equal(await page.locator("[data-section='account'] .relay-shell-pcs").count(), 0, "the Account group does not list the PCs a second time");
+      // no row claims to open its PC: this page cannot tell whether the browser is paired with it at app.ovis.sh.
+      // One link under the rows goes to the hosted app's front page, which is right for every browser.
+      assert.equal(await list.getByRole("link", { name: "Open in browser" }).count(), 0, `no account PC row has an Open of its own (${width}px, ${theme})`);
+      const open = list.locator(".account-pcs-open");
+      assert.deepEqual(await open.getByRole("link").evaluateAll((links) => links.map((link) => [link.textContent, link.getAttribute("href"), link.getAttribute("target")])),
+        [["Open app.ovis.sh", "https://app.ovis.sh/", "_blank"]], `one link under the account's PCs goes to the hosted app (${width}px, ${theme})`);
+      assert.equal(await open.locator(".settings-description").textContent(), "To open a PC of your account in a browser, sign in to this account at app.ovis.sh.");
+      // Remove only on the PC the account has not heard from for two days: one in use would be listed again
+      assert.deepEqual(await accountRows.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))), ["Remove office-mac from the list"], `only the PC not heard from is offered for removal (${width}px, ${theme})`);
+      const fit = await list.locator(".devices-row").filter({ hasText: /home-server|office-mac|app\.ovis\.sh/ }).evaluateAll((rows) => rows.map((row) => {
+        const box = row.getBoundingClientRect();
+        const inside = [...row.querySelectorAll(".devices-name, .devices-actions > *, .settings-description, .btn")].every((part) => {
+          const one = part.getBoundingClientRect();
+          return one.width > 0 && one.left >= box.left - 0.5 && one.right <= box.right + 0.5;
+        });
+        return { inside, overflow: row.scrollWidth - row.clientWidth, inView: box.right <= document.documentElement.clientWidth + 0.5 };
+      }));
+      assert.deepEqual(fit, Array.from({ length: 3 }, () => ({ inside: true, overflow: 0, inView: true })), `the account's PC rows and the line under them fit the list (${width}px, ${theme})`);
+      const accountTop = (await page.locator("[data-section='account']").boundingBox())!.y;
+      assert.ok(accountTop < (await page.locator("[data-section='devices']").boundingBox())!.y, `the Account group sits above the device list (${width}px, ${theme})`);
       if (process.env.UI_EVIDENCE_DIR) {
         await list.scrollIntoViewIfNeeded();
         await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pcs-${width}-${theme}.png`), animations: "disabled" });
       }
+      // the removal asks first, saying what it does not do; a no removes nothing
+      await accountRows.getByRole("button", { name: "Remove office-mac from the list", exact: true }).click();
+      const confirm = page.getByRole("alertdialog", { name: "Remove office-mac from the list?" });
+      await confirm.getByText("It revokes nothing: devices paired with office-mac keep their access", { exact: false }).waitFor();
+      await confirm.getByText("If office-mac is used again, it comes back on the list when a device of your account opens it.", { exact: false }).waitFor();
+      if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pc-remove-${width}-${theme}.png`), animations: "disabled" });
+      await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+      await confirm.waitFor({ state: "detached" });
+      assert.deepEqual(removed, [], `a cancelled removal removes nothing (${width}px, ${theme})`);
+      // a yes takes it out of the directory, the list is read again without it, and the focus stays in the list's group
+      await accountRows.getByRole("button", { name: "Remove office-mac from the list", exact: true }).click();
+      await confirm.getByRole("button", { name: "Remove from list", exact: true }).click();
+      await confirm.waitFor({ state: "detached" });
+      await list.locator(".devices-row").filter({ hasText: "office-mac" }).waitFor({ state: "detached" });
+      await list.locator(".devices-row").filter({ hasText: "home-server" }).waitFor();
+      assert.deepEqual(removed, ["b".repeat(32)], `the removal is the directory's, once (${width}px, ${theme})`);
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-section")), "devices", `the focus goes to the list's group once the removed row is gone (${width}px, ${theme})`);
+      assert.equal(await list.getByRole("button", { name: /from the list$/ }).count(), 0, `the PC in use has no Remove (${width}px, ${theme})`);
       assert.deepEqual(errors, []);
     } finally {
       await context.close();
     }
   }
-  console.log("PASS the account's PCs are styled rows of My devices at 390 and 1280px, light and dark");
+  console.log("PASS the account's PCs are styled rows of My devices at 390 and 1280px, light and dark: one link to the hosted app, Remove only on a PC not heard from, behind a confirm");
 }
 
 /**
@@ -598,9 +646,10 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
           }
           await openSettings(page);
           await openSettingsPage(page, "Devices and PCs");
-          // the account waits in More settings
-          await openSettingsFolds(page);
+          // the account is at the top of the page, outside More settings
           const account = page.locator("[data-section='account']");
+          assert.equal(await account.evaluate((group) => group.closest("details") === null), true, "the Account group is not folded away");
+          await openSettingsFolds(page);
           const shot = async (name: string) => {
             if (!process.env.UI_EVIDENCE_DIR) return;
             await account.scrollIntoViewIfNeeded();

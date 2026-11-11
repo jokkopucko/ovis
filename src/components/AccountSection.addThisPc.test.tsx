@@ -195,6 +195,23 @@ describe("AddThisPc", () => {
     expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: at + WAITING_MS, serverId: SERVER, account: ACCOUNT, listedAt: at });
   });
 
+  test("tells its owner once when the press listed the PC, so the account's list is read again", async () => {
+    let renderer!: ReactTestRenderer;
+    const told: string[][] = [];
+    // what the directory held each time the owner was told: the PC is in it by then
+    const onListed = (): void => { told.push([...directory]); };
+    act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere: () => null, onListed }) })); });
+    renderers.push(renderer);
+    await settle();
+    // the offer alone lists nothing
+    expect(told).toEqual([]);
+    await press(renderer, "Add this PC to my account");
+    expect(told).toEqual([["putPc"]]);
+    // the window reopening is no new listing
+    await advance(REOPEN_MS);
+    expect(told).toHaveLength(1);
+  });
+
   test("opens the window again every 30 seconds, approve-here only, with no directory write", async () => {
     await waitingFrom();
     expect(links()).toBe(1);
