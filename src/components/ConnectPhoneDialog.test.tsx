@@ -32,6 +32,8 @@ describe("Connect a phone on a phone", () => {
   let tailnetOutdated: boolean;
   /** more rows GET /api/machines/ssh-candidates answers */
   let extraCandidates: object[];
+  /** the error code GET /api/machines/ssh-candidates refuses with (403), or null: it answers its list */
+  let candidatesRefused: string | null;
   /** the server's pending six-digit code; minting a typed code starts a new one, as server/relay/pair-code.ts does */
   let pending: string;
   /** the next answers of POST /api/devices/pair/start, each held until its gate opens (none: the pending code at once) */
@@ -46,6 +48,7 @@ describe("Connect a phone on a phone", () => {
     tailnetAnswer = Promise.resolve();
     tailnetOutdated = true;
     extraCandidates = [];
+    candidatesRefused = null;
     for (const key of ["window", "document", "navigator", "getComputedStyle", "Capacitor", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -74,6 +77,7 @@ describe("Connect a phone on a phone", () => {
         return Response.json({ code: held.code, expires_at });
       }
       if (path === "/api/machines/tailnet") { await tailnetAnswer; return Response.json({ pcs: [{ name: "winvm", url: "https://winvm.tail.ts.net:8443", relay: "online", outdated: tailnetOutdated }] }); }
+      if (path === "/api/machines/ssh-candidates" && candidatesRefused !== null) return Response.json({ error: { code: candidatesRefused, message: "refused" } }, { status: 403 });
       if (path === "/api/machines/ssh-candidates") return Response.json({ pcs: [
         { name: "nuc12", destination: "nuc12", detail: "rise@100.127.218.1", source: "ssh_config" },
         { name: "winvm", destination: "winvm.tail.ts.net", detail: "winvm.tail.ts.net", source: "tailscale", tailnet: "winvm.tail.ts.net" },
@@ -235,6 +239,35 @@ describe("Connect a phone on a phone", () => {
     expect(added).toEqual([{ destination: "nuc12", name: "nuc12" }]);
     await act(async () => { button("Connect").props.onClick(); });
     expect(connected).toEqual(["build-box"]);
+  });
+
+  it("says where the list can be seen when the server keeps it from this window", async () => {
+    // the server's own words for the refusal (server/dispatch.ts): no instruction to type an address, which an open LAN
+    // window could not add either
+    const hint = "See the PCs this PC knows on this PC itself, or from a device paired with it directly.";
+    const added: (AddPcPreset | undefined)[] = [];
+    // an open LAN window: the one window that shows the SSH tab and is refused the list (the relay shell and a Portal
+    // visitor, read only, show no SSH tab)
+    candidatesRefused = "owner_only";
+    await mount(<SshTab machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => {}} />);
+    expect(requests).toContain("/api/machines/ssh-candidates");
+    expect(text(renderer!.root)).toContain(hint);
+    // no list, no failure with Try again: the field alone
+    expect(buttons()).toEqual(["Add"]);
+    await act(async () => { renderer!.root.findByProps({ id: "connect-ssh-address" }).props.onChange({ target: { value: "mymac" } }); });
+    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    expect(added).toEqual([{ destination: "mymac" }]);
+    await act(async () => { renderer!.unmount(); });
+    // a watching device adds no PC: it is not told to type one
+    candidatesRefused = "read_only";
+    await mount(<SshTab machines={[]} onAddPc={() => {}} onConnectMachine={() => {}} />);
+    expect(text(renderer!.root)).not.toContain(hint);
+    expect(buttons()).toEqual(["Add"]);
+    // and a list that answers shows no such line
+    await act(async () => { renderer!.unmount(); });
+    candidatesRefused = null;
+    await mount(<SshTab machines={[]} onAddPc={() => {}} onConnectMachine={() => {}} />);
+    expect(text(renderer!.root)).not.toContain(hint);
   });
 
   it("without the Ovis account here, the relay tab keeps the relay's own pairing: its switch, QR code and code to type", async () => {

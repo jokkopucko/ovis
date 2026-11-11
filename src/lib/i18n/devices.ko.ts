@@ -203,6 +203,7 @@ export const DEVICES_KO: Record<string, string> = {
   "On the new device, sign in to the same Ovis account.": "새 기기에서 같은 Ovis 계정으로 로그인하세요.",
   "Turn on the relay, then add this PC to your account.": "릴레이를 켠 뒤 이 PC를 계정에 추가하세요.",
   "The PCs this PC knows could not be read.": "저장된 SSH 연결 목록을 불러오지 못했습니다.",
+  "See the PCs this PC knows on this PC itself, or from a device paired with it directly.": "이 PC가 아는 PC 목록은 이 PC에서 직접, 또는 이 PC와 직접 페어링한 기기에서 볼 수 있습니다.",
   "Open the account": "계정 열기",
   "Or type an SSH address": "또는 SSH 주소를 직접 입력",
   "Phones and devices": "폰·기기",
