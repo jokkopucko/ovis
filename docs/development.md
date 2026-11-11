@@ -161,7 +161,8 @@ so no plugin installed there starts with the test servers, and two runs on one P
 socket and no file. The run stops its herdr servers and removes the directory when it ends, also
 when it is interrupted; `CHECK_DIR=<path>` keeps it there instead. A few lane or `check run`
 invocations may run at a time on a PC, each in a slot: a loopback port from 41737 up that the run
-listens on while it runs, so a run that died holds none. `CHECK_MAX_RUNS` sets how many (1 to 8);
+listens on while it runs, so a run that died holds none (on a self-hosted CI runner a lock file per
+port instead, in `CHECK_SLOTS_DIR`, which the kernel frees the same way). `CHECK_MAX_RUNS` sets how many (1 to 8);
 the default is one per eight cores, from 1 to 2. The contract and browser tests are bound by
 timing, so more runs side by side make them fail each other: on a 32-core PC three at once
 already lost Chromium screenshots in the browser lane, so raise it only to look for such failures. A run that finds every slot taken
@@ -170,7 +171,7 @@ first, as CI's herdr-backed lanes do. A second run in the same checkout exits at
 slots free: runs in one checkout share `dist/` and the generated types. `fast` takes no slot
 and never waits, but it claims its checkout the same way, so it and any other mode refuse each
 other there. A checkout is its real
-path, plus `RUNNER_NAME` when that is set: the self-hosted runners of one PC share a loopback and
+path, plus `RUNNER_NAME` when that is set: the self-hosted runners of one PC share the slots and
 all check out to the same path. The
 generated-types and generated-themes checks (`bun run generate:types --check`,
 `bun run generate:themes --check`) are read-only, but `test:unit` includes
@@ -1293,12 +1294,14 @@ run calls CI only when main's push run did not pass its commit; when it did, it 
 alone ([Releasing](#releasing)).
 
 The runner is an ephemeral Docker container that runs one job and exits. Containers have no CPU
-quota or total-memory limit; concurrent slots share the host's available resources. The
-runners of one PC share one network namespace (a container of its own, not the host's), so
-`check.ts`'s slots bound the Integration and both Browser regression jobs of every runner
+quota or total-memory limit; concurrent slots share the host's available resources. Each
+runner has a docker network of its own, so no job reaches a server another job's tests keep on
+their loopback, and the runners of one PC share `check.ts`'s slots as lock files in a volume all of
+them mount ([Check slots](../scripts/self-hosted-runner/README.md#check-slots)). So the slots bound
+the Integration and both Browser regression jobs of every runner
 together: `ci.yml` runs each of them through `bun run check` with `CHECK_MAX_RUNS` and
 `CHECK_WAIT_SECONDS`, and a job that finds the slots taken waits for one. A check run on the host
-itself is not in that namespace and does not count against it. Its image ships Bun,
+itself takes ports of the host's loopback and does not count against them. Its image ships Bun,
 Node 22, checksum-pinned herdr, Playwright Chromium and its system libraries, ffmpeg, git, the
 checksum-pinned GitHub CLI (`gh`) for deployment and release publishing, curl, jq, unzip,
 xz-utils and CA certificates, with no sudo. Self-hosted setup verifies the prepared tools and

@@ -58,9 +58,10 @@ trusted() {
   # running, for minutes and sometimes for days: only a job that started once this container had is
   # its own. By the time, not by the runner alone: a container that registers over a dead one's
   # runner (config.sh --replace) keeps that runner's id. Nothing is allowed for the two clocks: run.sh
-  # waits two seconds before a slot's next container, so a job of the one before started at least
-  # that long before this one did, and an allowance would let it in; a container's own job starts
-  # ten seconds or more after it (the runner registers first).
+  # waits two seconds before every container of a slot, the first after a launcher start included
+  # (the container before may have been killed with the launcher that started it), so a job of an
+  # earlier container started at least that long before this one did, and an allowance would let it
+  # in; a container's own job starts ten seconds or more after it (the runner registers first).
   own="$(jq -c --arg name "$name" --argjson since "$since" '[.jobs[] | select(.runner_name == $name and .status == "in_progress" and ((.started_at // "") | try fromdateiso8601 catch 0) >= $since)]' <<<"$jobs")"
   [ -n "$own" ] && [ "$own" != "[]" ] || { log "run $run's job on $name started before the slot's container did: it is an earlier container's"; return 3; }
   # And on the runner registered under the name now: a runner that ended its job is gone from

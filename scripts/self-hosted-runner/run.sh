@@ -59,7 +59,7 @@ done
 case "$COUNT" in ''|*[!0-9]*|0) echo "--count must be a positive integer" >&2; exit 2 ;; esac
 # The first --reserved slots of --count register with --reserved-labels instead of --labels, so jobs
 # that ask for those labels (ci.yml's pushes to main, CI_MAIN_SELF_HOSTED_LABELS) find a runner that
-# pull request jobs never take. They stay in this launcher's network namespace: same check.ts slots.
+# pull request jobs never take. They mount the check slots of every other runner: same check.ts slots.
 # at most four digits: a longer number could wrap around in shell arithmetic and pass as a small one
 case "$RESERVED" in ''|*[!0-9]*|?????*) echo "--reserved must be a whole number up to --count" >&2; exit 2 ;; esac
 if [ "$((10#$RESERVED))" -gt "$((10#$COUNT))" ]; then echo "--reserved must not exceed --count" >&2; exit 2; fi
@@ -100,17 +100,39 @@ if [ -n "$ENV_FILE" ]; then
   esac
   ENV_ARGS=(--env-file "$ENV_FILE")
 fi
+# Where a job's scripts/check.ts takes its slots (README "Check slots"), and the host's run limit for
+# it, as the env file names it. CHECK_HOST_MAX_RUNS itself reaches the containers as a sentence (-e
+# outranks --env-file): a check.ts from before the slots were files reads that variable as its run
+# limit and takes loopback ports, which are its own container's here, so it would count only itself.
+# On the sentence it stops before it starts any herdr, and says it.
+SLOTS_ENV=(-e CHECK_SLOTS_DIR=/check-slots
+  -e "CHECK_HOST_MAX_RUNS=taken from /check-slots on this runner, which this commit's scripts/check.ts does not read: merge main into the branch and push")
+if [ -n "$ENV_FILE" ]; then
+  max_runs="$(sed -n 's/^CHECK_HOST_MAX_RUNS=//p' "$ENV_FILE" | tail -n 1)"
+  if [ -n "$max_runs" ]; then SLOTS_ENV+=(-e "CHECK_SLOTS_MAX_RUNS=$max_runs"); fi
+fi
 
 if [ -z "$REPO" ]; then
   REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 fi
 HOST="$(hostname -s)"
 PREFIX="herdr-ci-${HOST}-"
-# Every runner joins this container's network namespace, so the runners of this PC share one
-# loopback: scripts/check.ts's slots (listening loopback ports) then bound the herdr-backed lanes
-# of all of them together, as they bound the runs of one PC. Not the host's network: a job still
+# Every slot has a docker network of its own, and its runner container is the only one on it: a job
+# reaches nothing another job listens on, on its loopback or on any address. The tests of a job keep
+# Ovis servers there with no token, and whoever reaches one drives its panes, which are shells in that
+# job's container. Docker keeps its networks apart; not the host's network either, so a job still
 # cannot reach the host's own loopback services.
-NETNS="${PREFIX}net"
+# What the runners of this PC share is scripts/check.ts's slots, which bound the herdr-backed lanes of
+# all of them together, as they bound the runs of one PC: lock files in this volume (RAM, 1 MiB),
+# which every runner mounts. Its directory is root's, so a job locks the files and writes in them,
+# and can neither remove nor replace one. What a job wrote there takes no room from the jobs after
+# it: a run that finds none empties every file no run holds (holdFile in scripts/check.ts). A
+# container of the same name keeps the volume (start_slots).
+SLOTS="${PREFIX}check-slots"
+# The ports a run of check.ts would listen on, each a file: DEFAULT_LOCK_PORT, then the slots, the
+# admission port, the ticket desk and the tickets (MAX_RUNS_LIMIT + 2 + QUEUE_TICKETS in all).
+SLOT_FILES=()
+for port in $(seq 41737 41770); do SLOT_FILES+=("$port"); done
 
 if [ "$BUILD" = 1 ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -t "$IMAGE" "$SCRIPT_DIR"
@@ -119,6 +141,45 @@ fi
 # few seconds: refuse it now, with one throwaway container, before anything starts.
 if [ "${#CPUSET_ARGS[@]}" -gt 0 ] && ! docker run --rm "${CPUSET_ARGS[@]}" --network none --entrypoint true "$IMAGE" >/dev/null 2>&1; then
   echo "--cpuset-cpus ${CPUSET_ARGS[1]}: docker cannot run a container on those CPUs" >&2
+  exit 2
+fi
+
+# The keeper of the check slots: an idle container that holds the volume, so its files stay between
+# jobs (docker unmounts a RAM volume no container uses), and in which they are made, as root with no
+# capability, each time a runner is about to start: making a file that is there changes nothing.
+# Fails unless the volume is in RAM and its directory is root's and closed to everyone else (a
+# volume of this name made otherwise: docker keeps the one it has, and makes a plain one on disk
+# for a container that names a volume that is not there) and every file is there: without them a
+# job's check.ts stops rather than count only its own container, so no runner is started.
+start_slots() {
+  local try
+  if [ "$(docker container inspect -f '{{.State.Running}}' "$SLOTS" 2>/dev/null || true)" != true ]; then
+    # one that is not running holds the name; a missing one leaves nothing to remove
+    docker rm "$SLOTS" >/dev/null 2>&1 || true
+    docker run ${CPUSET_ARGS[@]+"${CPUSET_ARGS[@]}"} -d --rm \
+      --name "$SLOTS" \
+      --network none \
+      --security-opt no-new-privileges \
+      --cap-drop ALL \
+      --user 0:0 \
+      -v "$SLOTS:/check-slots" \
+      --entrypoint sleep \
+      "$IMAGE" infinity >/dev/null 2>&1 || true
+    # Several slot loops get here in one moment when the keeper is gone (docker restarted, the keeper
+    # killed): one start wins, and the others fail on its name or remove what it had only created
+    # and start their own. Whichever keeper it is, the files are made in it once it runs: up to
+    # five seconds for that.
+    for try in $(seq 1 25); do
+      [ "$(docker container inspect -f '{{.State.Running}}' "$SLOTS" 2>/dev/null || true)" = true ] && break
+      sleep 0.2
+    done
+  fi
+  docker exec "$SLOTS" sh -c 'cd /check-slots && [ "$(stat -c %u:%a .)" = 0:755 ] && [ "$(stat -f -c %T .)" = tmpfs ] || exit 1
+    for file; do : >> "$file" || exit 1; done; chmod 0666 "$@"' sh "${SLOT_FILES[@]}" </dev/null >/dev/null 2>&1
+}
+if ! docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=1m,mode=0755,uid=0,gid=0 "$SLOTS" >/dev/null || ! start_slots; then
+  echo "cannot set up the check slots (the volume and the container $SLOTS): no runner starts without them, since its jobs would not count against one run limit. A volume of that name that is not in RAM, or whose directory is not root's alone, must be removed first." >&2
+  docker rm -f "$SLOTS" >/dev/null 2>&1 || true
   exit 2
 fi
 
@@ -320,7 +381,7 @@ refresh_bun_cache() {
     docker rm -f "$CACHE_CONTAINER" >/dev/null 2>&1 || true
     # The runner's hardening, the host user's files, no package scripts, and only what the lockfile
     # pins: --frozen-lockfile refuses to resolve anything else and Bun checks every download's
-    # integrity against it. Not in the runners' network namespace: their check.ts slots are theirs.
+    # integrity against it. On docker's default network, not a slot's, and without the check slots.
     # --foreground keeps it in this process group, which the launcher's exit stops whole; --init gives
     # the container a PID 1 that passes the deadline's SIGTERM on (a bare PID 1 ignores it), and -k
     # ends the client if it still waits. Whatever ended it, docker rm -f below ends the container.
@@ -410,25 +471,13 @@ cache_args() {
   fi
 }
 
-start_netns() {
-  local running
-  running="$(docker inspect -f '{{.State.Running}}' "$NETNS" 2>/dev/null || true)"
-  [ "$running" = true ] && return
-  # only a stopped one is in the way; a missing one leaves nothing to remove
-  if [ "$running" = false ]; then docker rm "$NETNS" >/dev/null 2>&1 || true; fi
-  docker run ${CPUSET_ARGS[@]+"${CPUSET_ARGS[@]}"} -d --rm \
-    --name "$NETNS" \
-    --security-opt no-new-privileges \
-    --cap-drop ALL \
-    --entrypoint sleep \
-    "$IMAGE" infinity >/dev/null ||
-    # two slot loops restarting it at once: the other one's start wins, and a runner that still
-    # finds no namespace fails to start, and its loop tries again
-    echo "[$NETNS] could not start the shared network namespace container" >&2
+# The slot's own docker network, made when it is not there.
+slot_network() {
+  docker network inspect "$1" >/dev/null 2>&1 || docker network create --driver bridge "$1" >/dev/null 2>&1
 }
 
 slot_loop() {
-  local slot="$1" name token container_status running labels="$LABELS"
+  local slot="$1" name token container_status running problem labels="$LABELS"
   name="${PREFIX}${slot}"
   if [ "$slot" -le "$((10#$RESERVED))" ]; then labels="$RESERVED_LABELS"; fi
   delay=30
@@ -442,12 +491,25 @@ slot_loop() {
       docker rm -f "$name" >/dev/null 2>&1 || true
       break
     done
-    if ! token="$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token)"; then
-      echo "[$name] could not fetch a registration token; retrying in ${delay}s" >&2
+    # Two seconds before every container of the slot, the first one after this launcher started
+    # included. The promoter (build-cache-promote.sh) tells a container's own job from a job of an
+    # earlier container of the slot by when it started, to the second, and the container before may
+    # have ended in this very second: killed with the launcher that started it, or one of an
+    # earlier launcher that the loop above waited for.
+    sleep 2
+    # The check slots and the slot's network first: without the first a job's check.ts stops, without
+    # the second no container starts, and neither is worth a registration token.
+    problem=""
+    if ! start_slots; then problem="could not make the check slots in $SLOTS"
+    elif ! slot_network "$name-net"; then problem="could not make the docker network $name-net"
+    elif ! token="$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token)"; then problem="could not fetch a registration token"
+    fi
+    if [ -n "$problem" ]; then
+      echo "[$name] $problem; retrying in ${delay}s" >&2
       [ "$ONCE" = 1 ] && return 1
       sleep "$delay"
-      # every slot asks, and GitHub limits these POSTs per hour: a fixed 30 s keeps the account
-      # over that limit for as long as it lasts, so back off to 10 minutes
+      # every slot asks for a token, and GitHub limits these POSTs per hour: a fixed 30 s keeps the
+      # account over that limit for as long as it lasts, so back off to 10 minutes
       delay=$(( delay * 2 > 600 ? 600 : delay * 2 ))
       continue
     fi
@@ -456,24 +518,24 @@ slot_loop() {
     # No core dumps: with the host's relative core_pattern ("core") a crash writes one into the
     # checkout, which scripts/check.ts then counts as a source change of the run.
     # The token goes in on stdin (entrypoint.sh), so it is never in the container's environment.
-    # a runner started after the namespace container went away would have no network
-    start_netns
     cache_args
     build_cache_args "$name"
     if printf '%s\n' "$token" | docker run ${CPUSET_ARGS[@]+"${CPUSET_ARGS[@]}"} --rm -i \
       --name "$name" \
-      --network "container:$NETNS" \
+      --network "$name-net" \
       --security-opt no-new-privileges \
       --cap-drop ALL \
       --pids-limit 8192 \
       --shm-size 2g \
       --ulimit core=0 \
+      -v "$SLOTS:/check-slots" \
       -e RUNNER_URL="https://github.com/$REPO" \
       -e RUNNER_NAME="$name" \
       -e RUNNER_LABELS="$labels" \
       ${CACHE_ARGS[@]+"${CACHE_ARGS[@]}"} \
       ${BUILD_CACHE_ARGS[@]+"${BUILD_CACHE_ARGS[@]}"} \
       ${WORK_TMPFS_ARGS[@]+"${WORK_TMPFS_ARGS[@]}"} \
+      "${SLOTS_ENV[@]}" \
       ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
       "$IMAGE"; then
       container_status=0
@@ -483,7 +545,6 @@ slot_loop() {
     fi
     token=""
     [ "$ONCE" = 1 ] && return "$container_status"
-    sleep 2
   done
 }
 
@@ -511,7 +572,14 @@ cleanup() {
   wait 2>/dev/null || true
   # a build client killed while its container still ran left the container behind
   docker rm -f "$CACHE_CONTAINER" >/dev/null 2>&1 || true
-  docker stop -t 5 "$NETNS" >/dev/null 2>&1 || true
+  # the slots' networks, with no container left on them, and the check slots' keeper last
+  for slot in $(seq 1 "$COUNT"); do
+    docker network rm "${PREFIX}${slot}-net" >/dev/null 2>&1 || true
+  done
+  docker stop -t 5 "$SLOTS" >/dev/null 2>&1 || true
+  # what a launcher from before the slots had networks of their own left when it was killed rather
+  # than stopped: the container whose network namespace all its runners shared
+  docker stop -t 5 "${PREFIX}net" >/dev/null 2>&1 || true
   # Remove any runner of this host that is still registered.
   ids="$(gh api "repos/$REPO/actions/runners" --paginate \
     --jq ".runners[] | select(.name | startswith(\"$PREFIX\")) | .id" 2>/dev/null || true)"
@@ -551,7 +619,6 @@ if [ -n "$BUILD_CACHE_ROOT" ]; then
   set +m
 fi
 
-start_netns
 for slot in $(seq 1 "$COUNT"); do
   slot_loop "$slot" &
   PIDS+=("$!")

@@ -30,7 +30,10 @@ clients pass on to their containers, ending the jobs. A container that holds a s
 running (created, or stopped) is removed, so it never holds the slot. Restart with the same `--count`: a container in a
 slot above the new count is no one's to wait for, and the new launcher's stop removes its runner. A
 launcher started with `--build-cache` serves the jobs it took over too, once its first cache refresh is
-done (up to `--cache-wait`).
+done (up to `--cache-wait`). Do not move this way from a launcher that kept its runners in one
+network namespace to one that keeps the [check slots](#check-slots) in a volume: the old containers
+count their runs on the shared loopback and the new ones in the files, so up to twice the run limit
+runs until the old jobs end. Restart that one with `systemctl --user restart`, at idle slots.
 
 A slot that cannot fetch a registration token retries after 30 s, doubling up to 10 minutes: GitHub
 limits these requests per hour, and eight slots retrying every 30 s keep the account over that limit,
@@ -42,11 +45,11 @@ not, and every container exits with a 404.
 reports launcher/container execution, not the GitHub Actions job's conclusion.
 
 Runner containers have no CPU or total-memory quota and can use available host resources.
-They all join the network namespace of one idle container, `herdr-ci-<host>-net`, which the
-launcher starts first and stops last. The runners therefore share a loopback, and with it
-`scripts/check.ts`'s slots: the herdr-backed CI lanes of every runner on the PC count against one
-`CHECK_MAX_RUNS` and wait for a slot, instead of each runner believing it has the PC to itself.
-The namespace is not the host's: a job still cannot reach a service on the host's loopback. The
+Each slot has a docker network of its own (`herdr-ci-<host>-<slot>-net`), with its runner container
+alone on it, so a job reaches nothing another job listens on, and none reaches a service on the
+host's loopback. What the runners share is `scripts/check.ts`'s slots, in a volume all of them mount:
+the herdr-backed CI lanes of every runner on the PC count against one `CHECK_MAX_RUNS` and wait for
+a slot, instead of each runner believing it has the PC to itself ([Check slots](#check-slots)). The
 `--shm-size 2g` Docker setting sizes `/dev/shm` for browser scratch space; it is not a total RAM
 limit. The container still has a pids limit of 8192, and `--ulimit core=0`: a crash never leaves a
 core file in the checkout, where `scripts/check.ts` would count it as a source change.
@@ -59,6 +62,61 @@ The caps are not reserved, but they are not a memory limit either: pick SIZE so 
 `--count` x 2 x SIZE stays below the host's free RAM (18 runners at `4g` can hold up to 144 GB).
 Below about 1g the checkout plus the seeded Bun cache no longer fits, and seeding falls back to
 downloading every package.
+
+## Check slots
+
+`scripts/check.ts` lets a few herdr-backed runs share a PC, each in a slot: a loopback port the run
+listens on, with more ports for admission and for the queue of waiting runs
+([Checks](../../docs/development.md#checks)). The runner containers of a PC used to share one
+network namespace so that those ports bounded the lanes of all of them. They shared every other
+loopback port with it. A job's tests keep Ovis servers on `127.0.0.1` with no token, and a request
+from the loopback drives such a server: a job on one slot could find the server of a job on
+another (the port is in the system's range), type into a pane of that job's test herdr session,
+and so run commands in that job's container. From there it could read what that job reads, and
+hand in a build cache claim from that container, which every check of [Build cache](#build-cache)
+accepts. Two test files bind a server with no token to every address, which a container on the
+same docker network reaches as well.
+
+So each slot has a docker network of its own, made when the slot first starts a container and
+removed at the launcher's stop, and docker keeps its networks apart. (A launcher that was killed
+leaves them, and the next one uses them; one started with a lower `--count` leaves those of the
+slots above it, for `docker network rm`.) Docker takes each network's addresses from its address
+pools (the P620 made twenty networks beside its own); a slot whose network cannot be made starts
+no runner, says so in the journal and tries again. The slots themselves are lock
+files, one for each port (`41737` to `41770`), in the Docker volume `herdr-ci-<host>-check-slots`
+(RAM, 1 MiB), which every runner container mounts at `/check-slots` and learns of in
+`CHECK_SLOTS_DIR`. A run holds a file with `flock`, which the kernel grants to one holder and takes
+back when that holder is gone, however it ended, as it does a listening port; the holder writes in
+the file what a port's holder answers (its pid and checkout, or its place in the queue). So the
+limit, the queue's order and the names in "the N-run limit is reached" are what they were. The
+volume's directory is root's and closed to everyone else, and the files are made by root (in
+`herdr-ci-<host>-check-slots`, an idle container with no network and no capability that also keeps
+the volume mounted between jobs): a job can lock a file and write in it, and can neither remove
+nor replace one. A job that holds every file keeps the others waiting, as one that listened on
+every port did; none can free a slot another job holds. What a job wrote in a file stays when the
+job is gone, and counts for nothing: a file is read only while a run holds it, and a run that finds
+no room in the volume for its own answer empties every file no run holds and writes again.
+`check.ts` creates no file: where one is missing, the run fails rather than count only its own
+container, and the launcher starts no runner while it cannot make them (a volume of that name that
+is not in RAM, or whose directory is not root's alone, must be removed first).
+
+A run that sets `CHECK_LOCK_PORT` keeps its ports: a lock range of its own was never the PC's.
+GitHub's own runners and a developer's PC set no `CHECK_SLOTS_DIR`, and take ports as before. The
+merge pass's local gate runs in containers of its own, outside these slots, as before.
+
+The job's side comes with the commit a run checks out. A `check.ts` from before this change takes
+loopback ports, which are its own container's here: it would count only itself, and nothing would
+bound such jobs but the number of runners. So the launcher hands it a run limit it stops on. The
+env file's `CHECK_HOST_MAX_RUNS` reaches a job as `CHECK_SLOTS_MAX_RUNS`, which only a `check.ts`
+that takes its slots in the volume reads, and `CHECK_HOST_MAX_RUNS` itself is a sentence in every
+container. A herdr-backed lane of a commit from before ends at once, before it starts any herdr,
+with `CHECK_MAX_RUNS must be a whole number from 1 to 8, not "taken from /check-slots on this
+runner, ...: merge main into the branch and push"`; its Fast checks take no slot and run. A pull
+request's run checks out its merge with main, so a new push has the new `check.ts` without a
+rebase; only a re-run of a run from before, or a branch that does not take main in (a release
+branch), meets the sentence, and that one runs on GitHub's runners (`CI_SELF_HOSTED_LABELS`,
+[below](#routing-jobs-to-it)) or takes the change in. A commit from before the env file existed
+(October 2026) reads neither variable: its lanes run, each counting only its own container.
 
 ## Prepared tools and caches
 
@@ -150,9 +208,10 @@ slot runs one job per container under the same runner name, and GitHub answers f
 slot runs when it answers, so a claim is also tied to the container whose job wrote it. The build
 is taken in only while the container docker names for the slot is the one it named when the claim
 was taken, and only for a job that started once that container had (to the second, with nothing
-allowed for the two clocks: `run.sh` waits two seconds before a slot's next container, and a
-container's own job starts ten or more after it), on the runner registered under the slot's name
-now. GitHub goes on listing the job
+allowed for the two clocks: `run.sh` waits two seconds before every container of a slot, the first
+after a launcher start included, since the container before may have been killed with the launcher
+that started it; and a container's own job starts ten or more after it), on the runner registered
+under the slot's name now. GitHub goes on listing the job
 of a container that was killed as running, for minutes and sometimes for days, and the container
 after it registers over the dead one's runner and keeps its id, so the start time is what tells
 that job from the container's own. `run.sh` empties a slot's outbox before it starts the slot's next
@@ -243,8 +302,8 @@ keep such a label in any `CI_SELF_HOSTED_LABELS` you set, since `["self-hosted"]
 A job waits for a runner that has every label it asks for, and only the P620 runs reserved slots (the
 maintainer PC's unit below has none): while the variable names the reserved labels and none of those
 runners is online, main's Linux jobs wait, so delete the variable when the P620 goes offline.
-`CI_SELF_HOSTED_LABELS='"ubuntu-24.04"'` still keeps main's jobs GitHub-hosted too. The reserved slots stay in the launcher's network
-namespace: they take runners away from pull requests, not load, and main's herdr-backed jobs still
+`CI_SELF_HOSTED_LABELS='"ubuntu-24.04"'` still keeps main's jobs GitHub-hosted too. The reserved slots mount the check
+slots of every other runner: they take runners away from pull requests, not load, and main's herdr-backed jobs still
 share `check.ts`'s slots (`CHECK_HOST_MAX_RUNS`) with theirs, so they can wait there for one.
 
 On the maintainer PC the launcher runs as the systemd user unit `ovis-ci-runner.service`
@@ -279,7 +338,9 @@ replace the workflow's values for the run, and a host without the file keeps `ci
 those CPUs, the runners and the cache builds alike, so work beside them keeps the rest. A list docker
 cannot give is refused at start (exit 2), before any slot asks for a registration token.
 
-Every runner of a host must read the same file, since they share the slots. Keep it outside this
+Every runner of a host must read the same file, since they share the slots. The launcher hands
+`CHECK_HOST_MAX_RUNS` on as `CHECK_SLOTS_MAX_RUNS` ([Check slots](#check-slots)); the file keeps the
+name. Keep it outside this
 directory (`~/.config/ovis-ci-runner/host.env`), so copying the directory again leaves it alone.
 The launcher refuses any line but a comment, a blank or `CHECK_HOST_<name>=<number>`: a bare `NAME`
 line would make Docker copy that variable from the launcher's own environment (`GH_TOKEN`, say)
@@ -318,6 +379,19 @@ A manual run can override the variable with the `self_hosted_labels` workflow_di
 ## Security model
 
 This is a public repository. A fork PR's run uses the fork's workflow files and `scripts/ci-runner-route.sh`, so it can choose `runs-on` itself. The runner therefore enforces the boundary: `job-started.sh` runs before every job (`ACTIONS_RUNNER_HOOK_JOB_STARTED`, set in the image, outside the workflow's control) and refuses any job whose event names another head repository (a fork pull request, a deleted head repository, a `workflow_run` of a fork). It fails closed: any exit before it explicitly allows the job, an error of its own included (a missing or unreadable event file, broken JSON, an unset variable), refuses it, and the refusal kills the worker before it logs anything, with SIGPIPE and termination signals ignored, so a closed output cannot stop it halfway. A failing hook alone is not enough: runner v2.338 marks only its "Set up runner" step failed and still runs the job's `if: always()` and `if: failure()` steps. So the hook SIGKILLs the job's `Runner.Worker` before it returns; the job then ends as failed within seconds with no step run and an empty log, and the refusal is written to the container's output (`journalctl --user -u ovis-ci-runner`). Both were checked on a live runner with a refused job: the old exit-only hook ran the `always()` and `failure()` steps, the killing hook ran none. Fork PR runs also need maintainer approval (repository setting: all outside collaborators); never approve one that changes `runs-on`. Containers are ephemeral (`--ephemeral`, `--rm`), unprivileged (`--cap-drop ALL`, `no-new-privileges`, no `--privileged`), have no host mounts but the read-only host caches and no Docker socket, and the image has no sudo. The registration token reaches the container on stdin, never through its environment, so a job cannot read it from `/proc/1/environ`.
+
+No job reaches another over the network: each slot's container is alone on its docker network, so
+the servers a job's tests keep on its loopback, and the two they bind to every address, answer
+only that job ([Check slots](#check-slots)). That rests on docker keeping its bridge networks
+apart, which it does with its own packet filter rules; a daemon run with `"iptables": false` writes
+none, and must not run these runners. Two jobs both write in the check slots volume (and, with
+`--build-cache`, in its locks volume, below): lock files they cannot remove or replace, 1 MiB in
+all. A job that holds them makes the others' herdr-backed lanes wait and then fail, and one that
+keeps them full makes them fail at once, for as long as it runs: a run that finds no room empties
+every file no run holds, so what a job wrote takes no room once the job is gone. What it writes
+there is read only as a pid, a checkout's name and a time, which the other jobs' logs then show,
+and can at worst send another job's lane away as a second run of its own checkout. All of that a
+job could do before, on the ports.
 
 The host caches cannot carry one job's code into another's: runners mount them read-only, and only
 the launcher writes them, the mirror from GitHub and the Bun cache from downloads checked against
