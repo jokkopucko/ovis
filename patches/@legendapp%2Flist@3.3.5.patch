@@ -143,3 +143,36 @@ diff --git a/react.mjs b/react.mjs
      settlePendingImperativeScroll(state);
      state.pendingScrollResolve = resolve;
      return token;
+@@ -7436,15 +7457,24 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+         params.index >= 0 ? () => isScrollToIndexReady(params.index) : void 0
+       );
+     },
+-    scrollToItem: ({ item, ...props }) => runScrollWithPromise(() => {
+-      const data = state.props.data;
+-      const index = data.indexOf(item);
+-      if (index !== -1) {
+-        scrollToIndex(ctx, { index, ...props });
+-        return true;
++    scrollToItem: ({ item, ...props }) => {
++      // A row the list does not hold: the request starts no scroll, and supersedes the one before
++      // it. One that has started is not over when it has moved the view: until its scroll event
++      // shows it at its target, or its timer ends it, the list keeps that target in view as rows
++      // change size. It ends here, as its timer would end it. (An initial scroll is superseded below.)
++      if (state.scrollingTo && !state.scrollingTo.isInitialScroll && state.props.data.indexOf(item) === -1) {
++        finishScrollTo(ctx);
+       }
+-      return false;
+-    }),
++      return runScrollWithPromise(() => {
++        const data = state.props.data;
++        const index = data.indexOf(item);
++        if (index !== -1) {
++          scrollToIndex(ctx, { index, ...props });
++          return true;
++        }
++        return false;
++      });
++    },
+     scrollToOffset: (params) => runScrollWithPromise(() => {
+       scrollTo(ctx, params);
+       return true;

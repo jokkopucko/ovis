@@ -374,6 +374,38 @@ try {
     const after = await settled(page);
     assert.ok(Math.abs(after - before) <= 1, `unfolding the newest output keeps a following reader where they were: ${before} -> ${after}`);
     console.log(`PASS ${width}: unfolding the newest tool output at the end stops following and keeps the view`);
+    // The list's own scroll to the end is not over once it has moved the view: for 100 ms more it
+    // keeps that end in view as rows change size. A reader who unfolds the output within that time
+    // reads it too, and is not scrolled past it. The output is folded again where the reader
+    // stands, which leaves the view at the end: Jump to latest then moves nothing, so no scroll
+    // event ends the list's scroll early, and the unfold comes in the frame after that scroll starts.
+    await testRow.locator(".chat-tool-result-more[aria-expanded=true]").dispatchEvent("click");
+    await testRow.locator(".chat-tool-result-more[aria-expanded=false]").waitFor();
+    await settled(page);
+    await more.evaluate((button) => {
+      const view = button.closest(".chat-view")!;
+      const unfold: { from: number | null } = { from: null };
+      Object.assign(window, { unfoldDuringListScroll: unfold });
+      const scrollTo = Element.prototype.scrollTo;
+      Element.prototype.scrollTo = function (this: Element, ...args: [ScrollToOptions?] | [number, number]) {
+        (scrollTo as (this: Element, ...args: unknown[]) => void).apply(this, args);
+        // the list scrolls the chat with behavior "auto"; the chat's own scrolls are instant
+        const [options] = args;
+        if (this !== view || typeof options !== "object" || options.behavior !== "auto") return;
+        Element.prototype.scrollTo = scrollTo;
+        requestAnimationFrame(() => {
+          unfold.from = view.scrollTop;
+          button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+        });
+      };
+    });
+    await jump.click();
+    await testRow.locator(".chat-tool-result-more[aria-expanded=true]").waitFor();
+    const rested = await settled(page);
+    const from = await page.evaluate(() => (window as unknown as { unfoldDuringListScroll: { from: number | null } }).unfoldDuringListScroll.from);
+    assert.ok(from !== null && Math.abs(rested - from) <= 1, `unfolding an output while the list's own scroll to the end is on its way keeps the reader where they were: ${from} -> ${rested}`);
+    assert.ok(await jump.count() > 0, "a reader who unfolded an output while the list's scroll to the end was on its way is no longer following it");
+    console.log(`PASS ${width}: unfolding an output while the list's own scroll to the end is on its way keeps the view`);
     // back at the end and following it again, the reader folds the output: they stay at the new end,
     // following it, with Jump to latest hidden (not taken up to the output's top, still following an
     // end out of view, or at the end with Jump to latest shown)
