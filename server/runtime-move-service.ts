@@ -10,6 +10,7 @@ import { freeAgentName } from "./agent-name.ts";
 import { agentPrompt, agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSendKeys, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
 import { MOVE_LABEL, startHerdrCoreAdapter } from "./herdr-core/adapter.ts";
 import { HcConnection, spawnHcConnect } from "./herdr-core/connection.ts";
+import { coreStartEnv, terminalEnvFor, userTerminalEnv } from "./herdr-core/terminal-env.ts";
 import { findHc } from "./herdr-core/discovery.ts";
 import { hcEnv } from "./herdr-core/runtime.ts";
 import { LAYOUT_DOC } from "./herdr-core/snapshot.ts";
@@ -142,12 +143,13 @@ export function herdrSource(holdsPending: (paneId: string) => boolean, inputEmpt
  */
 export async function coreDestination(stateDir: string, id: string): Promise<MoveDestination & { close: () => void }> {
   // the core the server reaches once it serves herdr-core: the hc startRuntime finds, run in hcEnv (runtime.ts)
-  const env = hcEnv();
-  const found = await findHc();
+  const env = hcEnv() ?? process.env;
+  // the panes it makes are new shells: the user's login environment, not the one of whatever started the core
+  const [found, terminalEnv] = await Promise.all([findHc(), userTerminalEnv(env)]);
   if (found === null) throw new Error("no herdr-core found");
-  const hc = new HcConnection(() => spawnHcConnect(found.bin, env));
+  const hc = new HcConnection(() => spawnHcConnect(found.bin, coreStartEnv(env, terminalEnv)));
   const socket = join(stateDir, `move-${id.slice(0, 8)}.sock`);
-  const adapter = await startHerdrCoreAdapter(hc, socket);
+  const adapter = await startHerdrCoreAdapter(hc, socket, undefined, { terminalEnv: terminalEnvFor(hc, terminalEnv, env) });
   if (process.platform !== "win32") chmodSync(socket, 0o600);
   return {
     appArranged: async () => { const doc = await hc.call("doc.get", { name: LAYOUT_DOC }); return doc.value !== null && doc.value !== undefined; },

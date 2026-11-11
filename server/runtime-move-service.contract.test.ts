@@ -39,6 +39,8 @@ describe.skipIf(!bin)("move of herdr's session to a real herdr-core", () => {
     // a stand-in agent first on the core's PATH: an agent the move starts there is never a real CLI
     writeFileSync(join(root, "bin", "claude"), "#!/bin/sh\n[ \"$2\" = refused ] && { sleep 2; exit 1; }\nwhile :; do sleep 60; done\n");
     chmodSync(join(root, "bin", "claude"), 0o755);
+    // and on the PATH of the login shell the move's panes start from: Debian's /etc/profile sets a PATH of its own
+    writeFileSync(join(root, "home", ".profile"), `export PATH="${join(root, "bin")}:$PATH"\n`);
     env = isolatedHcEnv(root, { PATH: `${join(root, "bin")}:/usr/bin:/bin`, SHELL: "/bin/bash", OVIS_HC_BIN: bin! });
     // the move reaches the core the server would once it serves herdr-core (runtime.ts hcEnv)
     process.env["OVIS_HC_ENV"] = JSON.stringify(env);

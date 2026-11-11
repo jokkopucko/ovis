@@ -129,7 +129,7 @@ for (const method of ["call", "open"] as const) {
   });
 }
 /** `machine`: the adapter of that other machine's server (machine-scope.ts), as machine-entry.ts starts it; `pc`: the PC it runs on, in place of this one */
-async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}, observeSeen?: SeenObserver, machine?: string, pc: Pick<AdapterOptions, "platform" | "processTable"> = {}) {
+async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}, observeSeen?: SeenObserver, machine?: string, pc: Pick<AdapterOptions, "platform" | "processTable" | "terminalEnv"> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-"));
   const socket = join(dir, "herdr.sock");
   const cores: FakeCore[] = [];
@@ -767,7 +767,7 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
 
 describe("herdr-core adapter, new and closed terminals", () => {
   /** a core whose terminal list follows its own terminal.run, terminal.kill and terminal.rm */
-  async function living(start: HcTerminal[], extra: Record<string, Handler> = {}) {
+  async function living(start: HcTerminal[], extra: Record<string, Handler> = {}, pc: Pick<AdapterOptions, "terminalEnv"> = {}) {
     const terminals = [...start];
     const runs: Record<string, unknown>[] = [];
     const ends: string[] = [];
@@ -792,7 +792,7 @@ describe("herdr-core adapter, new and closed terminals", () => {
         return { removed: params["terminal"] };
       },
       ...extra,
-    });
+    }, undefined, undefined, pc);
     return { ...ready, runs, ends };
   }
   /** a core no Herdr app arranges: its layout document was never written */
@@ -1020,6 +1020,21 @@ describe("herdr-core adapter, new and closed terminals", () => {
     const { socket, runs } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T" } })], NO_DOC);
     await expect(herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket)).rejects.toMatchObject({ code: "unsupported" });
     expect(runs).toEqual([]);
+  });
+
+  it("starts each shell in the user's terminal environment, under what the call asks for", async () => {
+    // regression: the move's panes had only the env of whatever started the core, an agent's NO_COLOR included
+    const terminalEnv = { NO_COLOR: "", GH_TOKEN: "from-profile", TERM: "xterm-256color" };
+    const { socket, runs } = await living([terminal("t1")], {}, { terminalEnv: async () => terminalEnv });
+    await workspaceCreate({ cwd: "/work/web", label: "web" }, socket);
+    await herdrRpc("workspace.create", { cwd: "/work/api", env: { GH_TOKEN: "asked" } }, socket);
+    expect(runs.map((run) => run["env"])).toEqual([terminalEnv, { ...terminalEnv, GH_TOKEN: "asked" }]);
+  });
+
+  it("sends hc no env at all when there is none to give, as on Windows", async () => {
+    const { socket, runs } = await living([terminal("t1")], {}, { terminalEnv: async () => ({}) });
+    await workspaceCreate({ cwd: "/work/web", label: "web" }, socket);
+    expect(runs[0]).not.toHaveProperty("env");
   });
 
   it("starts a new workspace as a kept shell labeled with a space and tab of its own, named as asked", async () => {

@@ -24,6 +24,7 @@ export const RUNTIME_MOVE_KO: Record<string, string> = {
   "A command is running": "명령 실행 중",
   "{command} running": "{command} 실행 중",
   "Scrollback and programs running in shells do not come along. herdr itself stays as it is.": "이전 출력(스크롤백)과 셸에서 돌던 프로그램은 옮겨지지 않습니다. herdr 자체는 그대로 둡니다.",
+  "Each pane opens a new shell from your login profile: variables set by hand in a pane stay behind.": "각 패널은 로그인 프로필로 새 셸을 엽니다. 패널에서 직접 설정한 변수는 옮겨지지 않습니다.",
   "Move everything": "전부 옮기기",
   "Move everything once all work is done": "작업이 모두 끝나면 한꺼번에 옮기기",
 

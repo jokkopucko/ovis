@@ -50,6 +50,15 @@ const LOGIN_PATH_START = "__OVIS_LOGIN_PATH__";
 const LOGIN_PATH_END = "__OVIS_LOGIN_PATH_END__";
 /** The fixed text the login shell runs: no request's kind or argument is ever part of it. printenv prints PATH joined by `:` in fish too. */
 const LOGIN_PATH_SCRIPT = `printf '\\n%s\\n' ${LOGIN_PATH_START}; printenv PATH; printf '%s\\n' ${LOGIN_PATH_END}`;
+const LOGIN_ENV_START = "__OVIS_LOGIN_ENV__";
+const LOGIN_ENV_END = "__OVIS_LOGIN_ENV_END__";
+/**
+ * The same for the whole environment, printed as JSON by this server's own runtime: `env` prints one
+ * `NAME=value` per line, which a value holding a newline or an exported bash function
+ * (`BASH_FUNC_f%%=() {…`) cannot be read back from. Single quotes read the same in fish.
+ */
+const loginEnvScript = (runtime: string): string =>
+  `printf '\\n%s\\n' ${LOGIN_ENV_START}; '${runtime}' --no-env-file -e 'process.stdout.write(JSON.stringify(process.env))'; printf '\\n%s\\n' ${LOGIN_ENV_END}`;
 
 /** The user's login shell as an absolute executable: $SHELL, else the account's; null when neither is one. */
 export function loginShell(env: Record<string, string | undefined> = process.env): string | null {
@@ -68,6 +77,20 @@ export function parseLoginPath(output: string): string | null {
   return path === "" ? null : path;
 }
 
+/**
+ * The variables the probe printed as JSON between its markers, those named as a shell variable can
+ * be (an exported bash function's `BASH_FUNC_f%%` is not one); null when there is no such object.
+ */
+export function parseLoginEnv(output: string): Record<string, string> | null {
+  const start = output.lastIndexOf(`\n${LOGIN_ENV_START}\n`);
+  const end = output.lastIndexOf(`\n${LOGIN_ENV_END}\n`);
+  if (start === -1 || end < start) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(output.slice(start + LOGIN_ENV_START.length + 2, end)); } catch { return null; }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0])));
+}
+
 /** The login shell's PATH, or why it gave none. */
 export type LoginPathResult = { path: string } | { path: null; reason: string };
 
@@ -84,11 +107,29 @@ export interface LoginPathProbe {
  * the kernel, say on a hung home) is answered for `graceMs` after the kill and reaped when it
  * exits. The output is read until its pipes close, at most `graceMs` past the shell's exit.
  */
-export function loginPathProbe(options: { shell: string; env?: Record<string, string | undefined>; timeoutMs?: number; maxBytes?: number; graceMs?: number }): LoginPathProbe {
-  const { shell, env = process.env, timeoutMs = 2000, maxBytes = 64 * 1024, graceMs = 500 } = options;
-  return (signal) => new Promise((resolve) => {
-    if (signal.aborted) { resolve({ path: null, reason: "stopped" }); return; }
-    const child = spawn(shell, ["-l", "-c", LOGIN_PATH_SCRIPT], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
+  const probe = loginShellProbe(options, LOGIN_PATH_SCRIPT, parseLoginPath, "PATH");
+  return async (signal) => {
+    const result = await probe(signal);
+    return result.value === null ? { path: null, reason: result.reason } : { path: result.value };
+  };
+}
+
+/** The environment the user's login shell sets up, or why it gave none; run as loginPathProbe runs. */
+export function loginEnvProbe(options: LoginShellOptions, runtime: string = process.execPath): (signal: AbortSignal) => Promise<{ value: Record<string, string> } | { value: null; reason: string }> {
+  if (runtime.includes("'")) return async () => ({ value: null, reason: `${runtime} cannot be quoted for the login shell` });
+  return loginShellProbe({ maxBytes: 256 * 1024, ...options }, loginEnvScript(runtime), parseLoginEnv, "environment");
+}
+
+/** `cwd`: where the shell starts (this process's folder when unset) */
+interface LoginShellOptions { shell: string; env?: Record<string, string | undefined>; cwd?: string; timeoutMs?: number; maxBytes?: number; graceMs?: number }
+
+function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (output: string) => T | null, what: string): (signal: AbortSignal) => Promise<{ value: T } | { value: null; reason: string }> {
+  const { shell, env = process.env, cwd, timeoutMs = 2000, maxBytes = 64 * 1024, graceMs = 500 } = options;
+  type Result = { value: T } | { value: null; reason: string };
+  return (signal) => new Promise<Result>((resolve) => {
+    if (signal.aborted) { resolve({ value: null, reason: "stopped" }); return; }
+    const child = spawn(shell, ["-l", "-c", script], { env, ...(cwd ? { cwd } : {}), stdio: ["ignore", "pipe", "pipe"], detached: true });
     const chunks: Buffer[] = [];
     let bytes = 0;
     /** why the group was killed; set once */
@@ -96,7 +137,7 @@ export function loginPathProbe(options: { shell: string; env?: Record<string, st
     let exited = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
-    const done = (result: LoginPathResult): void => {
+    const done = (result: Result): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -108,23 +149,23 @@ export function loginPathProbe(options: { shell: string; env?: Record<string, st
       resolve(result);
     };
     const answer = (): void => {
-      const path = parseLoginPath(Buffer.concat(chunks).toString("utf8"));
-      done(path === null ? { path: null, reason: `${shell} -l printed no PATH between its markers` } : { path });
+      const value = read(Buffer.concat(chunks).toString("utf8"));
+      done(value === null ? { value: null, reason: `${shell} -l printed no ${what} between its markers` } : { value });
     };
     const kill = (reason: string): void => {
       if (failure !== null) return;
       failure = `${shell} -l ${reason}`;
       // after the exit the group is already killed: only the output was still being read
-      if (exited) { done({ path: null, reason: failure }); return; }
+      if (exited) { done({ value: null, reason: failure }); return; }
       try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
       // the answer never waits on an exit SIGKILL may not bring; the exit handler still reaps it
       const killed = failure;
-      grace = setTimeout(() => done({ path: null, reason: `${killed}, and did not end after SIGKILL` }), graceMs);
+      grace = setTimeout(() => done({ value: null, reason: `${killed}, and did not end after SIGKILL` }), graceMs);
     };
     const stopped = (): void => kill("was stopped");
     const timer = setTimeout(() => kill(`timed out after ${timeoutMs} ms`), timeoutMs);
     signal.addEventListener("abort", stopped, { once: true });
-    // both streams share one budget; only stdout carries the PATH
+    // both streams share one budget; only stdout carries the answer
     const count = (chunk: Buffer): boolean => {
       bytes += chunk.length;
       if (bytes > maxBytes) kill(`printed over ${maxBytes} bytes`);
@@ -133,13 +174,13 @@ export function loginPathProbe(options: { shell: string; env?: Record<string, st
     child.stdout!.on("data", (chunk: Buffer) => { if (count(chunk)) chunks.push(chunk); });
     child.stderr!.on("data", count);
     // a shell that cannot be run never exits: its error is the answer
-    child.on("error", (error: NodeJS.ErrnoException) => done({ path: null, reason: `${shell} could not run: ${error.code ?? error.message}` }));
+    child.on("error", (error: NodeJS.ErrnoException) => done({ value: null, reason: `${shell} could not run: ${error.code ?? error.message}` }));
     child.on("exit", (code, exitSignal) => {
       exited = true;
       // whatever the shell left in its group goes with it
       try { process.kill(-child.pid!, "SIGKILL"); } catch { /* the group is gone */ }
-      if (failure !== null) { done({ path: null, reason: failure }); return; }
-      if (code !== 0) { done({ path: null, reason: `${shell} -l ended with ${code === null ? exitSignal : `exit ${code}`}` }); return; }
+      if (failure !== null) { done({ value: null, reason: failure }); return; }
+      if (code !== 0) { done({ value: null, reason: `${shell} -l ended with ${code === null ? exitSignal : `exit ${code}`}` }); return; }
       // stdout may still hold output at exit: it is read until close, bounded, as a process outside
       // the group (one the profile moved to a session of its own) may keep the pipe open
       grace = setTimeout(answer, graceMs);

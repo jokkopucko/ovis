@@ -3,6 +3,7 @@ import { startHerdrCoreAdapter, type HerdrCoreAdapter } from "./adapter.ts";
 import { HcConnection, spawnHcConnect } from "./connection.ts";
 import { MachineScopedConnection } from "./machine-scope.ts";
 import { SeenMarker } from "./seen-label.ts";
+import { coreStartEnv, terminalEnvFor, userTerminalEnv } from "./terminal-env.ts";
 import { existsSync } from "node:fs";
 import { coreSocket, findHc, type FoundHc } from "./discovery.ts";
 import { adapterAddress } from "./pipe.ts";
@@ -118,6 +119,9 @@ let herdrSocketBefore: { HERDR_SOCKET: string | undefined } | null = null;
 /** the adapter socket startRuntime last put in HERDR_SOCKET: a later start in this process finds it there, not the one from before */
 let adapterSocket: string | null = null;
 
+/** what startRuntime read for this PC's terminals (terminal-env.ts): a core `hc connect` starts, and every shell the adapter starts, run in it */
+let terminalEnvironment: Record<string, string> = {};
+
 let connection: HcConnection | null = null;
 
 let marker: SeenMarker | null = null;
@@ -130,7 +134,7 @@ export function coreSeenMarker(): SeenMarker {
 
 /** The server's one line to hc, which the adapter answers through and live terminals stream on. */
 export function coreConnection(): HcConnection {
-  const spawn = () => spawnHcConnect(hcBin(), { ...(hcEnv() ?? process.env), ...herdrSocketBefore });
+  const spawn = () => spawnHcConnect(hcBin(), coreStartEnv({ ...(hcEnv() ?? process.env), ...herdrSocketBefore }, terminalEnvironment));
   const machine = hcMachine();
   connection ??= machine === null ? new HcConnection(spawn) : new MachineScopedConnection(spawn, machine.name, machine.id);
   return connection;
@@ -142,7 +146,8 @@ export function coreConnection(): HcConnection {
  * HERDR_SOCKET pointed at it before anything reads it; on herdr, nothing. Another Ovis still serving the same state folder is an error, and so is a PC
  * where no hc answers as herdr-core's: nothing is started, and nothing else is run as hc.
  */
-export async function startRuntime(stateDir: string, find: (onRefused?: (bin: string, reason: string) => void) => Promise<FoundHc | null> = (onRefused) => findHc(onRefused ? { onRefused } : {})): Promise<HerdrCoreAdapter | null> {
+export async function startRuntime(stateDir: string, find: (onRefused?: (bin: string, reason: string) => void) => Promise<FoundHc | null> = (onRefused) => findHc(onRefused ? { onRefused } : {}),
+  terminalEnv: () => Promise<Record<string, string>> = () => userTerminalEnv(hcEnv() ?? process.env)): Promise<HerdrCoreAdapter | null> {
   // never serve herdr in its place under its name: the server says which runtime it serves
   if (runtime() === "alt-runtime") throw new NoAltRuntimeError("this Ovis cannot start alt-runtime yet");
   if (runtime() !== "herdr-core") return null;
@@ -150,9 +155,18 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
     throw new Error(`OVIS_RUNTIME=herdr-core is served on Linux, macOS and Windows, not ${platform}`);
   }
-  // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one
+  // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one.
+  // The terminals' environment is read meanwhile (both run a login shell) and settled either way, a search
+  // that throws included, so no read outlives a start that gives up; another machine's terminals are not
+  // this PC's user's, and keep that machine's own
   const refused: string[] = [];
-  const core = await find((bin, reason) => { refused.push(`${bin}: ${reason}`); });
+  const [looked, read] = await Promise.allSettled([
+    find((bin, reason) => { refused.push(`${bin}: ${reason}`); }),
+    hcMachine() === null ? terminalEnv() : Promise.resolve({}),
+  ]);
+  if (looked.status === "rejected") throw looked.reason;
+  if (read.status === "rejected") throw read.reason;
+  const [core, terminals] = [looked.value, read.value];
   if (core === null) {
     // the message is what the server logs as it gives up: each refused hc is named there, once
     const passedOver = refused.length === 0 ? "" : ` Passed over as another account could change them: ${refused.join("; ")}. Make the folder yours alone (\`chmod g-w <folder>\`) or set OVIS_HC_BIN to the hc you trust.`;
@@ -166,11 +180,12 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   const unix = platform !== "win32";
   if (unix && statSync(stateDir).uid !== process.geteuid?.()) throw new Error("the herdr-core state directory is not owned by this user");
   if (unix) chmodSync(stateDir, 0o700);
+  terminalEnvironment = terminals;
   const hc = coreConnection();
   // on Windows the pipe is named after the folder itself: a junction or a short (8.3) spelling of it names the same pipe
   const adapter = await startHerdrCoreAdapter(hc, adapterAddress(unix ? stateDir : realpathSync.native(stateDir), platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels),
     // another machine's OpenCode keeps its sessions there: none of its panes is bound to one here
-    hcMachine() !== null ? { otherMachine: true } : { opencodeTitled: (title) => opencodeSessionsTitled(opencodeDatabasePath(), title) });
+    hcMachine() !== null ? { otherMachine: true } : { opencodeTitled: (title) => opencodeSessionsTitled(opencodeDatabasePath(), title), terminalEnv: terminalEnvFor(hc, terminalEnvironment, hcEnv() ?? process.env) });
   if (unix) chmodSync(adapter.socketPath, 0o600);
   if (herdrSocketBefore === null || process.env["HERDR_SOCKET"] !== adapterSocket) herdrSocketBefore = { HERDR_SOCKET: process.env["HERDR_SOCKET"] };
   adapterSocket = adapter.socketPath;
@@ -184,6 +199,7 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
       hc.close();
       connection = null;
       marker = null;
+      terminalEnvironment = {};
       serveRuntime(null);
       found = null;
       search = null;

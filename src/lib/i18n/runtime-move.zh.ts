@@ -24,6 +24,7 @@ export const RUNTIME_MOVE_ZH: Record<string, string> = {
   "A command is running": "命令运行中",
   "{command} running": "{command} 运行中",
   "Scrollback and programs running in shells do not come along. herdr itself stays as it is.": "历史输出（回滚缓冲）和 Shell 中运行的程序不会迁移。herdr 本身保持不变。",
+  "Each pane opens a new shell from your login profile: variables set by hand in a pane stay behind.": "每个窗格都按登录配置文件打开新的 shell，在窗格里手动设置的变量不会迁移。",
   "Move everything": "全部迁移",
   "Move everything once all work is done": "等所有工作完成后一次性迁移",
 
