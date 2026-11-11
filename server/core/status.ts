@@ -252,9 +252,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /**
    * The status the pane's queued input goes by: a Claude pane shown at rest while a busy signal
    * whose turn was never written holds it (ClaudeSubagentStatus.holdsQueue) is not ready for it.
-   * Nor is one whose turn Claude resumed by itself (a /loop wakeup, a scheduled task) and no rest was
-   * written since, which herdr may still read at rest, or at rest again (loopHolds, #3494): that
-   * hold is the transcript's alone, so no word of herdr's begins or ends it.
+   * Nor is one whose turn Claude resumed by itself (a /loop wakeup, a scheduled task, a background
+   * task's notice) and no rest was written since, which herdr may still read at rest, or at rest
+   * again (loopHolds, #3494): that hold is the transcript's alone, so no word of herdr's begins or
+   * ends it.
    */
   function queueStatus(paneId: string, status: AgentStatus): AgentStatus {
     if (agentNow.get(paneId) !== "claude" || (status !== "idle" && status !== "done")) return status;
@@ -772,13 +773,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /**
    * Whether a pane shown at rest holds its queue (queueStatus), as its last poll left it. `fresh`: whether a
    * turn Claude resumed by itself holds it, as the pane's transcript says now, read before answering: a /loop
-   * wakeup or a scheduled task may have fired since that poll (#3494). Only that hold is read anew, and only
-   * it is answered for: it is the one a transcript line begins with no word of herdr's, and a pane with no
-   * such line is asked nothing it was not asked before. A hold that read finds begun or ended is told to the
-   * queue, as by any poll (ClaudeSubagentStatus.loopHoldsNow). A pane whose transcript is not found has none
-   * to read, and none is looked for here (a snapshot does, ClaudeSubagentStatus.ensure): nothing holds it
-   * until then. `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks
-   * read an answer up to a poll old, with every test still passing.
+   * wakeup or a scheduled task may have fired since that poll, or a background task ended (#3494). Only that
+   * hold is read anew, and only it is answered for: it is the one a transcript line begins with no word of
+   * herdr's, and a pane with no such line is asked nothing it was not asked before. A hold that read finds
+   * begun or ended is told to the queue, as by any poll (ClaudeSubagentStatus.loopHoldsNow). A pane whose
+   * transcript is not found has none to read, and none is looked for here (a snapshot does,
+   * ClaudeSubagentStatus.ensure): nothing holds it until then. `fresh` is asked of every caller: a wiring
+   * that dropped it would make delivery's last checks read an answer up to a poll old, with every test still
+   * passing.
    */
   const queueHeld = (paneId: string, fresh: boolean): boolean =>
     fresh ? agentNow.get(paneId) === "claude" && claudeAgents.loopHoldsNow(paneId) : queueStatus(paneId, "idle") === "working";

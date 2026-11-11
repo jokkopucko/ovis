@@ -1330,6 +1330,117 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
+    it("holds no longer than LOOP_HOLD_MS past the poll that finds this PC's clock set back since the hold began", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      let now = NOW;
+      const { status, told } = await tracked(s, () => now);
+      try {
+        fire(s, 3);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // the clock is set back ten minutes with the hold standing, and its turn writes no rest
+        now = NOW - 10 * 60_000;
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // the hold's time runs from that poll at the latest, not from a start ten minutes ahead of this clock
+        now += LOOP_HOLD_MS - 1;
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        now += 1;
+        expect(status.loopHolds("p1")).toBe(false);
+        status.poll();
+        expect(told).toEqual([false, true, false]);
+      } finally { status.stop(); }
+    });
+
+    it("ends a hold a minute after the poll that finds the clock set back to before it began, and one set back by less a minute after it began by the clock as it is", async () => {
+      // [how far into the hold the clock goes back, by how much, how long the hold then stands from the poll that finds it so]
+      const steps: [number, number, number][] = [
+        // to before the hold began, by less than its time: it holds from that poll, for LOOP_HOLD_MS and no longer
+        [10_000, 30_000, LOOP_HOLD_MS],
+        [59_000, 59_001, LOOP_HOLD_MS],
+        // by less than its age: nothing tells a clock set back from one that was not, so the hold stands for what the
+        // clock as it is now leaves of its time. Never longer than LOOP_HOLD_MS past that poll, and told when it ends
+        [50_000, 40_000, LOOP_HOLD_MS - 10_000],
+        [59_000, 58_000, LOOP_HOLD_MS - 1000],
+      ];
+      for (const [into, back, left] of steps) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        let now = NOW;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          fire(s, 3);
+          status.poll();
+          // a poll that finds the clock gone on moves nothing, half a second into the hold or later
+          now += 500;
+          status.poll();
+          now += into - 500;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          // the clock is set back with the hold standing, and its turn writes no rest
+          now -= back;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          now += left - 1;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          now += 1;
+          expect(status.loopHolds("p1")).toBe(false);
+          status.poll();
+          expect(told).toEqual([false, true, false]);
+        } finally { status.stop(); }
+      }
+    });
+
+    it("brings no hold back when this PC's clock is set back after the hold ran out its time", async () => {
+      // the pane's files as the polls after the hold find them: read again at each poll, or quiet since before the
+      // hold ended, when a poll that finds them as they were reads nothing
+      for (const files of ["read at each poll", "quiet, and read by no later poll"] as const) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        // quiet files are older than this clock by more than a second (a folder's change time is this PC's own)
+        let now = files === "read at each poll" ? NOW : Date.now() + 5000;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          fire(s, 3);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          // its turn writes no rest: the hold runs out its time, and the pane's poll says so
+          now += LOOP_HOLD_MS;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(told).toEqual([false, true, false]);
+          now += 4000;
+          status.poll();
+          now += 6000;
+          status.poll();
+          // the clock is set back ten minutes, to before the hold began: by that clock its time is not up
+          now -= 10 * 60_000;
+          // the hold that ended stays ended. One that stood again would hold a queue that was told nothing, and where
+          // no poll reads the files no word would follow when its time was up a second time
+          expect(status.loopHolds("p1")).toBe(false);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+          // nor later, as that clock comes to the hold's first minute again
+          now += 9 * 60_000 + 30_000;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(told).toEqual([false, true, false]);
+          // the next fire holds as any does
+          fire(s, 4);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          expect(told).toEqual([false, true, false, true]);
+        } finally { status.stop(); }
+      }
+    });
+
     it("lets go by itself, and says so, once no rest was written for LOOP_HOLD_MS", async () => {
       const s = session();
       s.prompt(1);
@@ -1880,6 +1991,319 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
+    describe("a turn resumed on a background task's notice", () => {
+      const block = (id = "bq1") => `<task-notification>\n<task-id>${id}</task-id>\n<tool-use-id>toolu_${id}</tool-use-id>\n<status>completed</status>\n<summary>Background command "bun test" completed (exit code 0)</summary>\n</task-notification>`;
+      /** The notice as Claude queues it when the task ends, and as it takes it off its queue to begin a turn on it. */
+      const queued = (s: Session, minute: number) => s.parent({ type: "queue-operation", operation: "enqueue", timestamp: at(minute), content: block() });
+      const taken = (s: Session, minute: number) => s.parent({ type: "queue-operation", operation: "dequeue", timestamp: at(minute) });
+      /**
+       * The prompt of the turn Claude resumes on that notice, with the keys Claude Code 2.1.296 to 2.1.321 write on
+       * it (read from the transcripts of this PC): the notice itself as a user entry, with `turnOrigin`
+       * `task_notification`, an `origin` of the kind `task-notification` and a permission mode, and not meta. Its
+       * other keys (promptId, promptSource, queueSkipAttachments, turnPosition) are not read.
+       */
+      const prompt = (s: Session, minute: number, written = at(minute)) => s.parent({
+        type: "user", isSidechain: false, origin: { kind: "task-notification" }, permissionMode: "auto", turnOrigin: "task_notification", timestamp: written,
+        message: { role: "user", content: block() },
+      });
+      /** A task that ends with the session at rest: its notice is queued and taken off the queue, and its turn's prompt written. */
+      const notices = (s: Session, minute: number) => { queued(s, minute); taken(s, minute); prompt(s, minute); };
+
+      it("holds the queue from the prompt of the notice's turn to that turn's rest, whatever herdr reads the pane as", async () => {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        const { status, told } = await tracked(s);
+        try {
+          // the notice queued, and taken off the queue, tells of no turn yet
+          queued(s, 3);
+          taken(s, 3);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          prompt(s, 3);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          // herdr reads the pane at rest until it reads that turn: in every snapshot, and in an event of the turn before
+          status.quiet("p1", false);
+          status.quiet("p1", true);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          // what the turn writes is no rest
+          answer(s, 4);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          rest(s, 4);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          // the hold was told as it came and as it went
+          expect(told).toEqual([false, true, false]);
+        } finally { status.stop(); }
+      });
+
+      it("holds to that turn's rest or its time, whatever herdr says of the pane and whenever it says it", async () => {
+        const words: ((status: ClaudeSubagentStatus) => void)[] = [
+          // herdr tells a turn at work: the notice's on time, or the one before it late
+          (status) => { status.quiet("p1", true); status.busy("p1", "herdr"); },
+          // and then reads the pane at rest: the turn before's rest, or the notice's turn interrupted with no rest written
+          (status) => { status.quiet("p1", true); status.busy("p1", "herdr"); status.quiet("p1", true); },
+          // its working with no rest word heard in an event before it (the server just started), then its rest word
+          (status) => { status.quiet("p1", false); status.busy("p1", "herdr"); status.quiet("p1", true); },
+          // the chat's own send
+          (status) => status.busy("p1", "chat", Date.parse(at(3))),
+        ];
+        for (const say of words) {
+          for (const said of ["before the prompt is written", "with the prompt written and read by no poll", "after the prompt was read"] as const) {
+            for (const end of ["rest", "time"] as const) {
+              const s = session();
+              s.prompt(1);
+              rest(s, 2);
+              let now = NOW;
+              const { status, told } = await tracked(s, () => now);
+              try {
+                if (said === "before the prompt is written") say(status);
+                notices(s, 5);
+                if (said === "with the prompt written and read by no poll") say(status);
+                status.poll();
+                if (said === "after the prompt was read") say(status);
+                status.poll();
+                expect(status.loopHolds("p1")).toBe(true);
+                expect(told.at(-1)).toBe(true);
+                answer(s, 5);
+                status.poll();
+                expect(status.loopHolds("p1")).toBe(true);
+                // only its rest, or its time, ends the hold, and is told
+                if (end === "rest") rest(s, 6); else now += LOOP_HOLD_MS;
+                status.poll();
+                expect(status.loopHolds("p1")).toBe(false);
+                expect(told.at(-1)).toBe(false);
+              } finally { status.stop(); }
+            }
+          }
+        }
+      });
+
+      it("lets go by itself, and says so, LOOP_HOLD_MS after the prompt of a notice's turn that wrote no rest was read", async () => {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        let now = NOW;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          notices(s, 3);
+          status.poll();
+          now += LOOP_HOLD_MS - 1;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          const before = told.length;
+          // a turn interrupted on a Claude Code that writes no rest for it, or whose session writes none at all
+          now += 1;
+          expect(status.loopHolds("p1")).toBe(false);
+          status.poll();
+          expect(told.slice(before)).toEqual([false]);
+          // and what that turn writes later brings no hold back
+          answer(s, 4);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+        } finally { status.stop(); }
+      });
+
+      it("brings no hold back for a notice's turn that wrote no rest when this PC's clock is set back after its minute", async () => {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        // the files are older than this clock by more than a second: a poll that finds them as they were reads nothing
+        let now = Date.now() + 5000;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          notices(s, 3);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          // a session that writes no rest: the hold runs out its minute, and two polls follow
+          now += LOOP_HOLD_MS;
+          status.poll();
+          expect(told).toEqual([false, true, false]);
+          now += 4000;
+          status.poll();
+          now += 6000;
+          status.poll();
+          // the clock is set back ten minutes
+          now -= 10 * 60_000;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+          expect(told).toEqual([false, true, false]);
+        } finally { status.stop(); }
+      });
+
+      it("tells a notice's turn by the turnOrigin of the session's own prompt alone", async () => {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        const { status } = await tracked(s);
+        /** each is read by itself, and its turn brought to rest before the next */
+        const holdsNothing = (write: () => void) => {
+          write();
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          rest(s, 3);
+          status.poll();
+        };
+        try {
+          // the notice in Claude's queue, taken off it, and taken into a turn already at work: none begins a turn
+          holdsNothing(() => queued(s, 3));
+          holdsNothing(() => taken(s, 3));
+          holdsNothing(() => s.parent({ type: "attachment", timestamp: at(3), attachment: { type: "queued_command", commandMode: "task-notification", prompt: block() } }));
+          // a notice written as a user entry with no turnOrigin: one of that origin that no answer followed (17 in the
+          // transcripts of this PC), and one an older Claude Code marks as its own
+          holdsNothing(() => s.parent({ type: "user", isSidechain: false, origin: { kind: "task-notification" }, permissionMode: "auto", timestamp: at(3), message: { role: "user", content: block() } }));
+          holdsNothing(() => s.parent({ type: "user", isMeta: true, timestamp: at(3), message: { role: "user", content: block() } }));
+          // a prompt of the person's that quotes the key, and one that holds it in an object inside it
+          holdsNothing(() => s.parent({ type: "user", timestamp: at(3), permissionMode: "default", origin: { kind: "human" }, turnOrigin: "human", message: { role: "user", content: 'why "turnOrigin":"task_notification"?' } }));
+          holdsNothing(() => s.parent({ type: "user", timestamp: at(3), permissionMode: "default", origin: { kind: "human" }, turnOrigin: "human", message: { role: "user", content: "and this?" }, attached: { turnOrigin: "task_notification" } }));
+          // the prompt of a turn of another origin, with the keys Claude Code writes on it (read from the transcripts of
+          // this PC): one begun on another session's message, a meta entry of the origin `peer`, and one sent through
+          // the SDK. Only a scheduled turn's prompt and a notice's hold: any other origin holds nothing, as before
+          holdsNothing(() => s.parent({ type: "user", isMeta: true, isSidechain: false, origin: { kind: "peer" }, permissionMode: "auto", turnOrigin: "peer", timestamp: at(3), message: { role: "user", content: "the build is green" } }));
+          holdsNothing(() => s.parent({ type: "user", isSidechain: false, permissionMode: "auto", turnOrigin: "sdk", timestamp: at(3), message: { role: "user", content: "next" } }));
+          // a subagent's entry that carries it, however its line is spaced
+          holdsNothing(() => s.parent({ type: "user", isSidechain: true, origin: { kind: "task-notification" }, turnOrigin: "task_notification", timestamp: at(3), message: { role: "user", content: block() } }));
+          holdsNothing(() => appendFileSync(s.path, `{"type":"user","isSidechain": true,"turnOrigin":"task_notification","timestamp":"${at(3)}","message":{"role":"user","content":"notice"}}\n`));
+          // an entry that is no prompt, though it holds a user entry inside it
+          holdsNothing(() => s.parent({ type: "assistant", turnOrigin: "task_notification", timestamp: at(3), message: { role: "assistant", content: [{ type: "text", text: "on it" }] } }));
+          holdsNothing(() => s.parent({ type: "api-request", turnOrigin: "task_notification", timestamp: at(3), params: { messages: [{ type: "user" }] } }));
+          // the session's own prompt with that key is what holds
+          prompt(s, 3);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+        } finally { status.stop(); }
+      });
+
+      it("holds on the prompt of a notice's turn found at the first read by its own age, as on a fire", async () => {
+        for (const [age, held] of [[20_000, true], [LOOP_HOLD_MS, false]] as const) {
+          const s = session();
+          s.prompt(1);
+          rest(s, 2);
+          queued(s, 3);
+          taken(s, 3);
+          prompt(s, 3, new Date(NOW - age).toISOString());
+          const { status } = await tracked(s);
+          try {
+            expect(status.loopHolds("p1")).toBe(held);
+          } finally { status.stop(); }
+        }
+      });
+
+      it("holds from the prompt of a notice that came while another turn worked: nothing of it is written before that turn's rest", async () => {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        const { status } = await tracked(s);
+        try {
+          // a turn of the person's at work, and a task that ends meanwhile: its notice waits in Claude's queue
+          s.prompt(3);
+          queued(s, 3);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+          rest(s, 4);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+          // the notice's turn begins at that rest, and holds from its own prompt on. A known bound: nothing holds
+          // between that rest and this line, which Claude dates 24 to 97 ms after it in the transcripts of this PC
+          // and writes later still (read once as it reached the file: 133 ms after its own date)
+          taken(s, 4);
+          prompt(s, 4);
+          expect(status.loopHoldsNow("p1")).toBe(true);
+          rest(s, 5);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+        } finally { status.stop(); }
+      });
+
+      it("ends the hold of a notice's prompt written while another turn worked at that turn's rest, as a fire's", async () => {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        const { status } = await tracked(s);
+        try {
+          // seen once in the transcripts of this PC: the prompt stands inside a turn that had not rested
+          s.prompt(3);
+          answer(s, 3);
+          prompt(s, 3);
+          expect(status.loopHoldsNow("p1")).toBe(true);
+          rest(s, 4);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+        } finally { status.stop(); }
+      });
+
+      it("holds anew, for its full time, on the next notice's turn after one that wrote no rest", async () => {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        let now = NOW;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          // a notice's turn that ends with no rest written
+          notices(s, 3);
+          answer(s, 3);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          // 12 s later another task ends: its turn is another one, and holds for its own time
+          now += 12_000;
+          notices(s, 3.2);
+          status.poll();
+          now = NOW + LOOP_HOLD_MS;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          now = NOW + 12_000 + LOOP_HOLD_MS - 1;
+          expect(status.loopHolds("p1")).toBe(true);
+          now += 1;
+          expect(status.loopHolds("p1")).toBe(false);
+          status.poll();
+          expect(told).toEqual([false, true, false]);
+        } finally { status.stop(); }
+      });
+
+      it("reads the prompt of a notice's turn written since the pane's last poll, and that turn's rest, when a send asks", async () => {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        const { status, told } = await tracked(s);
+        try {
+          notices(s, 3);
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(status.loopHoldsNow("p1")).toBe(true);
+          expect(told.at(-1)).toBe(true);
+          rest(s, 4);
+          expect(status.loopHolds("p1")).toBe(true);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+          expect(told.at(-1)).toBe(false);
+        } finally { status.stop(); }
+      });
+
+      it("counts and rests as before through a notice's turn: only the queue's hold is new", async () => {
+        const s = session();
+        s.prompt(1);
+        s.agent("a1", { steps: [[1, 10]] });
+        rest(s, 2);
+        const seen: { running: number; turnRunning: number; promptAt: number | null; resting: boolean }[] = [];
+        const status = new ClaudeSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: (_paneId, running, turnRunning, promptAt, resting) => { seen.push({ running, turnRunning, promptAt, resting }); }, now: () => NOW });
+        await status.refresh([pane("p1", "claude")]);
+        try {
+          // the session rests on its background subagent (#2069)
+          expect(seen.at(-1)).toEqual({ running: 1, turnRunning: 1, promptAt: Date.parse(at(1)), resting: true });
+          expect(status.restsOn("p1")).toBe(true);
+          // another task's notice begins a turn: the rest is gone, and the person's last prompt is still the one before
+          notices(s, 3);
+          status.poll();
+          expect(seen.at(-1)).toEqual({ running: 1, turnRunning: 1, promptAt: Date.parse(at(1)), resting: false });
+          expect(status.restsOn("p1")).toBe(false);
+          expect(status.holdsQueue("p1")).toBe(false);
+          // and at that turn's rest the session rests on its subagent again
+          rest(s, 4);
+          status.poll();
+          expect(seen.at(-1)).toEqual({ running: 1, turnRunning: 1, promptAt: Date.parse(at(1)), resting: true });
+          expect(status.restsOn("p1")).toBe(true);
+          expect(status.loopHolds("p1")).toBe(false);
+        } finally { status.stop(); }
+      });
+    });
   });
 });
 

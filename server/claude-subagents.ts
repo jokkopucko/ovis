@@ -469,10 +469,12 @@ function acknowledgement(entry: Row, block: Row): boolean {
  * The keys of the prompt of a turn Claude resumed by itself: Claude Code 2.1.318 writes it as a meta
  * user entry right after a `/loop` wakeup's fire, with `turnOrigin` `scheduled` and `wakeupSource`
  * `loop_wakeup`; a scheduled task that is no loop has `schedule_wakeup` there (2.1.321 gives every
- * prompt with a `wakeupSource` that `turnOrigin`). Its own keys only: words that quote them are
- * escaped inside a JSON string.
+ * prompt with a `wakeupSource` that `turnOrigin`). And the turn it resumes on a background task's
+ * notice, when a subagent or a background command ends: its prompt is the notice itself as a user
+ * entry, with `turnOrigin` `task_notification` (2.1.296 to 2.1.321). Its own keys only: words that
+ * quote them are escaped inside a JSON string.
  */
-const SELF_RESUMED_RE = /"turnOrigin":"scheduled"|"wakeupSource":"/;
+const SELF_RESUMED_RE = /"turnOrigin":"(?:scheduled|task_notification)"|"wakeupSource":"/;
 
 /**
  * A self-resumed turn's prompt (SELF_RESUMED_RE), which no person typed and no chat sent: it holds
@@ -483,11 +485,20 @@ const SELF_RESUMED_RE = /"turnOrigin":"scheduled"|"wakeupSource":"/;
  * that turn's rest ended the fire's hold, as a rest ends whatever was told before it (scanParentLine),
  * and the task's own turn begins at once. Either turn is told by this line and not by its fire, so it
  * holds nothing from that rest until Claude has written this line, some tens of milliseconds into it.
+ *
+ * A notice's turn has no fire: this line alone tells of it. The notice Claude queues as the task ends
+ * (a `queue-operation`) begins no turn by itself: with a turn at work it waits for that turn's rest,
+ * or is taken into that turn (a `queued_command`), and neither holds. So that turn too holds nothing
+ * until Claude has written this line, which it dates some tens of milliseconds after the task's end,
+ * or after the rest of the turn the notice waited behind, and writes later than it dates it: 50 to
+ * 190 ms later in the lines read as they reached their files, so up to a few tenths of a second
+ * after the task's end or that rest.
  */
 function selfResumed(parent: Parent, line: string, end: number): void {
   try {
     const entry = row(JSON.parse(line));
-    if (entry?.["type"] !== "user" || entry["isSidechain"] === true || (entry["turnOrigin"] !== "scheduled" && typeof entry["wakeupSource"] !== "string")) return;
+    const origin = entry?.["turnOrigin"];
+    if (entry?.["type"] !== "user" || entry["isSidechain"] === true || (origin !== "scheduled" && origin !== "task_notification" && typeof entry["wakeupSource"] !== "string")) return;
     parent.loopAt = end;
     parent.loopTime = stamp(entry["timestamp"]);
   } catch { /* a line caught half written is read again */ }
@@ -1534,18 +1545,20 @@ const BUSY_HOLD_MS = 5000;
 interface Claim { turn: number; barriers: Barrier[]; held: Barrier[] }
 
 /**
- * How long a turn Claude resumed by itself (a `/loop` wakeup's, another scheduled task's) holds the
- * pane's queue while no rest is written after it (#3494). Claude resumes it as the task fires, with no
- * prompt of the person's nor a send of the chat's, and herdr reads that turn a moment later: queued
- * input sent in between would land in the turn at work. A turn that writes no rest (interrupted, on a
- * Claude Code that writes none for it; its process killed) is waited on no longer than this.
+ * How long a turn Claude resumed by itself (a `/loop` wakeup's, another scheduled task's, one on a
+ * background task's notice) holds the pane's queue while no rest is written after it (#3494). Claude
+ * resumes it as the task fires or ends, with no prompt of the person's nor a send of the chat's, and
+ * herdr reads that turn a moment later: queued input sent in between would land in the turn at work.
+ * A turn that writes no rest (interrupted, on a Claude Code that writes none for it; in a session
+ * that writes none; its process killed) is waited on no longer than this.
  */
 export const LOOP_HOLD_MS = 60_000;
 
 /**
  * The latest fire or self-resumed prompt the pane took account of (`fire`, its byte boundary:
  * Parent.loopAt), and since when it holds the queue (`since`). null: it holds nothing, as a rest
- * was written past it, or the transcript's first read found it written LOOP_HOLD_MS ago or longer
+ * was written past it, or a poll found its LOOP_HOLD_MS up (it holds no more, whatever this PC's
+ * clock says later), or the transcript's first read found it written LOOP_HOLD_MS ago or longer
  * (history: its turn may have been interrupted long ago). One found at any other boundary is another
  * one, wherever that stands: a transcript rewritten in place keeps no boundary of the read before.
  */
@@ -1627,12 +1640,14 @@ export class ClaudeSubagentStatus {
   }
 
   /**
-   * Claude resumed a turn by itself (a `/loop` wakeup, a scheduled task) and no rest was written since:
-   * the pane's queue holds. Until that turn's rest is written, or LOOP_HOLD_MS after the last entry that
-   * told of it was read (a later fire or prompt holds anew). No word of herdr's ends it: herdr reads the
-   * pane at rest until it reads the turn, and its working may be a late one for the turn before, or
-   * heard while a delivery is at its last checks. So a resumed turn that is interrupted and writes no
-   * rest holds the queue until that time is up, though herdr reads the pane at rest again.
+   * Claude resumed a turn by itself (a `/loop` wakeup, a scheduled task, a background task's notice) and
+   * no rest was written since: the pane's queue holds. Until that turn's rest is written, or LOOP_HOLD_MS
+   * after the last entry that told of it was read (a later fire or prompt holds anew). No word of herdr's
+   * ends it: herdr reads the pane at rest until it reads the turn, and its working may be a late one for
+   * the turn before, or heard while a delivery is at its last checks. So a resumed turn that is interrupted
+   * and writes no rest holds the queue until that time is up, though herdr reads the pane at rest again.
+   * That time is this PC's clock's: a hold a poll found over holds no more, wherever the clock is set later;
+   * one that stands as the clock is set back ends LOOP_HOLD_MS past the next poll at the latest (poll).
    */
   loopHolds(paneId: string): boolean {
     const since = this.panes.get(paneId)?.turns?.loop.since ?? null;
@@ -1878,6 +1893,10 @@ export class ClaudeSubagentStatus {
           // since: it stands past that one, or anywhere in a transcript rewritten in place
           if (parent.loopAt === null) turns.loop.since = null;
           else if (parent.loopAt !== turns.loop.fire) turns.loop = { fire: parent.loopAt, since: turns === known ? this.now() : foundFiring(parent.loopTime, this.now()) };
+          // a clock set back to before the hold began would let it outlive its time: it holds from this read at the
+          // latest. One set back by less is not told from a clock that was not: the hold stands for what that clock
+          // leaves of its time, so no longer than LOOP_HOLD_MS past this read either way
+          else if (turns.loop.since !== null && turns.loop.since > this.now()) turns.loop.since = this.now();
           // a turn seen at rest is history: a later signal with nothing to place it is not its own
           const latest = turnAt(parent);
           if (resting && latest !== null) turns.retired = Math.max(turns.retired, latest);
@@ -1897,6 +1916,10 @@ export class ClaudeSubagentStatus {
       // a held queue let go of (a rest written past it) is told too, though the pane rested all along
       const holding = this.holdsQueue(paneId);
       const looping = this.loopHolds(paneId);
+      // a hold this poll finds over is over for good, by its rest or by its time. Left standing in the pane's turns,
+      // one whose time ran out would hold again once this PC's clock is set back, told to no one; and where the
+      // pane's files stay as they were (the read skipped above), no poll would say when that time was up again
+      if (!looping && tracked.turns) tracked.turns.loop.since = null;
       if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt && resting === tracked.resting && holding === (tracked.holding ?? false) && looping === (tracked.looping ?? false)) continue;
       tracked.holding = holding;
       tracked.looping = looping;

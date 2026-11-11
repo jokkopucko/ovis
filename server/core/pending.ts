@@ -154,7 +154,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   /**
    * a pane shown at rest whose queue a busy signal or a turn Claude resumed by itself still holds, as the pane's
    * last poll left it (server/core/status.ts queueStatus): no automatic send. `fresh`: whether such a resumed
-   * turn (a /loop wakeup, a scheduled task) holds it, read from the pane's transcript now (#3494)
+   * turn (a /loop wakeup, a scheduled task, a background task's notice) holds it, read from the pane's
+   * transcript now (#3494)
    */
   queueHeld?: (paneId: string, fresh: boolean) => boolean;
   SUBMIT_DEADLINE_MS: number;
@@ -795,10 +796,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // the last reads awaited too: a message past its deadline is not typed
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       authorizePending(owner, paneId, lease);
-      // and a /loop wakeup or a scheduled task may have fired while they were awaited (#3494): whether the turn it
-      // resumed holds the queue is read from the transcript now, with nothing awaited between this and the paste's
-      // own write. A hold found here leaves nothing in the input line and the message waiting; one that comes later
-      // is found before the Enter, with the paste made
+      // and a /loop wakeup or a scheduled task may have fired, or a background task ended, while they were awaited
+      // (#3494): whether the turn Claude resumed on it holds the queue is read from the transcript now, with nothing
+      // awaited between this and the paste's own write. A hold found here leaves nothing in the input line and the
+      // message waiting; one that comes later is found before the Enter, with the paste made
       if ((automatic || queued) && queueHeld(paneId, true)) {
         pending.observe(paneId, "working", mark);
         throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
@@ -873,10 +874,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (agentOnly && !beforeEnter.agentInFront) enterRefused(new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message));
       if (agentOnly && beforeEnter.collapsed) enterRefused(new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal"));
       await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity).catch(enterRefused);
-      // a turn Claude resumed by itself since the paste (a /loop wakeup, a scheduled task, #3494) holds the queue whatever
-      // herdr reads the pane as: read from the transcript after the last of those reads, it turns away an automatic send
-      // and one queued and typed at once, whose Enter (Ctrl+Enter, once herdr tells that turn) would go into the turn at
-      // work. Asked here, before the message is said to be on its way, and once more as the key is written
+      // a turn Claude resumed by itself since the paste (a /loop wakeup, a scheduled task, a background task's notice,
+      // #3494) holds the queue whatever herdr reads the pane as: read from the transcript after the last of those reads,
+      // it turns away an automatic send and one queued and typed at once, whose Enter (Ctrl+Enter, once herdr tells that
+      // turn) would go into the turn at work. Asked here, before the message is said to be on its way, and once more as
+      // the key is written
       const resumed = (): boolean => (automatic || queued) && queueHeld(paneId, true);
       const refuseResumed = (): never => enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
       if (resumed()) refuseResumed();
@@ -1519,9 +1521,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
                 // before anything is typed: the message's turn is written after this on this PC's clock (src/lib/sentWaiting.ts)
                 const sendingAt = new Date().toISOString();
                 const typed = await dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt, undefined, false, message.id, agentOnly, true);
-                // pending_wait: the hold was found right before the paste (a /loop wakeup fired during the checks, #3494).
-                // Nothing was typed, or the code would be submit_changed, so the message is queued as one that arrived a
-                // moment later would be; the status that check gave the queue stands
+                // pending_wait: the hold was found right before the paste (a /loop wakeup fired, or a background task
+                // ended, during the checks, #3494). Nothing was typed, or the code would be submit_changed, so the message
+                // is queued as one that arrived a moment later would be; the status that check gave the queue stands
                 if (typed.ok || typed.code !== "pending_wait") return typed.ok ? { ...typed, sending_at: sendingAt } : typed;
                 waited = true;
               }

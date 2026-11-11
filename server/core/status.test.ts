@@ -528,6 +528,19 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
   /** The prompt of the turn a wakeup resumed, with the keys Claude Code 2.1.318 writes on it right after the fire. */
   const resumes = (path: string) =>
     appendFileSync(path, line({ type: "user", isMeta: true, isSidechain: false, permissionMode: "auto", promptSource: "system", queuePriority: "later", turnOrigin: "scheduled", wakeupSource: "loop_wakeup", scheduledTaskId: "591b6f5a", timestamp: new Date(at + 4100).toISOString(), message: { role: "user", content: "check the deploy" } }));
+  const NOTICE = '<task-notification>\n<task-id>bq1</task-id>\n<tool-use-id>toolu_bq1</tool-use-id>\n<status>completed</status>\n<summary>Background command "bun test" completed (exit code 0)</summary>\n</task-notification>';
+  /** A background task ends, and Claude queues its notice: with a turn at work it waits there for that turn's rest. */
+  const taskEnds = (path: string) =>
+    appendFileSync(path, line({ type: "queue-operation", operation: "enqueue", timestamp: new Date(at + 4000).toISOString(), content: NOTICE }));
+  /**
+   * Claude resumes a turn on that notice: it takes it off its queue and writes the turn's prompt, the notice itself as a
+   * user entry, with the keys Claude Code 2.1.296 to 2.1.321 write on it (read from the transcripts of this PC).
+   */
+  const noticeTurn = (path: string) =>
+    appendFileSync(path, line({ type: "queue-operation", operation: "dequeue", timestamp: new Date(at + 4040).toISOString() })
+      + line({ type: "user", isSidechain: false, origin: { kind: "task-notification" }, permissionMode: "auto", turnOrigin: "task_notification", timestamp: new Date(at + 4040).toISOString(), message: { role: "user", content: NOTICE } }));
+  /** A background task that ends at a pane at rest: the turn on its notice begins at once. */
+  const notices = (path: string) => { taskEnds(path); noticeTurn(path); };
   /** A turn that set its wakeup and came to rest, which herdr told: every read of the pane says idle from here. `drained`: each time its queue is told to look again. */
   const rested = async (drained: string[] = []): Promise<Fixture> => {
     const h = await workingClaude(undefined, (paneId) => { drained.push(paneId); });
@@ -1186,6 +1199,113 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     });
   });
 
+  describe("a turn resumed on a background task's notice", () => {
+    it("holds the queue from the prompt of the notice's turn to that turn's rest, whatever herdr reads meanwhile", async () => {
+      const h = await rested();
+      const id = h.pane.pane_id;
+      queue(h);
+      // Given a pane at rest, whose queued message may go.
+      expect(h.pending.next(id)).not.toBeNull();
+      const shown = h.last().status;
+      // When a background task ends and Claude resumes a turn on its notice, before herdr says the pane works.
+      notices(h.path); h.poll();
+      // Then the status shown stays herdr's, and the queue waits for that turn.
+      expect(h.last().status).toBe(shown);
+      expect(h.pending.current(id)).toBe("working");
+      expect(h.pending.next(id)).toBeNull();
+      expect(h.status.queueHeld(id, false)).toBe(true);
+      // A snapshot that still reads the pane idle lets nothing go, nor does herdr's idle word for the turn before.
+      expect((await h.snapshot()).panes[0]?.agent_status).toBe(shown);
+      handlers.onStatus(id, "idle", "claude");
+      expect(h.pending.next(id)).toBeNull();
+      expect(h.status.queueHeld(id, false)).toBe(true);
+      // The turn's own rest does.
+      turnEnds(h); h.poll();
+      expect(h.pending.current(id)).toBe(shown);
+      expect(h.pending.next(id)).not.toBeNull();
+      expect(h.status.queueHeld(id, false)).toBe(false);
+    });
+
+    it("keeps the queue held through herdr's idle word for the turn the notice came during, when the notice's turn began at that turn's rest", async () => {
+      // Given a turn of the person's at work, which herdr told, and a message queued behind it.
+      const h = await workingClaude();
+      const id = h.pane.pane_id;
+      queue(h);
+      // A task ends while it works. The turn rests and Claude begins the notice's turn at once, its prompt written
+      // before herdr's idle word for the turn before is heard (the prompt is dated 24 to 97 ms after that rest in the
+      // transcripts of this PC, and read once as it reached the file, 133 ms after that date).
+      taskEnds(h.path); h.rest(); noticeTurn(h.path);
+      h.herdrSays(h.pane);
+      handlers.onStatus(id, "idle", "claude");
+      // Then that idle word lets nothing into the notice's turn.
+      expect(h.status.queueHeld(id, false)).toBe(true);
+      expect(h.pending.current(id)).toBe("working");
+      expect(h.pending.next(id)).toBeNull();
+      // And that turn's rest lets the message go.
+      turnEnds(h); h.poll();
+      expect(h.status.queueHeld(id, false)).toBe(false);
+      expect(h.pending.next(id)).not.toBeNull();
+    });
+
+    it("lets the queue go, and tells it so, a minute after the prompt of a notice's turn that was interrupted and wrote no rest", async () => {
+      const drained: string[] = [];
+      const h = await rested(drained);
+      const id = h.pane.pane_id;
+      notices(h.path); h.poll();
+      queue(h);
+      expect(h.pending.next(id)).toBeNull();
+      // Given herdr telling the notice's turn, on time.
+      says(h, "working");
+      expect(h.last().status).toBe("working");
+      const from = Date.now();
+      try {
+        // When that turn is interrupted, which writes no rest here, and herdr says the pane does no work.
+        setSystemTime(from + 10_000);
+        says(h, "idle");
+        // Then herdr's word lets nothing go: nothing tells that pane from one herdr reads at rest while its turn runs.
+        expect(h.last().status).not.toBe("working");
+        expect(h.status.queueHeld(id, false)).toBe(true);
+        expect(h.pending.current(id)).toBe("working");
+        expect(h.pending.next(id)).toBeNull();
+        setSystemTime(from + 59_000);
+        h.poll();
+        expect(h.pending.next(id)).toBeNull();
+        const told = drained.length;
+        // And once the hold's time is up the queue is told with no status event, and the message is offered.
+        setSystemTime(from + 61_000);
+        h.poll();
+        expect(drained.slice(told)).toEqual([id]);
+        expect(h.status.queueHeld(id, false)).toBe(false);
+        expect(h.pending.current(id)).not.toBe("working");
+        expect(h.pending.next(id)).not.toBeNull();
+      } finally { setSystemTime(); }
+    });
+
+    it("shows a notice's turn begun under a background subagent's spinner at work, and at rest on that subagent again, as before", async () => {
+      // Given a turn at rest while its background subagent works: herdr reads the spinner as working, and the pane is
+      // shown at rest, its queue free (#2069).
+      const h = await workingClaude();
+      const id = h.pane.pane_id;
+      h.rest(); h.poll();
+      expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+      queue(h);
+      expect(h.pending.next(id)).not.toBeNull();
+      // When another task of the session's ends, and Claude resumes a turn on its notice.
+      notices(h.path); h.poll();
+      // Then the pane is shown at work and its queue waits, as before this hold: herdr's working is that turn's now.
+      expect(h.last()).toEqual({ status: "working", tasks: 1, bg: false });
+      expect(h.pending.current(id)).toBe("working");
+      expect(h.pending.next(id)).toBeNull();
+      expect(h.status.claudeAgents.holdsQueue(id)).toBe(false);
+      // And at that turn's rest the pane rests on its subagent again, and the message may go: the hold ended there.
+      turnEnds(h); h.poll();
+      expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+      expect(h.status.queueHeld(id, false)).toBe(false);
+      expect(h.pending.current(id)).toBe("done");
+      expect(h.pending.next(id)).not.toBeNull();
+    });
+  });
+
   describe("with the bridge's own delivery", () => {
     let sockets = 0;
     const READY = { attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true, ready: true, held: false, currentHeld: false, mirror: false, cols: 80 };
@@ -1675,6 +1795,179 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       await flush();
       expect(writes).toEqual(["paste \u001b[200~after both\u001b[201~", "keys Enter"]);
       expect(waiting()).toEqual([]);
+    });
+
+    describe("for a turn resumed on a background task's notice", () => {
+      it("keeps a message sent as the notice's turn begins waiting, and types it at that turn's rest", async () => {
+        const { h, writes, submit, flush, waiting } = await delivering();
+        // When a background task ends at the pane at rest, and the send's own read of the pane is the first to find its turn.
+        notices(h.path);
+        await submit(31, "wait");
+        await flush();
+        // Then nothing is typed into that turn.
+        expect(writes).toEqual([]);
+        expect(waiting()).toEqual(["queued"]);
+        // And the turn's rest sends it by itself.
+        turnEnds(h); h.poll();
+        await flush();
+        expect(writes).toEqual(["paste \u001b[200~wait\u001b[201~", "keys Enter"]);
+        expect(waiting()).toEqual([]);
+      });
+
+      it("types nothing into a notice's turn begun at the rest of the turn a message waited behind, and sends it at the notice's turn's rest", async () => {
+        const d = await delivering();
+        const { h, writes, submit, flush, waiting } = d;
+        const id = h.pane.pane_id;
+        // Given a message queued while a turn of the person's works, and a task that ends meanwhile.
+        h.next();
+        says(h, "working");
+        await submit(32, "behind");
+        expect(waiting()).toEqual(["queued"]);
+        taskEnds(h.path);
+        // That turn rests and the notice's turn begins at once: its prompt is written before herdr's idle word for the turn before.
+        turnEnds(h); noticeTurn(h.path);
+        h.herdrSays(h.pane);
+        handlers.onStatus(id, "idle", "claude");
+        await flush();
+        // Then that idle word types nothing into the notice's turn, and the message waits on.
+        expect(writes).toEqual([]);
+        expect(waiting()).toEqual(["queued"]);
+        // herdr tells the notice's turn, and its rest sends the message.
+        says(h, "working");
+        turnEnds(h);
+        says(h, "idle");
+        await flush();
+        expect(writes).toEqual(["paste \u001b[200~behind\u001b[201~", "keys Enter"]);
+        expect(waiting()).toEqual([]);
+      });
+
+      it("sends a waiting message by itself a minute after the prompt of a notice's turn that was interrupted and wrote no rest", async () => {
+        const d = await delivering();
+        const { h, writes, submit, flush, waiting } = d;
+        // Given a notice's turn that herdr tells, and a message sent meanwhile.
+        notices(h.path); h.poll();
+        says(h, "working");
+        await submit(33, "after the minute");
+        const from = Date.now();
+        try {
+          // When that turn is interrupted, which writes no rest here, and herdr reads the pane at rest.
+          setSystemTime(from + 10_000);
+          says(h, "idle");
+          await flush();
+          // Then the message waits on, though the pane shows as idle.
+          expect(writes).toEqual([]);
+          expect(waiting()).toEqual(["queued"]);
+          setSystemTime(from + 59_000);
+          h.poll();
+          await flush();
+          expect(writes).toEqual([]);
+          // And once the hold's time is up the timer's poll tells the queue, which sends it with no status event.
+          setSystemTime(from + 61_000);
+          h.poll();
+          await flush();
+          expect(writes).toEqual(["paste \u001b[200~after the minute\u001b[201~", "keys Enter"]);
+          expect(waiting()).toEqual([]);
+        } finally { setSystemTime(); }
+      });
+
+      it("sends a message at once to a pane whose notice turn's hold ran out, though this PC's clock was set back since", async () => {
+        const d = await delivering();
+        const { h, writes, submit, flush, waiting } = d;
+        const id = h.pane.pane_id;
+        // Given a notice's turn that wrote no rest: its hold ran out its minute, which the queue was told, and the
+        // polls since found the pane's files as they were and read nothing.
+        notices(h.path); h.poll();
+        expect(h.status.queueHeld(id, false)).toBe(true);
+        const from = Date.now();
+        try {
+          setSystemTime(from + 61_000);
+          h.poll();
+          expect(h.status.queueHeld(id, false)).toBe(false);
+          setSystemTime(from + 64_000);
+          h.poll();
+          setSystemTime(from + 70_000);
+          h.poll();
+          // When the clock is set back ten minutes, to before that hold began, and a message is sent to the pane
+          // herdr reads at rest.
+          setSystemTime(from + 70_000 - 10 * 60_000);
+          h.poll();
+          expect(h.status.queueHeld(id, false)).toBe(false);
+          expect(h.status.queueHeld(id, true)).toBe(false);
+          await submit(37, "after the clock went back");
+          await flush();
+          // Then it is typed at once: the hold that ended holds nothing again. One that did would keep the message
+          // waiting with no poll to read that its time was up, until herdr's next word on the pane.
+          expect(writes).toEqual(["paste \u001b[200~after the clock went back\u001b[201~", "keys Enter"]);
+          expect(waiting()).toEqual([]);
+        } finally { setSystemTime(); }
+      });
+
+      it("leaves a paste uncommitted when the notice's turn begins between a queued message's paste and its Enter", async () => {
+        const d = await delivering();
+        const { h, writes, submit, flush, waiting } = d;
+        const id = h.pane.pane_id;
+        h.next();
+        says(h, "working");
+        await submit(34, "pasted");
+        // Given a task that ends during the paste itself: no check before the paste can see its turn.
+        d.on.paste = () => { delete d.on.paste; notices(h.path); };
+        turnEnds(h);
+        h.herdrSays(h.pane);
+        handlers.onStatus(id, "idle", "claude");
+        await flush();
+        // Then the Enter is refused, and the message is left for the person to check: never typed into that turn, never typed twice.
+        expect(writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
+        expect(waiting()).toEqual(["uncertain"]);
+        turnEnds(h); h.poll();
+        await flush();
+        expect(writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
+      });
+
+      it("leaves a paste uncommitted when herdr's idle word for the turn a message waited behind is heard before the prompt of the notice's turn begun at that rest is written", async () => {
+        const d = await delivering();
+        const { h, writes, submit, flush, waiting } = d;
+        const id = h.pane.pane_id;
+        // Given a message queued behind a turn of the person's, and a task that ends while that turn works: its notice
+        // waits in Claude's queue, which holds nothing.
+        h.next();
+        says(h, "working");
+        await submit(36, "at the rest");
+        taskEnds(h.path);
+        // That turn rests and the notice's turn begins at once, but herdr's idle word is heard before Claude has written
+        // that turn's prompt: the check before the paste has no prompt to read, and the prompt is in the file for the
+        // read before the Enter (written here during the paste). A known bound: nothing holds between that rest and
+        // the prompt's line, which reaches the file up to a few tenths of a second after that rest.
+        d.on.paste = () => { delete d.on.paste; noticeTurn(h.path); };
+        turnEnds(h);
+        h.herdrSays(h.pane);
+        handlers.onStatus(id, "idle", "claude");
+        await flush();
+        // Then no Enter goes into the notice's turn: the text stays in Claude's input line and the message is left for
+        // the person to check, typed again by nothing, that turn's rest included.
+        expect(writes).toEqual(["paste \u001b[200~at the rest\u001b[201~"]);
+        expect(waiting()).toEqual(["uncertain"]);
+        turnEnds(h); h.poll();
+        await flush();
+        expect(writes).toEqual(["paste \u001b[200~at the rest\u001b[201~"]);
+      });
+
+      it("sends no Enter for a message typed at once when the notice's turn begins while its Enter's connection to herdr is being made", async () => {
+        // Given the Enter written by herdr's own client, to a socket that stands in for herdr's.
+        const d = await delivering("herdr's own client");
+        const { h, writes, submit, flush, waiting, results, steps } = d;
+        // And a task that ends once every check before the Enter found the queue free, with the connection asked for.
+        const begun = { yet: false };
+        d.on.paste = () => { delete d.on.paste; d.on.connect = () => { delete d.on.connect; begun.yet = true; notices(h.path); }; };
+        await submit(35, "last");
+        await flush();
+        expect(begun.yet).toBe(true);
+        // Then the hold is read once more once connected, right before the key's write: herdr is sent no key, and the
+        // paste stays, not confirmed.
+        expect(steps.slice(-3)).toEqual(["hold read now", "keys", "hold read now"]);
+        expect(writes).toEqual(["paste \u001b[200~last\u001b[201~"]);
+        expect(results()).toMatchObject([{ id: 35, ok: false, code: "submit_changed" }]);
+        expect(waiting()).toEqual([]);
+      });
     });
   });
 });
