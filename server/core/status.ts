@@ -702,9 +702,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       // only a verified pane holds the stream: a verification still in flight settles for itself, and
       // a snapshot read before it started must not cancel it
       const verified = new Set(openCodeNativeState().panes);
+      // herdr can keep calling a pane OpenCode after it left (0.9.3 on a loaded host): the shell alone in front says it did
       for (const pane of panes) {
-        if (!verified.has(pane.pane_id) || pane.agent === "opencode") continue;
-        if (pane.agent || pane.agent_status !== "unknown" || shellSnapshots.has(pane)) releaseOpenCodePane(pane.pane_id, snapshotVerifications.get(pane));
+        if (!verified.has(pane.pane_id)) continue;
+        const left = pane.agent === "opencode" ? shellSnapshots.has(pane) : pane.agent || pane.agent_status !== "unknown" || shellSnapshots.has(pane);
+        if (left) releaseOpenCodePane(pane.pane_id, snapshotVerifications.get(pane));
       }
       if (machines) machines.localAgents(panes); else bridgeAgents!.reconciled(panes);
     },
@@ -745,7 +747,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (process.platform !== "win32") {
       const verified = new Set(openCodeNativeState().panes);
       await Promise.all(snapshot.panes.map(async (pane) => {
-        if (pane.agent || pane.agent_status !== "unknown" || !verified.has(pane.pane_id)) return;
+        if (!verified.has(pane.pane_id) || (pane.agent ? pane.agent !== "opencode" : pane.agent_status !== "unknown")) return;
         const info = await paneProcessInfo(pane.pane_id).catch(() => undefined);
         const front = info?.foreground_processes?.[0];
         // `exec opencode` keeps the shell's pid, but not its process identity.

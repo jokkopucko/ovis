@@ -43,7 +43,7 @@ const WATCH_MS = 10 * 60_000;
 const WATCH_MAX = 64;
 const EARLY_MAX = 256;
 /** how long a pane's verified service and session are trusted without asking again (as openCodeService's) */
-const PANE_VERIFIED_MS = 5_000;
+export const PANE_VERIFIED_MS = 5_000;
 /**
  * The panes that keep the shared event stream open: each verified to run OpenCode v2 on the stream's
  * service with its session there. A pane's end, its agent changing, or a verification that now fails
@@ -70,6 +70,26 @@ function handOver(track: (paneId: string) => void, handed: Set<string>, paneId: 
   if (handed.has(paneId)) return;
   handed.add(paneId);
   track(paneId);
+}
+
+/**
+ * herdr can change a pane's agent without a status event or a lifecycle frame (0.9.3 on a loaded host: OpenCode
+ * gone, the shell idle in front, and nothing said for its pane), so no snapshot would read it until the collector's
+ * backstop. While panes hold the stream, each one's collectors read it again whenever its verification is due
+ * (PANE_VERIFIED_MS): what that snapshot shows releases it as any other (server/core/status.ts, onReconciled).
+ */
+let recheck: ReturnType<typeof setInterval> | null = null;
+function scheduleRecheck(): void {
+  if (recheck !== null) return;
+  recheck = setInterval(() => {
+    if (verifiedPanes.size === 0) { stopRecheck(); return; }
+    for (const track of paneTrackers.keys()) for (const paneId of verifiedPanes.keys()) track(paneId);
+  }, PANE_VERIFIED_MS);
+  recheck.unref?.();
+}
+function stopRecheck(): void {
+  if (recheck !== null) clearInterval(recheck);
+  recheck = null;
 }
 
 /**
@@ -201,6 +221,7 @@ export function closeOpenCodeNative(): void {
   catalogs.clear();
   watches.length = 0;
   verifiedPanes.clear();
+  stopRecheck();
 }
 
 /**
@@ -217,6 +238,7 @@ export function releaseOpenCodePane(paneId: string, checkpoint = Infinity): void
   inFlightByPane.delete(paneId);
   for (const handed of paneTrackers.values()) handed.delete(paneId);
   verifiedPanes.delete(paneId);
+  if (verifiedPanes.size === 0) stopRecheck();
   for (let index = watches.length - 1; index >= 0; index--) if (watches[index]!.paneId === paneId) watches.splice(index, 1);
   if (stream && ![...verifiedPanes.values()].some((entry) => entry.key === stream!.key)) {
     stream.close();
@@ -273,6 +295,7 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration });
   // a pane closed without an exit frame ends only if its collector tracks it
   for (const [track, handed] of paneTrackers) handOver(track, handed, paneId);
+  scheduleRecheck();
   return { service: service!, sessionID };
 }
 

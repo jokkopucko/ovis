@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, jest, setSystemTime, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HerdrPane } from "../../shared/protocol.ts";
@@ -11,7 +11,7 @@ import * as records from "../omo-records.ts";
 import * as service from "../opencode-service.ts";
 import * as agyStore from "../agy-store.ts";
 import * as processStart from "../process-start.ts";
-import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
+import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, PANE_VERIFIED_MS, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import type { StatusCollectorDeps } from "../collector.ts";
 import { noteSubmitted } from "../prompt.ts";
 import { connectionData, type Client } from "./connections.ts";
@@ -38,7 +38,12 @@ describe.each(["baseline", "gap", "resync", "newer-event"] as const)("native Ope
     const session = spyOn(service, "openCodeHasSession").mockResolvedValue(true);
     let closed = false;
     const events = spyOn(service, "subscribeOpenCodeEvents").mockImplementation(() => ({ close() { closed = true; } }));
-    const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue(front === "unreadable" ? undefined : {
+    const changed = { ...pane, agent, agent_status: status, agent_session: null };
+    let snapshotPane = mode === "baseline" ? changed : pane;
+    // OpenCode is in front while herdr's snapshot still shows it; what `front` names after the change
+    const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => snapshotPane !== changed ? {
+      pane_id: pane.pane_id, shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "opencode", argv: ["/usr/bin/opencode"] }],
+    } : front === "unreadable" ? undefined : {
       pane_id: pane.pane_id, shell_pid: 41000,
       foreground_processes: [{ pid: front === "shell" || front === "exec" ? 41000 : 41001, name: front === "shell" ? "sh" : "opencode", argv: [front === "shell" ? "/bin/sh" : "/usr/bin/opencode"] }],
     });
@@ -48,8 +53,6 @@ describe.each(["baseline", "gap", "resync", "newer-event"] as const)("native Ope
       expect(openCodeNativeState()).toEqual({ stream: true, panes: [pane.pane_id] });
       // When the real collector sees a replacement agent at the same status, without
       // a status frame. Exercise the first baseline, a gap and a lost subscription.
-      const changed = { ...pane, agent, agent_status: status, agent_session: null };
-      let snapshotPane = mode === "baseline" ? changed : pane;
       let live: Parameters<StatusCollectorDeps["subscribe"]>[1] | undefined;
       let hold: Promise<void> | undefined;
       let resynced = false;
@@ -183,6 +186,69 @@ describe("native OpenCode ownership verified during a snapshot", () => {
       untrack?.();
       answer.resolve();
       closeOpenCodeNative();
+      events.mockRestore();
+      session.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+});
+
+describe("native OpenCode ownership without a status event", () => {
+  it.each([
+    { label: "herdr's label changes", left: { agent: null, agent_status: "idle" } },
+    { label: "herdr's label stays", left: { agent: "opencode", agent_status: "unknown" } },
+  ] as const)("releases a verified pane whose agent left with no event, once its verification is due again ($label)", async ({ left }) => {
+    // Given a pane verified as OpenCode v2 and tracked by the real collector, with its status subscription live.
+    jest.useFakeTimers();
+    const h = hub();
+    closeOpenCodeNative();
+    const pane: HerdrPane = { ...claude, ...opencode("ses_parent"), agent_status: "unknown", focused: false, revision: 0, terminal_id: "native-silent" };
+    const lookup = spyOn(service, "openCodeService").mockResolvedValue({
+      version: "2.0.32", config: { baseUrl: "http://127.0.0.1:1", port: 1, pid: process.pid, password: "fixture" },
+    });
+    const session = spyOn(service, "openCodeHasSession").mockResolvedValue(true);
+    let closed = false;
+    const events = spyOn(service, "subscribeOpenCodeEvents").mockImplementation(() => ({ close() { closed = true; } }));
+    h.herdrSays(pane);
+    let reconciled = Promise.withResolvers<void>();
+    const collector = originalCollector({
+      onBaseline: handlers.onBaseline,
+      onReconciled: (panes) => { handlers.onReconciled(panes); reconciled.resolve(); },
+      onStatus: handlers.onStatus,
+      onPaneEnded: handlers.onPaneEnded,
+      onStructureChange() {},
+    }, {
+      snapshot: collectorSnapshot,
+      subscribe: (_subs, callbacks) => { queueMicrotask(() => callbacks.onStarted?.()); return { close() {} }; },
+    });
+    const untrack = trackVerifiedOpenCodePanes(collector.trackPane);
+    let info: { mockRestore(): void } | undefined;
+    try {
+      await collector.ready;
+      reconciled = Promise.withResolvers<void>();
+      expect(await openCodePaneService(pane)).not.toBeNull();
+      // the read its tracking asked for, still of OpenCode in the pane
+      await reconciled.promise;
+      expect(openCodeNativeState()).toEqual({ stream: true, panes: [pane.pane_id] });
+      // When OpenCode leaves and herdr's snapshot says so (the shell idle in front), but no status event
+      // or lifecycle frame tells the collector (seen from herdr 0.9.3 on a loaded host).
+      // herdr 0.9.3 can also keep the label, while its own process read finds the shell alone in front.
+      h.herdrSays({ ...pane, ...left, ...(left.agent === null ? { agent_session: null } : {}) });
+      info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+        pane_id: pane.pane_id, shell_pid: 41000, foreground_processes: [{ pid: 41000, name: "bash", argv: ["/bin/bash", "--noprofile", "--norc"] }],
+      });
+      reconciled = Promise.withResolvers<void>();
+      jest.advanceTimersByTime(PANE_VERIFIED_MS);
+      await reconciled.promise;
+      // Then the pane is read again once its verification is due, and its hold on the stream ends.
+      expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
+      expect(closed).toBe(true);
+    } finally {
+      untrack();
+      collector.stop();
+      closeOpenCodeNative();
+      jest.useRealTimers();
+      info?.mockRestore();
       events.mockRestore();
       session.mockRestore();
       lookup.mockRestore();
