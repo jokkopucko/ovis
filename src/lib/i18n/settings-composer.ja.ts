@@ -24,4 +24,6 @@ export const SETTINGS_COMPOSER_JA: Record<string, string> = {
   "A chip above the message box puts the prompt the agent suggests next (Claude Code, GJC or omp) into the box. With a keyboard, Tab does it.": "入力欄の上のチップで、エージェント (Claude Code、GJC、omp) が次に提案するプロンプトを入力欄に入れます。キーボードでは Tab で入れます。",
   "A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.": "Claude Code のペインの入力欄に、セッションが Artifact ツールで公開したページの一覧を出すチップを表示します。",
   "The site in that tab can see and navigate this Ovis tab.": "そのタブのサイトは、この Ovis タブを見たり移動させたりできます。",
+  "Close tab button": "タブを閉じるボタン",
+  "A button beside Attach files asks the agent to run this skill, for example close-tab. The agent checks for open work first and then closes its tab. Empty: no button. On this device only.": "「ファイルを添付」の隣のボタンで、エージェントにこのスキル (例: close-tab) を実行させます。エージェントはまず残っている作業を確認し、それからタブを閉じます。空欄ならボタンは出ません。このデバイスだけの設定です。",
 };
