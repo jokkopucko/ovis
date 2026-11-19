@@ -23,6 +23,8 @@ import { composerDraftKey, composerDrafts, underSendLock } from "../lib/composer
 import { onQuoted } from "../lib/chatQuote.ts";
 import { commentsWait, holdsQuoteLine, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
 import { ReplyCommentsChip, useReplyComments } from "./ReplyComments.tsx";
+import { CloseTabButton } from "./CloseTabButton.tsx";
+import { closeTabCommand } from "../lib/closeTabSkill.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import {
   agentDisplayLabel,
@@ -1030,6 +1032,21 @@ export function Composer({
     pasted.current = null;
     if (waiting.key === draftKey && waiting.text === text) send();
   }, [draftKey, send, text]);
+  /**
+   * Puts `message` into the empty box of `key` and sends it through Send, as Paste and send and the Close tab
+   * button do; false when the box holds a draft, also one another tab stored and this one has not heard of yet.
+   */
+  const fillAndSend = useCallback((key: string, message: string): boolean => {
+    composerDrafts.refresh(key);
+    const stored = composerDrafts.read(key);
+    if (stored.text !== "" || stored.sending) return false;
+    textRef.current = message;
+    caretRef.current = message.length;
+    pasted.current = { key, text: message };
+    composerDrafts.set(key, message);
+    setCaret(message.length);
+    return true;
+  }, []);
   const pasteAndSend = useCallback(() => {
     if (pasteReadingRef.current || composingRef.current) return;
     if (!connected || sending || textRef.current !== "" || attachmentsRef.current.length > 0) return;
@@ -1048,22 +1065,21 @@ export function Composer({
       if (clip.length > MAX_COMPOSER_CHARS) { setNote(t("The clipboard holds more than a message's {max} characters. Nothing was sent.", { max: formatChars(MAX_COMPOSER_CHARS) })); return; }
       if (!connectedRef.current || drops.current !== pressedOn || composingRef.current || textRef.current !== ""
         || textEdits.current.count !== editsAt || attachmentsRef.current.length > 0) return;
-      // another tab may have stored a draft for this pane whose storage event has not reached this one yet
-      composerDrafts.refresh(key);
-      const stored = composerDrafts.read(key);
-      if (stored.text !== "" || stored.sending) return;
-      textRef.current = clip;
-      caretRef.current = clip.length;
-      pasted.current = { key, text: clip };
-      composerDrafts.set(key, clip);
-      setCaret(clip.length);
+      fillAndSend(key, clip);
     }, () => {
       if (here()) setNote(t("The clipboard could not be read. Use the keyboard's own paste in the message box."));
     }).finally(() => {
       pasteReadingRef.current = false;
       if (mounted.current) setPasteReading(false);
     });
-  }, [connected, draftKey, sending, t]);
+  }, [connected, draftKey, fillAndSend, sending, t]);
+
+  /** the Close tab button's send: only into the empty box, as a typed message, while nothing else is under way */
+  const sendCloseTab = useCallback((message: string): boolean => {
+    if (!connected || sending || composingRef.current || textRef.current !== "" || attachmentsRef.current.length > 0) return false;
+    return fillAndSend(draftKey, message);
+  }, [connected, draftKey, fillAndSend, sending]);
+  const closeCommand = useMemo(() => closeTabCommand(commands, settings.composerCloseSkill), [commands, settings.composerCloseSkill]);
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1554,6 +1570,9 @@ export function Composer({
           >
             <Plus aria-hidden="true" />
           </button>
+          {/* only once this device named the skill (Settings → Chat → Composer) and the pane's agent lists it */}
+          {closeCommand !== null && !viewOnly && <CloseTabButton command={closeCommand} onSend={sendCloseTab}
+            disabled={!connected || sending || uploading || agentStatus === "working" || text !== "" || attachments.length > 0} />}
           {/* only once this device turned it on (Settings → Chat → Composer): the composer's row stays minimal */}
           {settings.composerPasteSend && !viewOnly && (
             <button

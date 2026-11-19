@@ -36,6 +36,7 @@ const BASE: Record<string, string> = {
   "View only": "表示のみ",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "貼り付けていません: ファイルのパスに改行があり、ターミナルが Enter として受け取ります。",
   "Attach files": "ファイルを添付",
+  "Close tab": "タブを閉じる",
   "Sign out": "サインアウト",
 
   "Only for {pc}": "{pc} のみ",

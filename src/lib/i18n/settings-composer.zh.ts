@@ -26,4 +26,6 @@ export const SETTINGS_COMPOSER_ZH: Record<string, string> = {
   "A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.": "输入框上方的标签会把 Claude Code 建议的下一条提示填入输入框。使用键盘时按 Tab 即可。",
   "A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.": "在 Claude Code 面板的输入框中显示一个标签，列出该会话用 Artifact 工具发布的页面。",
   "The site in that tab can see and navigate this Ovis tab.": "该标签页中的网站可以查看并跳转这个 Ovis 标签页。",
+  "Close tab button": "关闭标签页按钮",
+  "A button beside Attach files asks the agent to run this skill, for example close-tab. The agent checks for open work first and then closes its tab. Empty: no button. On this device only.": "“附加文件”旁边的按钮让智能体运行此技能，例如 close-tab。智能体会先检查未完成的工作，然后关闭其标签页。留空则不显示按钮。仅限此设备。",
 };

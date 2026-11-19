@@ -38,6 +38,7 @@ const BASE: Record<string, string> = {
   "View only": "仅查看",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "未粘贴：文件路径中含有换行，终端会将其当作 Enter。",
   "Attach files": "附加文件",
+  "Close tab": "关闭标签页",
   "Sign out": "退出登录",
 
   "Only for {pc}": "仅限 {pc}",

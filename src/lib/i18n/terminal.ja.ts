@@ -84,7 +84,6 @@ export const TERMINAL_JA: Record<string, string> = {
   "The chat can't be shown. The terminal still works.": "チャットを表示できません。ターミナルは引き続き使えます。",
   "New tab with agent…": "エージェントで新しいタブ…",
   "Tab {n}": "タブ {n}",
-  "Close tab": "タブを閉じる",
   "Tab name": "タブ名",
   "Actions for {tab}": "{tab} の操作",
   "Close {tab}": "{tab} を閉じる",
