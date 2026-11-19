@@ -20,6 +20,7 @@ export class AgentChanges {
   private readonly seen = new Map<string, Seen>();
   private readonly path: string | null;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private stopped = false;
 
   /** `stateDir` null: nothing is read or written (tests, a server without a state directory). */
   constructor(stateDir: string | null, private readonly now: () => number = Date.now) {
@@ -58,61 +59,73 @@ export class AgentChanges {
   }
 
   /**
-   * A PC's snapshot with each agent's changed_at: a raised counter or another status than the one
-   * last seen is a change now. An agent seen for the first time has no time, as nothing says when it
-   * last changed; a lower counter is a new herdr run, which starts the agent over. Agents the
-   * snapshot no longer has are forgotten.
+   * A PC's snapshot with each agent's changed_at. From a connected PC (`live`), a raised counter or
+   * another status than the one last seen is a change now; an agent seen for the first time has no
+   * time, as nothing says when it last changed; a lower counter is a new herdr run, which starts the
+   * agent over; agents the snapshot no longer has are forgotten. A roster that is not live (one
+   * cached in machines.json, a PC away) may be older than the times kept: it only shows them.
    */
-  snapshot(machineId: string, snapshot: SessionSnapshot): SessionSnapshot {
+  snapshot(machineId: string, snapshot: SessionSnapshot, live: boolean): SessionSnapshot {
     // a partial roster (an older bridge's) says nothing of its agents: nothing is dated or forgotten
     if (!Array.isArray(snapshot.panes)) return snapshot;
     const seqs = new Map((snapshot.agents ?? []).map((agent) => [agent.pane_id, agent.state_change_seq] as const));
     let changed = false;
+    let panesChanged = false;
     const panes = snapshot.panes.map((pane) => {
       const key = keyOf(machineId, pane.pane_id);
-      const seq = seqs.get(pane.pane_id);
-      const status = pane.agent_status;
       const before = this.seen.get(key);
-      let next: Seen;
-      if (!before) next = { ...(seq === undefined ? {} : { seq }), status };
-      else if (seq !== undefined && before.seq !== undefined && seq < before.seq) next = { seq, status };
-      else {
-        const raised = seq !== undefined && (before.seq === undefined || seq > before.seq);
-        // a raised counter after a status frame is that frame's change, already dated
-        const fresh = before.status !== status || raised && !before.told;
-        next = { ...(seq === undefined ? {} : { seq }), status, ...(fresh ? { at: this.now() } : before.at === undefined ? {} : { at: before.at }) };
-        if (before.told && !raised && before.status === status) next.told = true;
+      let at = before?.at;
+      if (live) {
+        const next = this.observe(before, seqs.get(pane.pane_id), pane.agent_status);
+        if (!sameSeen(before, next)) { this.seen.set(key, next); changed = true; }
+        at = next.at;
       }
-      if (!sameSeen(before, next)) { this.seen.set(key, next); changed = true; }
       // a remote PC's own Ovis may name a time of its clock: only this server's is told
+      if (pane.changed_at === at) return pane;
+      panesChanged = true;
       const { changed_at: _theirs, ...own } = pane;
-      return next.at === undefined ? own : { ...own, changed_at: next.at };
+      return at === undefined ? own : { ...own, changed_at: at };
     });
-    const open = new Set(snapshot.panes.map((pane) => keyOf(machineId, pane.pane_id)));
+    if (live) {
+      const open = new Set(snapshot.panes.map((pane) => keyOf(machineId, pane.pane_id)));
+      const prefix = keyOf(machineId, "");
+      for (const key of this.seen.keys()) if (key.startsWith(prefix) && !open.has(key)) { this.seen.delete(key); changed = true; }
+    }
+    if (changed) this.save();
+    return panesChanged ? { ...snapshot, panes } : snapshot;
+  }
+
+  /** A PC removed from this server: its agents' times go with it. */
+  forget(machineId: string): void {
     const prefix = keyOf(machineId, "");
-    for (const key of this.seen.keys()) if (key.startsWith(prefix) && !open.has(key)) { this.seen.delete(key); changed = true; }
-    if (changed) this.save();
-    return { ...snapshot, panes };
-  }
-
-  /** The PCs this server still has: the agents of a removed one are forgotten. */
-  keepMachines(machineIds: readonly string[]): void {
-    const kept = new Set(machineIds);
     let changed = false;
-    for (const key of this.seen.keys()) if (!kept.has(key.slice(0, key.indexOf("\n")))) { this.seen.delete(key); changed = true; }
+    for (const key of this.seen.keys()) if (key.startsWith(prefix)) { this.seen.delete(key); changed = true; }
     if (changed) this.save();
   }
 
-  /** Writes a pending change now (a stopping server). */
+  /** Writes a pending change now, and nothing after it (a stopping server). */
   flush(): void {
+    this.stopped = true;
     if (this.timer === null) return;
     clearTimeout(this.timer);
     this.timer = null;
     this.write();
   }
 
+  private observe(before: Seen | undefined, seq: number | undefined, status: string): Seen {
+    if (!before) return { ...(seq === undefined ? {} : { seq }), status };
+    if (seq !== undefined && before.seq !== undefined && seq < before.seq) return { seq, status };
+    const raised = seq !== undefined && (before.seq === undefined || seq > before.seq);
+    // a raised counter after a status frame is that frame's change, already dated
+    const fresh = before.status !== status || raised && !before.told;
+    const next: Seen = { ...(seq === undefined ? {} : { seq }), status, ...(fresh ? { at: this.now() } : before.at === undefined ? {} : { at: before.at }) };
+    // the frame's counter may come in a later snapshot than the next one
+    if (before.told && !raised && before.status === status) next.told = true;
+    return next;
+  }
+
   private save(): void {
-    if (this.path === null || this.timer !== null) return;
+    if (this.path === null || this.timer !== null || this.stopped) return;
     this.timer = setTimeout(() => { this.timer = null; this.write(); }, SAVE_DELAY_MS);
     this.timer.unref?.();
   }

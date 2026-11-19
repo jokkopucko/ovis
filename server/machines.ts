@@ -558,7 +558,7 @@ export class MachineManager {
             runtime.machine.enabled = false; this.disconnect(runtime);
             for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
             this.dropUpdate(runtime);
-            this.machines.delete(id);
+            this.machines.delete(id); this.agentChanges.forget(id);
             this.emit();
           }
           this.removeKey(id);
@@ -598,7 +598,7 @@ export class MachineManager {
       runtime.machine.enabled = false; this.disconnect(runtime);
       for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
       this.dropUpdate(runtime);
-      this.machines.delete(id);
+      this.machines.delete(id); this.agentChanges.forget(id);
       changed = true;
     }
     if (changed) this.emit();
@@ -661,7 +661,7 @@ export class MachineManager {
     for (const [id, runtime] of this.machines) {
       if (runtime.machine.kind !== "hc" || wanted.has(id)) continue;
       runtime.machine.enabled = false; this.disconnect(runtime);
-      this.machines.delete(id);
+      this.machines.delete(id); this.agentChanges.forget(id);
       changed = true;
     }
     if (changed) this.emit();
@@ -692,9 +692,9 @@ export class MachineManager {
       if (runtime.machine.kind !== "hc") runtime.machine.ovis_update = this.updateOffer(runtime);
     }
     const machines = [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
-    this.agentChanges.keepMachines(machines.map((machine) => machine.id));
-    // each agent's last change in this server's clock (HerdrPane.changed_at): only a time from one clock orders PCs together
-    return machines.map((machine) => machine.snapshot ? { ...machine, snapshot: this.agentChanges.snapshot(machine.id, machine.snapshot) } : machine);
+    // each agent's last change in this server's clock (HerdrPane.changed_at): only a time from one clock orders PCs together.
+    // Only a connected PC's roster is news: a cached one (machines.json, a PC away) shows the times kept for it.
+    return machines.map((machine) => machine.snapshot ? { ...machine, snapshot: this.agentChanges.snapshot(machine.id, machine.snapshot, machine.state === "connected") } : machine);
   }
   /**
    * The update a PC can take from here (Machine.ovis_update): a connected PC's own Ovis's offer, else what its last
@@ -2564,7 +2564,7 @@ export class MachineManager {
     this.dropUpdate(runtime);
     // the key goes first: a registration saved without the PC must not leave its credential behind
     if (runtime.machine.kind === "relay") removeRelayPcKey(this.relayKeyPath(id));
-    this.machines.delete(id); this.persist();
+    this.machines.delete(id); this.agentChanges.forget(id); this.persist();
     for (const suffix of ["", ".pub"]) try { unlinkSync(join(this.sshDir, id + suffix)); } catch {}
     this.emit();
   }
