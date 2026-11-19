@@ -295,7 +295,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
           let changed = false;
           const next = list.map((m) => {
             if (m.id !== machine.id || !m.snapshot) return m;
-            const snapshot = applyPaneStatus(m.snapshot, message.pane_id, message.agent_status, message.background_tasks, message.background_wait === true, message.plan, message.finish_id, message.finish_epoch, message.context);
+            const snapshot = applyPaneStatus(m.snapshot, message.pane_id, message.agent_status, message.background_tasks, message.background_wait === true, message.plan, message.finish_id, message.finish_epoch, message.context, message.changed_at);
             if (snapshot === m.snapshot) return m;
             changed = true;
             return { ...m, snapshot };

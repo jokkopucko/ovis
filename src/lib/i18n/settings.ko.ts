@@ -310,6 +310,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.": "에이전트 목록에서 고정한 에이전트의 메뉴에 '에이전트 잠금'이 생깁니다. 잠긴 에이전트의 패널, 탭, 워크스페이스는 모든 브라우저에서 이 앱으로 닫을 수 없습니다. herdr 자체나 스크립트로는 여전히 닫을 수 있습니다.",
   "Only those words are kept, on this server, until the tab closes; turning this off deletes them.": "그 몇 단어만 탭이 닫힐 때까지 이 서버에 보관하며, 끄면 삭제됩니다.",
   "Within a state": "같은 상태 안에서",
+  "Across PCs": "PC 전체에서",
+  "Order the agents of every PC together, by when this server saw each one change. Off: each PC's agents stay together.": "모든 PC의 에이전트를 이 서버가 각 에이전트의 변화를 본 시점 순으로 함께 정렬합니다. 끄면 각 PC의 에이전트가 함께 모여 있습니다.",
   "Longest wait": "오래 기다린 순",
   "Also send to": "외부 앱으로 알림 보내기",
   "Bot token": "봇 토큰",

@@ -15,12 +15,12 @@ import { sidebarPinKey, splitPinnedRows } from "./sidebarPins.ts";
 export interface AgentRow { machine: Machine; entry: SidebarAgent }
 
 export interface AgentRosterOptions {
-  /** Settings → Agents order: Activity sorts all PCs' rows together. */
+  /** Settings → Agents order: Activity sorts each PC's rows by that PC's own counters */
   byActivity: boolean;
+  /** Settings → Across PCs: Activity sorts all PCs' rows together, by the hub's change times (HerdrPane.changed_at) */
+  acrossPcs?: boolean;
   /** a PC's state-change counters, as lib/sidebarActivity.tsx keeps them */
   seqs(machineId: string): ReadonlyMap<string, number>;
-  /** Observed cross-PC recency, keyed by sidebarPinKey; native counters are PC-local. */
-  recent: ReadonlyMap<string, number>;
   /** the pinned rows' keys (lib/sidebarPins.ts), in pin order */
   pinned: readonly string[];
 }
@@ -73,8 +73,10 @@ function nestRows<T>(entries: readonly T[], idOf: (entry: T) => string, parentId
 }
 
 /**
- * Agent rows as the list draws them: pinned first, then workspace or cross-PC Activity order. The
- * cross-PC sort is nested again, so an agent's helpers stay right under it.
+ * Agent rows as the list draws them: pinned first, then workspace order, each PC's Activity order,
+ * or Activity across PCs. Across PCs, rows the server has no change time for keep each PC's
+ * Activity order after the dated ones, and the sort is nested again, so an agent's helpers stay
+ * right under it.
  */
 export function agentRoster(machines: readonly Machine[], options: AgentRosterOptions): { pinned: AgentRow[]; rest: AgentRow[] } {
   const rows = machines.flatMap((machine) => {
@@ -82,10 +84,13 @@ export function agentRoster(machines: readonly Machine[], options: AgentRosterOp
     return nestHelpers(options.byActivity ? activityOrder(agents, (entry) => entry.pane, options.seqs(machine.id)) : agents).map((entry): AgentRow => ({ machine, entry }));
   });
   const keyOf = ({ machine, entry }: AgentRow): string => sidebarPinKey(machine.id, entry.pane.pane_id);
-  const ordered = options.byActivity ? nestRows(activityOrder(rows, (row) => ({
+  if (!options.byActivity || !options.acrossPcs) return splitPinnedRows(rows, options.pinned, keyOf);
+  // one clock for every PC: the hub's (server/agent-changes.ts), never two PCs' own counters
+  const changedAt = new Map(rows.flatMap((row) => row.entry.pane.changed_at === undefined ? [] : [[keyOf(row), row.entry.pane.changed_at] as const]));
+  const ordered = nestRows(activityOrder(rows, (row) => ({
     pane_id: keyOf(row), agent_status: row.entry.pane.agent_status,
-  }), options.recent), keyOf, ({ machine, entry }) => entry.pane.parent_pane_id === undefined ? undefined : sidebarPinKey(machine.id, entry.pane.parent_pane_id)) : rows;
-  return splitPinnedRows(ordered, options.pinned, ({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id));
+  }), changedAt), keyOf, ({ machine, entry }) => entry.pane.parent_pane_id === undefined ? undefined : sidebarPinKey(machine.id, entry.pane.parent_pane_id));
+  return splitPinnedRows(ordered, options.pinned, keyOf);
 }
 
 /**

@@ -310,6 +310,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.": "在 Agent 列表中，已固定 Agent 的菜单会提供“锁定 Agent”。之后在所有浏览器中，本应用都无法关闭已锁定 Agent 的面板、标签页或工作区。通过 herdr 本身或脚本关闭不受影响。",
   "Only those words are kept, on this server, until the tab closes; turning this off deletes them.": "只保存这几个词，存于此服务器，直到标签页关闭；关闭此设置会将其删除。",
   "Within a state": "同一状态内",
+  "Across PCs": "跨电脑",
+  "Order the agents of every PC together, by when this server saw each one change. Off: each PC's agents stay together.": "按本服务器看到每个代理变化的时间，把所有电脑的代理放在一起排序。关闭：每台电脑的代理各自排在一起。",
   "Longest wait": "按等待时长",
   "Also send to": "同时发送到",
   "Bot token": "机器人令牌",

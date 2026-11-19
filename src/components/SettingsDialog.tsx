@@ -546,6 +546,10 @@ function AppearancePage() {
         {/* By state is this device's grouping (agentGroups); Workspaces and Activity are every browser's order (agentOrder), the grouping off */}
         <Segmented label={t("Agents order")} value={settings.agentGroups ? "state" : settings.agentOrder} onChange={(order) => update(order === "state" ? { agentGroups: true } : { agentOrder: order, agentGroups: false })} options={[{ value: "waiting", label: t("Waiting first") }, { value: "workspace", label: t("Workspaces") }, { value: "activity", label: t("Activity") }, { value: "state", label: t("By state") }] as const} />
       </SettingsRow>
+      {/* every browser's, as the order is: the times are this server's (server/agent-changes.ts) */}
+      {settings.agentOrder === "activity" && !settings.agentGroups && <SettingsRow icon={ArrowDownUp} label={t("Across PCs")} description={t("Order the agents of every PC together, by when this server saw each one change. Off: each PC's agents stay together.")} reset={["agentOrderAcrossPcs"]}>
+        <Toggle label={t("Across PCs")} checked={settings.agentOrderAcrossPcs} onChange={(agentOrderAcrossPcs) => update({ agentOrderAcrossPcs })} />
+      </SettingsRow>}
       {settings.agentGroups && <SettingsRow icon={ArrowDownUp} label={t("Within a state")} wide>
         <Segmented label={t("Within a state")} value={settings.agentGroupSort} onChange={(agentGroupSort) => update({ agentGroupSort })} options={[{ value: "wait", label: t("Longest wait") }, { value: "recent", label: t("Recent") }, { value: "name", label: t("Name") }]} />
       </SettingsRow>}
