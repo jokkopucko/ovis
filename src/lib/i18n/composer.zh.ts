@@ -262,4 +262,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Not sent: no agent is running in this pane. Your message stayed here.": "未发送：此窗格中没有运行的代理。消息仍保留在这里。",
   "1 comment": "1 条评论",
   "{count} comments": "{count} 条评论",
+  "Close tab?": "关闭标签页？",
+  "The agent first checks for open work and questions. It closes the tab only when nothing is left.": "智能体会先检查未完成的工作和问题，只有在没有剩余内容时才关闭标签页。",
+  "Nothing was sent: the message box is not empty.": "未发送任何内容：输入框不为空。",
 };

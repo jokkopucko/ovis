@@ -84,7 +84,6 @@ export const TERMINAL_KO: Record<string, string> = {
   "The chat can't be shown. The terminal still works.": "채팅을 표시할 수 없습니다. 터미널은 계속 쓸 수 있습니다.",
   "New tab with agent…": "에이전트로 새 탭…",
   "Tab {n}": "탭 {n}",
-  "Close tab": "탭 닫기",
   "Tab name": "탭 이름",
   "Actions for {tab}": "{tab} 작업",
   "Close {tab}": "{tab} 닫기",

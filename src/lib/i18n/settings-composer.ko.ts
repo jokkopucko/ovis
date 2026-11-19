@@ -26,4 +26,6 @@ export const SETTINGS_COMPOSER_KO: Record<string, string> = {
   "A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.": "입력창 위의 칩을 누르면 Claude Code가 제안한 다음 프롬프트가 입력창에 들어갑니다. 키보드에서는 Tab으로 넣습니다.",
   "A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.": "Claude Code 패널의 입력창에 세션이 Artifact 도구로 게시한 페이지 목록을 여는 칩을 표시합니다.",
   "The site in that tab can see and navigate this Ovis tab.": "그 탭의 사이트가 이 Ovis 탭을 보고 이동시킬 수 있습니다.",
+  "Close tab button": "탭 닫기 버튼",
+  "A button beside Attach files asks the agent to run this skill, for example close-tab. The agent checks for open work first and then closes its tab. Empty: no button. On this device only.": "'파일 첨부' 옆의 버튼이 에이전트에게 이 스킬(예: close-tab)을 실행하게 합니다. 에이전트는 먼저 남은 작업을 확인한 다음 탭을 닫습니다. 비워 두면 버튼이 없습니다. 이 기기에만 적용됩니다.",
 };

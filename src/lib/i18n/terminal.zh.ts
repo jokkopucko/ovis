@@ -84,7 +84,6 @@ export const TERMINAL_ZH: Record<string, string> = {
   "The chat can't be shown. The terminal still works.": "无法显示聊天，终端仍可使用。",
   "New tab with agent…": "用 Agent 新建标签页…",
   "Tab {n}": "标签页 {n}",
-  "Close tab": "关闭标签页",
   "Tab name": "标签页名称",
   "Actions for {tab}": "{tab} 的操作",
   "Close {tab}": "关闭 {tab}",
