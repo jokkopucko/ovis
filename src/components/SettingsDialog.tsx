@@ -639,9 +639,10 @@ function ChatPage() {
           </span>
         </SettingsRow>
         {/* this device's: the button shows only where the pane's agent lists the skill (lib/closeTabSkill.ts) */}
-        <SettingsRow icon={X} label={t("Close tab button")} description={t("A button beside Attach files asks the agent to run this skill, for example close-tab. The agent checks for open work first and then closes its tab. Empty: no button. On this device only.")} reset={["composerCloseSkill"]}>
+        <SettingsRow icon={X} label={t("Close tab button")} description={t("A button beside Attach files asks the agent to run this skill, for example close-tab. The agent checks for open work first and then closes its tab. Empty: no button. On this device only.")} wide reset={["composerCloseSkill"]}>
+          {/* sized as the font names are: beside its label on a wide screen, under it on a phone */}
           <input
-            className="input"
+            className="input settings-font-input"
             value={settings.composerCloseSkill}
             placeholder="close-tab"
             aria-label={t("Close tab button")}
